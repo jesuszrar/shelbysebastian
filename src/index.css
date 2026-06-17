@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Palette updated from user */
+    --background: 0 0% 95%; /* #F2F2F2 */
+    --foreground: 199 97% 13%; /* #012E40 */
+
+    --card: 0 0% 100%;
+    --card-foreground: 199 97% 13%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 199 97% 13%;
+
+    --primary: 199 97% 13%; /* #012E40 */
+    --primary-foreground: 0 0% 100%;
+    --primary-glow: 191 96% 28%; /* #03738C */
+
+    --secondary: 191 96% 28%; /* #03738C */
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 180 8% 69%; /* #AAB7B7 */
+    --muted-foreground: 199 30% 35%;
+
+    --accent: 191 96% 28%;
+    --accent-foreground: 0 0% 100%;
+
+    --brand-green: 145 55% 38%;
+    --brand-red: 0 70% 50%;
+    --whatsapp: 142 70% 45%;
+
+    --destructive: 0 75% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 192 8% 77%; /* #C0C8CA */
+    --input: 192 8% 80%;
+    --ring: 191 96% 28%;
+
+    --radius: 0.875rem;
+
+    --gradient-gold: linear-gradient(135deg, hsl(36 73% 54%), hsl(41 84% 68%));
+    --gradient-dark: linear-gradient(135deg, hsl(199 97% 13%), hsl(191 96% 28%));
+    --gradient-cream: linear-gradient(180deg, hsl(0 0% 95%), hsl(0 0% 97%));
+    --gradient-hero: linear-gradient(115deg, hsl(199 97% 13% / 0.94) 0%, hsl(199 97% 13% / 0.68) 55%, hsl(191 96% 28% / 0.28) 100%);
+    --gradient-login: linear-gradient(135deg, hsl(199 97% 13% / 0.9) 0%, hsl(191 96% 28% / 0.58) 100%);
+
+    --shadow-soft: 0 4px 20px -8px hsl(199 97% 13% / 0.12);
+    --shadow-elegant: 0 20px 50px -20px hsl(199 97% 13% / 0.25);
+    --shadow-gold: 0 12px 30px -10px hsl(36 73% 54% / 0.45);
+
+    --transition-smooth: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  * { @apply border-border; }
+  body {
+    @apply bg-background text-foreground;
+    font-family: "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, .font-display {
+    font-family: "Bebas Neue", "Inter", sans-serif;
+    letter-spacing: 0.02em;
+  }
+}
+
+@layer utilities {
+  .bg-gradient-gold { background: var(--gradient-gold); }
+  .bg-gradient-dark { background: var(--gradient-dark); }
+  .bg-gradient-cream { background: var(--gradient-cream); }
+  .bg-gradient-hero { background: var(--gradient-hero); }
+  .bg-gradient-login { background: var(--gradient-login); }
+  .shadow-soft { box-shadow: var(--shadow-soft); }
+  .shadow-elegant { box-shadow: var(--shadow-elegant); }
+  .shadow-gold { box-shadow: var(--shadow-gold); }
+  .transition-smooth { transition: var(--transition-smooth); }
+  .text-balance { text-wrap: balance; }
+
+  .container-shelby {
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1rem;
+    padding-right: 1rem;
+    max-width: 1280px;
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "site_id": "adb04aec-90de-406e-bb6a-e3643f7ccb63",
+  "site_name": "shelbyimport",
+  "deploy_id": "6a317bc18f35e7161793e78b",
+  "deploy_url": "https://6a317bc18f35e7161793e78b--shelbyimport.netlify.app",
+  "logs": "https://app.netlify.com/projects/shelbyimport/deploys/6a317bc18f35e7161793e78b",
+  "function_logs": "https://app.netlify.com/projects/shelbyimport/logs/functions",
+  "edge_function_logs": "https://app.netlify.com/projects/shelbyimport/logs/edge-functions",
+  "url": "https://shelbyimport.netlify.app"
+}
