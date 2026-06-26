@@ -1,0 +1,15 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[[redirects]]
+  from = "/order-success"
+  to = "/order-success"
+  status = 200
+  force = false
+
+# Environment variables (set these in Netlify UI or during CLI deploy)
+# - VITE_SUPABASE_URL
+# - VITE_SUPABASE_PUBLISHABLE_KEY
+# - MERCADOPAGO_ACCESS_TOKEN_CLIENT
+# - (optional) MERCADOPAGO_ACCESS_TOKEN

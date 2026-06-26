@@ -9,10 +9,15 @@ import heroImg from "@/assets/hero-warehouse.jpg";
 import logo from "@/assets/products/logo.png";
 
 const loginSchema = z.object({
-  email: z.string().trim().email("Ingresa un correo válido").max(255),
+  cedula: z.string().trim().min(5, "Ingresa tu cédula").max(20),
   password: z.string().min(6, "Mínimo 6 caracteres").max(72),
 });
-const registerSchema = loginSchema.extend({ name: z.string().trim().min(2, "Nombre requerido").max(80) });
+const registerSchema = z.object({
+  name: z.string().trim().min(2, "Nombre requerido").max(80),
+  cedula: z.string().trim().min(5, "Cédula requerida").max(20),
+  email: z.string().email("Email válido").max(255),
+  password: z.string().min(6, "Mínimo 6 caracteres").max(72),
+});
 
 const Login = () => {
   const { login, register } = useAuth();
@@ -21,6 +26,7 @@ const Login = () => {
   const redirect = params.get("redirect") || "/";
   const [mode, setMode] = useState<"login" | "register">("login");
   const [name, setName] = useState("");
+  const [cedula, setCedula] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -30,7 +36,7 @@ const Login = () => {
     e.preventDefault();
     setErrors({});
     const schema = mode === "login" ? loginSchema : registerSchema;
-    const parsed = schema.safeParse(mode === "login" ? { email, password } : { name, email, password });
+    const parsed = schema.safeParse(mode === "login" ? { cedula, password } : { name, cedula, email, password });
     if (!parsed.success) {
       const fe: Record<string, string> = {};
       parsed.error.issues.forEach((i) => { fe[i.path[0] as string] = i.message; });
@@ -40,11 +46,11 @@ const Login = () => {
     setLoading(true);
     try {
       if (mode === "login") {
-        await login(email, password);
+        await login(cedula, password);
         toast.success("¡Bienvenido de nuevo!");
       } else {
-        await register(name, email, password);
-        toast.success("¡Cuenta creada!", { description: "Revisa tu correo para confirmar." });
+        await register(name, cedula, email, password);
+        toast.success("¡Cuenta creada!", { description: "Revisa tu correo para confirmar tu cuenta." });
       }
       navigate(redirect);
     } catch (err) {
@@ -92,14 +98,25 @@ const Login = () => {
               </div>
             )}
             <div>
-              <label className="text-sm font-medium text-secondary block mb-1.5">Correo electrónico</label>
+              <label className="text-sm font-medium text-secondary block mb-1.5">Cédula</label>
               <div className="relative">
                 <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@correo.com"
-                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="email" />
+                <input type="text" value={cedula} onChange={(e) => setCedula(e.target.value)} placeholder="12345678"
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="off" />
               </div>
-              {errors.email && <p className="text-xs text-destructive mt-1">{errors.email}</p>}
+              {errors.cedula && <p className="text-xs text-destructive mt-1">{errors.cedula}</p>}
             </div>
+            {mode === "register" && (
+              <div>
+                <label className="text-sm font-medium text-secondary block mb-1.5">Correo electrónico</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@correo.com"
+                    className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="email" />
+                </div>
+                {errors.email && <p className="text-xs text-destructive mt-1">{errors.email}</p>}
+              </div>
+            )}
             <div>
               <label className="text-sm font-medium text-secondary block mb-1.5">Contraseña</label>
               <div className="relative">

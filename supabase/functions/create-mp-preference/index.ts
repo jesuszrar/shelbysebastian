@@ -20,7 +20,8 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
-    const accessToken = Deno.env.get("MERCADOPAGO_ACCESS_TOKEN");
+    // Prefer a client-provided token name if available, fall back to the default
+    const accessToken = Deno.env.get("MERCADOPAGO_ACCESS_TOKEN_CLIENT") ?? Deno.env.get("MERCADOPAGO_ACCESS_TOKEN");
     if (!accessToken) {
       return new Response(JSON.stringify({ error: "Mercado Pago no está configurado. Agrega MERCADOPAGO_ACCESS_TOKEN." }), {
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },

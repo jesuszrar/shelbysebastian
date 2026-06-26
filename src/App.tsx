@@ -6,7 +6,6 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/context/AuthContext";
 import { CartProvider } from "@/context/CartContext";
-import { ProtectedRoute } from "@/components/ProtectedRoute";
 import Index from "./pages/Index";
 import ProductsPage from "./pages/ProductsPage";
 import ProductDetail from "./pages/ProductDetail";
@@ -15,6 +14,8 @@ import Login from "./pages/Login";
 import Checkout from "./pages/Checkout";
 import OrderSuccess from "./pages/OrderSuccess";
 import NotFound from "./pages/NotFound";
+import Admin from "./pages/Admin";
+import ProtectedAdminRoute from "@/components/ProtectedAdminRoute";
 
 const queryClient = new QueryClient();
 
@@ -35,7 +36,7 @@ const App = () => (
       <Sonner richColors position="top-right" />
       <BrowserRouter>
         <AuthProvider>
-          <CartProvider>
+              <CartProvider>
             <ScrollToTop />
             <Routes>
               <Route path="/" element={<Index />} />
@@ -43,7 +44,9 @@ const App = () => (
               <Route path="/products/:productId" element={<ProductDetail />} />
               <Route path="/cart" element={<Cart />} />
               <Route path="/login" element={<Login />} />
-              <Route path="/checkout" element={<ProtectedRoute><Checkout /></ProtectedRoute>} />
+              {/* Checkout no requiere autenticación; permite comprar como invitado */}
+              <Route path="/checkout" element={<Checkout />} />
+              <Route path="/admin" element={<ProtectedAdminRoute><Admin /></ProtectedAdminRoute>} />
               <Route path="/order-success" element={<OrderSuccess />} />
               <Route path="*" element={<NotFound />} />
             </Routes>

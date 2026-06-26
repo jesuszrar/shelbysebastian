@@ -22,7 +22,7 @@ export const Hero = () => (
           Impresoras térmicas portátiles, lectores de código y suministros para que factures, etiquetes y crezcas sin enredarte con cables ni equipos pesados. Asesoría real, precios honestos.
         </p>
         <div className="mt-8 flex flex-wrap gap-4">
-          <Button asChild size="lg" className="bg-white text-blue-600 hover:bg-slate-100 shadow-soft text-base h-14 px-8"><Link to="/products">Ver catálogo completo</Link></Button>
+          <Button asChild size="lg" className="bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft text-base h-14 px-8"><Link to="/products">Ver catálogo completo</Link></Button>
           <Button asChild size="lg" variant="outline" className="border-white/35 bg-white/10 text-white hover:bg-white/20 backdrop-blur-sm h-14 px-8">
             <a href="https://wa.me/573228426561" target="_blank" rel="noopener noreferrer">Hablar con un asesor</a>
           </Button>
