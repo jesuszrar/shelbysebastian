@@ -11,5 +11,6 @@
 # Environment variables (set these in Netlify UI or during CLI deploy)
 # - VITE_SUPABASE_URL
 # - VITE_SUPABASE_PUBLISHABLE_KEY
+# - VITE_SITE_URL
 # - MERCADOPAGO_ACCESS_TOKEN_CLIENT
 # - (optional) MERCADOPAGO_ACCESS_TOKEN
