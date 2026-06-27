@@ -20,43 +20,21 @@ const registerSchema = z.object({
 });
 
 const Login = () => {
-  const { login, register, verifyRegistrationCode } = useAuth();
+  const { login, register } = useAuth();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const redirect = params.get("redirect") || "/";
   const [mode, setMode] = useState<"login" | "register">("login");
-  const [otpStep, setOtpStep] = useState(false);
   const [name, setName] = useState("");
   const [cedula, setCedula] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [otp, setOtp] = useState("");
-  const [pendingEmail, setPendingEmail] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setErrors({});
-
-    if (mode === "register" && otpStep) {
-      if (!otp.trim() || otp.trim().length < 6) {
-        setErrors({ otp: "Ingresa el código de 6 dígitos" });
-        return;
-      }
-
-      setLoading(true);
-      try {
-        await verifyRegistrationCode(pendingEmail, otp);
-        toast.success("¡Correo verificado!", { description: "Tu cuenta ya está lista para entrar." });
-        navigate(redirect);
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "No pudimos verificar el código");
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
 
     const schema = mode === "login" ? loginSchema : registerSchema;
     const parsed = schema.safeParse(mode === "login" ? { cedula, password } : { name, cedula, email, password });
@@ -74,10 +52,9 @@ const Login = () => {
         toast.success("¡Bienvenido de nuevo!");
         navigate(redirect);
       } else {
-        const result = await register(name, cedula, email, password);
-        setPendingEmail(result.email);
-        setOtpStep(true);
-        toast.success("Código enviado", { description: "Revisa tu correo e ingresa el código de 6 dígitos." });
+        await register(name, cedula, email, password);
+        toast.success("Cuenta creada", { description: "Ya puedes iniciar sesión." });
+        navigate(redirect);
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "No pudimos completar la acción");
@@ -112,7 +89,7 @@ const Login = () => {
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            {mode === "register" && !otpStep && (
+            {mode === "register" && (
               <>
                 <div>
                   <label className="text-sm font-medium text-secondary block mb-1.5">Nombre completo</label>
@@ -141,54 +118,29 @@ const Login = () => {
                   </div>
                   {errors.email && <p className="text-xs text-destructive mt-1">{errors.email}</p>}
                 </div>
-                <div>
-                  <label className="text-sm font-medium text-secondary block mb-1.5">Contraseña</label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
-                      className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth"
-                      autoComplete="new-password" />
-                  </div>
-                  {errors.password && <p className="text-xs text-destructive mt-1">{errors.password}</p>}
-                </div>
               </>
             )}
 
-            {mode === "register" && otpStep && (
-              <div>
-                <label className="text-sm font-medium text-secondary block mb-1.5">Código de confirmación</label>
-                <div className="relative">
-                  <ShieldCheck className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <input type="text" value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="123456"
-                    className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="one-time-code" />
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">Enviamos un código de 6 dígitos a {pendingEmail}</p>
-                {errors.otp && <p className="text-xs text-destructive mt-1">{errors.otp}</p>}
+            <div>
+              <label className="text-sm font-medium text-secondary block mb-1.5">Contraseña</label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete={mode === "login" ? "current-password" : "new-password"} />
               </div>
-            )}
+              {errors.password && <p className="text-xs text-destructive mt-1">{errors.password}</p>}
+            </div>
 
             {mode === "login" && (
-              <>
-                <div>
-                  <label className="text-sm font-medium text-secondary block mb-1.5">Cédula</label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <input type="text" value={cedula} onChange={(e) => setCedula(e.target.value)} placeholder="12345678"
-                      className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="off" />
-                  </div>
-                  {errors.cedula && <p className="text-xs text-destructive mt-1">{errors.cedula}</p>}
+              <div>
+                <label className="text-sm font-medium text-secondary block mb-1.5">Cédula</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <input type="text" value={cedula} onChange={(e) => setCedula(e.target.value)} placeholder="12345678"
+                    className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="off" />
                 </div>
-                <div>
-                  <label className="text-sm font-medium text-secondary block mb-1.5">Contraseña</label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
-                      className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth"
-                      autoComplete="current-password" />
-                  </div>
-                  {errors.password && <p className="text-xs text-destructive mt-1">{errors.password}</p>}
-                </div>
-              </>
+                {errors.cedula && <p className="text-xs text-destructive mt-1">{errors.cedula}</p>}
+              </div>
             )}
 
             <Button type="submit" disabled={loading} className="w-full h-12 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft">
@@ -198,14 +150,14 @@ const Login = () => {
                   Procesando...
                 </span>
               ) : (
-                <><LogIn className="h-4 w-4" /> {mode === "login" ? "Iniciar sesión" : otpStep ? "Confirmar código" : "Crear cuenta"}</>
+                <><LogIn className="h-4 w-4" /> {mode === "login" ? "Iniciar sesión" : "Crear cuenta"}</>
               )}
             </Button>
           </form>
 
           <p className="text-center text-sm text-muted-foreground mt-6">
             {mode === "login" ? "¿No tienes cuenta?" : "¿Ya tienes cuenta?"}{" "}
-            <button type="button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setOtpStep(false); setOtp(""); setPendingEmail(""); setErrors({}); }} className="text-primary font-semibold hover:underline">
+            <button type="button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setErrors({}); }} className="text-primary font-semibold hover:underline">
               {mode === "login" ? "Regístrate" : "Inicia sesión"}
             </button>
           </p>

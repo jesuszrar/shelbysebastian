@@ -4,15 +4,13 @@ import type { Session, User as SbUser } from "@supabase/supabase-js";
 
 export type User = { id: string; name: string; email: string; cedula?: string };
 
-const SITE_URL = import.meta.env.VITE_SITE_URL || window.location.origin;
-
 type AuthContextValue = {
   user: User | null;
   session: Session | null;
   isAuthenticated: boolean;
   loading: boolean;
   login: (cedula: string, password: string) => Promise<void>;
-  register: (name: string, cedula: string, email: string, password: string) => Promise<{ needsOtp: boolean; email: string }>;
+  register: (name: string, cedula: string, email: string, password: string) => Promise<void>;
   verifyRegistrationCode: (email: string, token: string) => Promise<void>;
   logout: () => Promise<void>;
   isAdmin: boolean;
@@ -48,10 +46,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // Helper: generate a synthetic email from cedula so Supabase auth can work while the UI uses cedula
-  const synthEmail = (cedula: string) => `${cedula.trim()}@no-reply.shelby`;
-
-    const findEmailByCedula = async (cedula: string) => {
+  const findEmailByCedula = async (cedula: string) => {
     const { data, error } = await supabase.from('profiles').select('email').eq('cedula', cedula).single();
     if (error) {
       console.error('Error fetching profile by cedula', error);
@@ -65,26 +60,33 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     if (!email) {
       throw new Error('Cédula no registrada. Regístrate primero.');
     }
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    const { error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password: password.trim(),
+    });
     if (error) throw new Error(error.message === 'Invalid login credentials' ? 'Cédula o contraseña incorrectos' : error.message);
   };
 
   const register = async (name: string, cedula: string, email: string, password: string) => {
     const normalizedEmail = email.trim();
-    const { error: signUpError } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email: normalizedEmail,
-      password,
-      options: { data: { name: name.trim(), cedula: cedula.trim() } },
+      password: password.trim(),
+      options: {
+        data: { name: name.trim(), cedula: cedula.trim() },
+      },
     });
-    if (signUpError) throw new Error(signUpError.message);
+    if (error) throw new Error(error.message);
 
-    const { error: otpError } = await supabase.auth.signInWithOtp({
-      email: normalizedEmail,
-      options: { shouldCreateUser: false },
-    });
-    if (otpError) throw new Error(otpError.message);
-
-    return { needsOtp: true, email: normalizedEmail };
+    if (!data.session) {
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password: password.trim(),
+      });
+      if (signInError || !signInData.session) {
+        throw new Error(signInError?.message ?? 'No se pudo iniciar sesión automáticamente.');
+      }
+    }
   };
 
   const verifyRegistrationCode = async (email: string, token: string) => {
