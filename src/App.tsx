@@ -29,6 +29,22 @@ const ScrollToTop = () => {
   return null;
 };
 
+const RedirectFallback = () => {
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const redirect = params.get("redirect");
+
+    if (redirect) {
+      const safeRedirect = redirect.startsWith("/") ? redirect : `/${redirect}`;
+      if (window.location.pathname !== safeRedirect) {
+        window.history.replaceState({}, "", safeRedirect);
+      }
+    }
+  }, []);
+
+  return null;
+};
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -36,8 +52,9 @@ const App = () => (
       <Sonner richColors position="top-right" />
       <BrowserRouter>
         <AuthProvider>
-              <CartProvider>
+          <CartProvider>
             <ScrollToTop />
+            <RedirectFallback />
             <Routes>
               <Route path="/" element={<Index />} />
               <Route path="/products" element={<ProductsPage />} />
