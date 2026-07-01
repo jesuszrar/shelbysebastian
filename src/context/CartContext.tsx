@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { products, type Product } from "@/data/products";
+import { type Product } from "@/data/products";
+import { useProductsCatalog } from "@/context/ProductsContext";
 
 export type CartItem = { productId: string; quantity: number };
 
@@ -27,6 +28,7 @@ const SHIPPING_BOGOTA = 8000;
 const SHIPPING_OTHER = 15000;
 
 export const CartProvider = ({ children }: { children: ReactNode }) => {
+  const { products } = useProductsCatalog();
   const [items, setItems] = useState<CartItem[]>([]);
   const [city, setCityState] = useState<string>("");
   const [hydrated, setHydrated] = useState(false);
@@ -67,7 +69,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
     const shipping = subtotal === 0 || subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : baseShipping;
     const total = subtotal + shipping;
     return { items, detailedItems, count, subtotal, shipping, total, city, setCity, add, remove, setQuantity, clear };
-  }, [items, city]);
+  }, [items, city, products]);
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 };

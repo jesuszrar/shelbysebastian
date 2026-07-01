@@ -1,27 +1,171 @@
-import { useEffect, useState } from "react";
-import { Navbar } from "@/components/shelby/Navbar";
+import { useEffect, useMemo, useState } from "react";
 import { Footer } from "@/components/shelby/Footer";
-import { supabase } from "@/integrations/supabase/client";
+import { Navbar } from "@/components/shelby/Navbar";
 import { Button } from "@/components/ui/button";
-import { formatCOP } from "@/data/products";
+import { useProductsCatalog } from "@/context/ProductsContext";
+import { supabase } from "@/integrations/supabase/client";
+import { formatCOP, products as defaultProducts, type Product } from "@/data/products";
+import { toast } from "sonner";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import {
+  AlertTriangle,
+  BarChart3,
+  ImagePlus,
+  Package,
+  Plus,
+  RefreshCcw,
+  Search,
+  ShieldCheck,
+  ShoppingCart,
+  Sparkles,
+  Trash2,
+  Upload,
+  Users,
+} from "lucide-react";
 
-type ProductRow = { id: string; name: string; category: string; price: number; image: string | null };
-type OrderRow = { id: string; total: number; status: string; created_at: string };
-type UserRow = { id: string; name: string; email: string; cedula?: string; is_admin?: boolean };
+const ADMIN_EMAIL_STATUSES = new Set(["paid", "approved", "completed"]);
+const LOW_STOCK_LIMIT = 3;
+const ORDER_STATUS_OPTIONS = ["pending", "paid", "approved", "shipped", "delivered", "cancelled", "failed"] as const;
+
+type ProductRow = {
+  id: string;
+  name: string;
+  category: string;
+  price: number;
+  image: string | null;
+  stock: number | null;
+  description: string | null;
+  specs: string[] | null;
+  created_at?: string;
+};
+
+type OrderRow = {
+  id: string;
+  total: number;
+  status: string;
+  created_at: string;
+  user_id?: string | null;
+};
+
+type UserRow = {
+  id: string;
+  name: string;
+  email: string;
+  cedula?: string;
+  is_admin?: boolean;
+};
+
+type ProductForm = {
+  name: string;
+  category: string;
+  price: string;
+  stock: string;
+  description: string;
+  specsText: string;
+  image: string;
+};
+
+type MonthlyStats = {
+  month: string;
+  income: number;
+  orders: number;
+};
+
+const toProductRow = (product: Product): ProductRow => ({
+  id: product.id,
+  name: product.name,
+  category: product.category,
+  price: product.price,
+  image: product.image,
+  stock: null,
+  description: product.description,
+  specs: product.specs,
+});
+
+const emptyProductForm = (): ProductForm => ({
+  name: "",
+  category: "Adhesivas",
+  price: "0",
+  stock: "0",
+  description: "",
+  specsText: "",
+  image: "",
+});
+
+const parseSpecs = (specsText: string) =>
+  specsText
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+const isRevenueStatus = (status: string) => ADMIN_EMAIL_STATUSES.has(status.toLowerCase());
+
+const monthLabel = (dateString: string) =>
+  new Intl.DateTimeFormat("es-CO", {
+    month: "short",
+    year: "2-digit",
+  }).format(new Date(dateString));
+
+const downloadTextFile = (filename: string, content: string, mimeType: string) => {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+};
+
+const escapeCsvValue = (value: string | number | null | undefined) => {
+  const text = String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+};
+
+const buildCsv = (headers: string[], rows: Array<Array<string | number | null | undefined>>) =>
+  [headers.map(escapeCsvValue).join(","), ...rows.map((row) => row.map(escapeCsvValue).join(","))].join("\n");
 
 const Admin = () => {
-  const [tab, setTab] = useState<"products" | "orders" | "users">("products");
+  const [tab, setTab] = useState<"overview" | "products" | "orders" | "users">("overview");
+
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
       <main className="pt-32 pb-20">
-        <div className="container-shelby">
-          <h1 className="font-display text-3xl mb-6">Panel Admin</h1>
-          <div className="flex gap-2 mb-6">
-            <button onClick={() => setTab("products")} className={`px-4 py-2 rounded ${tab==="products"?"bg-primary text-primary-foreground":"bg-muted"}`}>Productos</button>
-            <button onClick={() => setTab("orders")} className={`px-4 py-2 rounded ${tab==="orders"?"bg-primary text-primary-foreground":"bg-muted"}`}>Ventas</button>
-            <button onClick={() => setTab("users")} className={`px-4 py-2 rounded ${tab==="users"?"bg-primary text-primary-foreground":"bg-muted"}`}>Usuarios</button>
+        <div className="container-shelby space-y-8">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <span className="text-primary text-xs uppercase tracking-[0.3em] font-semibold">Panel de control</span>
+              <h1 className="font-display text-3xl sm:text-4xl text-secondary mt-2">Administra catálogo, ventas y usuarios</h1>
+              <p className="text-muted-foreground mt-2 max-w-2xl">
+                Desde aquí puedes cambiar imágenes, precios, stock, descripciones, revisar ingresos, manejar pedidos y otorgar acceso admin a otros usuarios.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground bg-card border border-border rounded-full px-4 py-2 w-fit">
+              <Sparkles className="h-4 w-4 text-primary" /> Recomendado: mantener bajo stock visible y actualizar pedidos cada día
+            </div>
           </div>
+
+          <AdminOverview />
+
+          <div className="flex flex-wrap gap-2">
+            <TabButton active={tab === "overview"} onClick={() => setTab("overview")} icon={BarChart3} label="Resumen" />
+            <TabButton active={tab === "products"} onClick={() => setTab("products")} icon={Package} label="Productos" />
+            <TabButton active={tab === "orders"} onClick={() => setTab("orders")} icon={ShoppingCart} label="Ventas" />
+            <TabButton active={tab === "users"} onClick={() => setTab("users")} icon={Users} label="Usuarios" />
+          </div>
+
+          {tab === "overview" && <OverviewPanel />}
           {tab === "products" && <ProductsAdmin />}
           {tab === "orders" && <OrdersAdmin />}
           {tab === "users" && <UsersAdmin />}
@@ -32,109 +176,346 @@ const Admin = () => {
   );
 };
 
+function AdminOverview() {
+  return <OverviewPanel compact />;
+}
+
+function OverviewPanel({ compact = false }: { compact?: boolean }) {
+  const { rows: productRows, products: liveProducts, loading: productsLoading } = useProductsCatalog();
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [users, setUsers] = useState<UserRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const load = async () => {
+      const [ordersResult, usersResult] = await Promise.all([
+        supabase.from<OrderRow>("orders").select("id,total,status,created_at,user_id").order("created_at", { ascending: false }),
+        supabase.from<UserRow>("profiles").select("id,name,email,cedula,is_admin"),
+      ]);
+
+      if (ordersResult.error) console.error(ordersResult.error);
+      if (usersResult.error) console.error(usersResult.error);
+
+      setOrders((ordersResult.data as OrderRow[]) || []);
+      setUsers((usersResult.data as UserRow[]) || []);
+      setLoading(false);
+    };
+
+    void load();
+  }, []);
+
+  const productCatalog = productRows.length ? productRows : liveProducts.map(toProductRow);
+  const lowStock = productCatalog.filter((product) => Number(product.stock ?? 0) <= LOW_STOCK_LIMIT).length;
+  const revenue = orders.filter((order) => isRevenueStatus(order.status)).reduce((sum, order) => sum + Number(order.total || 0), 0);
+  const pending = orders.filter((order) => order.status === "pending").length;
+  const adminCount = users.filter((user) => user.is_admin).length;
+  const monthlyStats = useMemo(() => {
+    const grouped = new Map<string, MonthlyStats>();
+
+    orders
+      .filter((order) => isRevenueStatus(order.status))
+      .forEach((order) => {
+        const month = monthLabel(order.created_at);
+        const current = grouped.get(month) || { month, income: 0, orders: 0 };
+        current.income += Number(order.total || 0);
+        current.orders += 1;
+        grouped.set(month, current);
+      });
+
+    return Array.from(grouped.values()).slice(-6);
+  }, [orders]);
+
+  if (loading) {
+    return <div className="text-sm text-muted-foreground">Cargando resumen...</div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard icon={Package} label="Productos" value={String(productCatalog.length)} help={productsLoading ? "Sincronizando catálogo" : "En catálogo"} />
+        <StatCard icon={AlertTriangle} label="Stock bajo" value={String(lowStock)} help="Productos por reponer" />
+        <StatCard icon={ShoppingCart} label="Pedidos" value={String(orders.length)} help={pending ? `${pending} pendientes` : "Sin pendientes"} />
+        <StatCard icon={ShieldCheck} label="Admins" value={String(adminCount)} help="Usuarios con acceso elevado" />
+      </div>
+
+      {!compact && (
+        <div className="grid gap-4 xl:grid-cols-2">
+          <div className="bg-card border border-border rounded-3xl p-6 shadow-soft">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h2 className="font-display text-2xl text-secondary">Resumen de ventas</h2>
+                <p className="text-sm text-muted-foreground">Últimos meses con ingresos confirmados.</p>
+              </div>
+              <div className="text-right">
+                <div className="text-xs uppercase tracking-[0.25em] text-muted-foreground">Ingresos</div>
+                <div className="font-display text-3xl text-primary mt-1">{formatCOP(revenue)}</div>
+              </div>
+            </div>
+            <div className="mt-5 h-[280px]">
+              {monthlyStats.length === 0 ? (
+                <div className="text-sm text-secondary/80">Todavía no hay datos para mostrar.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={monthlyStats}>
+                    <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.2} />
+                    <XAxis dataKey="month" />
+                    <YAxis />
+                    <Tooltip formatter={(value) => (typeof value === "number" ? formatCOP(value) : value)} />
+                    <Legend />
+                    <Bar dataKey="income" name="Ingresos" fill="#d97706" radius={[8, 8, 0, 0]} />
+                    <Bar dataKey="orders" name="Pedidos" fill="#1d4ed8" radius={[8, 8, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-card border border-border rounded-3xl p-6 shadow-soft">
+            <h2 className="font-display text-2xl text-secondary">Accesos rápidos</h2>
+            <div className="mt-4 grid gap-3">
+              <QuickAction title="Productos" description="Editar catálogo, stock e imágenes" icon={Package} />
+              <QuickAction title="Usuarios" description="Dar admin por cédula o quitar permisos" icon={Users} />
+              <QuickAction title="Ventas" description="Revisar pedidos y exportar datos" icon={BarChart3} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProductsAdmin() {
-  type ProductFull = { id: string; name: string; category: string; price: number; image: string | null; stock?: number; description?: string; specs?: string[] };
-  const [rows, setRows] = useState<ProductFull[]>([]);
-  const [loading, setLoading] = useState(false);
+  const { rows, products, loading, refreshProducts } = useProductsCatalog();
   const [editing, setEditing] = useState<string | null>(null);
-  const [form, setForm] = useState<Partial<ProductFull>>({});
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState<ProductForm>(emptyProductForm());
+  const catalogRows = rows.length ? rows : products.map(toProductRow);
 
-  const fetch = async () => {
-    setLoading(true);
-    const { data, error } = await supabase.from<ProductFull>('products').select('id,name,category,price,image,stock,description,specs').order('created_at', { ascending: false });
-    if (error) console.error(error);
-    setRows((data as ProductFull[]) || []);
-    setLoading(false);
+  const startEdit = (product: ProductRow) => {
+    setEditing(product.id);
+    setForm({
+      name: product.name,
+      category: product.category,
+      price: String(product.price ?? 0),
+      stock: String(product.stock ?? 0),
+      description: product.description || "",
+      specsText: (product.specs || []).join(", "),
+      image: product.image || "",
+    });
   };
-  useEffect(() => { fetch(); }, []);
 
-  const startEdit = (p: ProductFull) => { setEditing(p.id); setForm({ ...p, specs: p.specs || [] }); };
-  const cancelEdit = () => { setEditing(null); setForm({}); };
+  const cancelEdit = () => {
+    setEditing(null);
+    setForm(emptyProductForm());
+  };
 
-  const handleFile = async (file?: File) => {
-    if (!file || !editing) return null;
-    try {
-      const id = editing;
-      const ext = file.name.split('.').pop();
-      const path = `products/${id}-${Date.now()}.${ext}`;
-      const { error: upErr } = await supabase.storage.from('product-images').upload(path, file, { upsert: true });
-      if (upErr) throw upErr;
-      const { data } = supabase.storage.from('product-images').getPublicUrl(path);
-      return data.publicUrl;
-    } catch (err) { console.error(err); return null; }
+  const uploadImage = async (file: File) => {
+    if (!editing) return;
+    const extension = file.name.split(".").pop() || "jpg";
+    const path = `products/${editing}-${Date.now()}.${extension}`;
+    const { error: uploadError } = await supabase.storage.from("product-images").upload(path, file, { upsert: true });
+    if (uploadError) throw uploadError;
+    const { data } = supabase.storage.from("product-images").getPublicUrl(path);
+    setForm((current) => ({ ...current, image: data.publicUrl }));
   };
 
   const save = async () => {
     if (!editing) return;
-    const toSave: any = { name: form.name, category: form.category, price: form.price, stock: form.stock, description: form.description };
-    if (form.specs) toSave.specs = form.specs;
-    // image handled separately
-    if (form.image && typeof form.image !== 'string') {
-      // image is a File object stored temporarily
-    }
-    await supabase.from('products').update(toSave).eq('id', editing);
-    cancelEdit();
-    fetch();
-  };
+    setSaving(true);
+    const payload = {
+      name: form.name.trim(),
+      category: form.category.trim(),
+      price: Math.max(0, Number(form.price) || 0),
+      stock: Math.max(0, Number(form.stock) || 0),
+      description: form.description.trim(),
+      specs: parseSpecs(form.specsText),
+      image: form.image.trim() || null,
+    };
 
-  const del = async (id: string) => { if (!confirm('Eliminar producto?')) return; await supabase.from('products').delete().eq('id', id); fetch(); };
+    const { error } = await supabase.from("products").upsert({ id: editing, ...payload }, { onConflict: "id" });
+    if (error) {
+      console.error(error);
+      toast.error("No se pudo guardar el producto");
+      setSaving(false);
+      return;
+    }
+
+    await refreshProducts();
+    cancelEdit();
+    setSaving(false);
+  };
 
   const createNew = async () => {
-    const newId = (crypto as any).randomUUID ? (crypto as any).randomUUID() : `prod-${Date.now()}`;
-    const name = prompt('Nombre del producto');
+    const newId = crypto.randomUUID();
+    const name = prompt("Nombre del producto");
     if (!name) return;
-    await supabase.from('products').insert([{ id: newId, name, price: 0, category: 'Adhesivas', stock: 0 }]);
-    fetch();
-    startEdit({ id: newId, name, category: 'Adhesivas', price: 0, image: null, stock: 0, description: '', specs: [] });
+
+    const { error } = await supabase.from("products").insert([
+      {
+        id: newId,
+        name,
+        category: "Adhesivas",
+        price: 0,
+        stock: 0,
+        description: "",
+        image: null,
+        specs: [],
+      },
+    ]);
+
+    if (error) {
+      console.error(error);
+      toast.error("No se pudo crear el producto");
+      return;
+    }
+
+    await refreshProducts();
+    startEdit({
+      id: newId,
+      name,
+      category: "Adhesivas",
+      price: 0,
+      image: null,
+      stock: 0,
+      description: "",
+      specs: [],
+    });
   };
 
-  const uploadAndSaveImage = async (file: File) => {
-    if (!editing) return;
-    const url = await handleFile(file);
-    if (url) {
-      await supabase.from('products').update({ image: url }).eq('id', editing);
-      fetch();
+  const remove = async (id: string) => {
+    if (!confirm("Eliminar producto?")) return;
+    const { error } = await supabase.from("products").delete().eq("id", id);
+    if (error) {
+      console.error(error);
+      toast.error("No se pudo eliminar el producto");
+      return;
     }
+    await refreshProducts();
   };
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="font-semibold">Productos</h2>
-        <Button onClick={createNew}>Nuevo producto</Button>
+    <section className="space-y-6">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="font-display text-2xl text-secondary">Productos</h2>
+          <p className="text-sm text-muted-foreground">Edita imágenes, precios, stock, descripciones y especificaciones.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button onClick={refreshProducts} variant="outline" className="gap-2">
+            <RefreshCcw className="h-4 w-4" /> Refrescar
+          </Button>
+          <Button onClick={createNew} className="gap-2">
+            <Plus className="h-4 w-4" /> Nuevo producto
+          </Button>
+        </div>
       </div>
-      {loading ? <div>Cargando...</div> : (
-        <div className="grid gap-3">
-          {rows.map((r) => (
-            <div key={r.id} className="bg-card p-3 rounded">
-              <div className="flex items-start gap-4">
-                <img src={r.image || '/placeholder.png'} alt={r.name} className="h-20 w-20 rounded object-cover bg-muted flex-shrink-0" />
-                <div className="flex-1">
-                  <div className="font-semibold text-lg">{r.name}</div>
-                  <div className="text-xs text-muted-foreground">{r.category} · {formatCOP(r.price)} · Stock: {r.stock ?? 0}</div>
-                  <div className="mt-2 text-sm text-secondary">{r.description}</div>
-                </div>
-                <div className="flex flex-col gap-2">
-                  <div className="flex gap-2">
-                    <Button variant="ghost" onClick={() => startEdit(r)}>Editar</Button>
-                    <Button variant="destructive" onClick={() => del(r.id)}>Eliminar</Button>
+
+      {loading ? (
+        <div className="text-sm text-muted-foreground">Cargando productos...</div>
+      ) : (
+        <div className="grid gap-4">
+          {catalogRows.map((product) => (
+            <div key={product.id} className="bg-card border border-border rounded-3xl p-4 shadow-soft">
+              <div className="flex flex-col lg:flex-row gap-4 lg:items-center">
+                <img
+                  src={product.image || "/placeholder.png"}
+                  alt={product.name}
+                  className="h-24 w-24 rounded-2xl object-cover bg-muted flex-shrink-0"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-display text-xl text-secondary truncate">{product.name}</h3>
+                    {Number(product.stock ?? 0) <= LOW_STOCK_LIMIT && (
+                      <span className="text-xs font-semibold text-destructive bg-destructive/10 px-2 py-1 rounded-full">Stock crítico</span>
+                    )}
                   </div>
+                  <div className="text-sm text-muted-foreground mt-1">
+                    {product.category} · {formatCOP(product.price)} · Stock: {product.stock ?? 0}
+                  </div>
+                  {product.description && <p className="text-sm text-secondary/80 mt-2 line-clamp-2">{product.description}</p>}
+                  {product.specs?.length ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {product.specs.map((spec) => (
+                        <span key={spec} className="text-xs px-2 py-1 rounded-full bg-accent text-secondary">
+                          {spec}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="flex flex-wrap gap-2 lg:justify-end">
+                  <Button variant="outline" onClick={() => startEdit(product)} className="gap-2">
+                    <ImagePlus className="h-4 w-4" /> Editar
+                  </Button>
+                  <Button variant="destructive" onClick={() => remove(product.id)} className="gap-2">
+                    <Trash2 className="h-4 w-4" /> Eliminar
+                  </Button>
                 </div>
               </div>
-              {editing === r.id && (
-                <div className="mt-4 bg-background border border-border p-4 rounded">
-                  <div className="grid sm:grid-cols-2 gap-3">
-                    <input className="px-3 py-2 rounded border" value={form.name || ''} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Nombre" />
-                    <input className="px-3 py-2 rounded border" value={form.category || ''} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} placeholder="Categoría" />
-                    <input type="number" className="px-3 py-2 rounded border" value={String(form.price ?? '')} onChange={(e) => setForm((f) => ({ ...f, price: Number(e.target.value) }))} placeholder="Precio" />
-                    <input type="number" className="px-3 py-2 rounded border" value={String(form.stock ?? '')} onChange={(e) => setForm((f) => ({ ...f, stock: Number(e.target.value) }))} placeholder="Stock" />
-                    <textarea className="col-span-2 px-3 py-2 rounded border" value={form.description || ''} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="Descripción" />
-                    <input className="col-span-2 px-3 py-2 rounded border" value={(form.specs || []).join(', ')} onChange={(e) => setForm((f) => ({ ...f, specs: e.target.value.split(',').map(s => s.trim()) }))} placeholder="Specs (separadas por coma)" />
-                    <div className="col-span-2 flex items-center gap-3">
-                      <input type="file" accept="image/*" onChange={async (e) => { const file = e.target.files?.[0]; if (file) await uploadAndSaveImage(file); }} />
-                      <Button onClick={save}>Guardar cambios</Button>
-                      <Button variant="ghost" onClick={cancelEdit}>Cancelar</Button>
+
+              {editing === product.id && (
+                <div className="mt-4 bg-background border border-border rounded-2xl p-4">
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <Field label="Nombre" value={form.name} onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
+                    <Field label="Categoría" value={form.category} onChange={(value) => setForm((current) => ({ ...current, category: value }))} />
+                    <Field label="Precio / costo" type="number" value={form.price} onChange={(value) => setForm((current) => ({ ...current, price: value }))} />
+                    <Field label="Stock" type="number" value={form.stock} onChange={(value) => setForm((current) => ({ ...current, stock: value }))} />
+                    <div className="md:col-span-2">
+                      <Field
+                        label="Imagen URL"
+                        value={form.image}
+                        onChange={(value) => setForm((current) => ({ ...current, image: value }))}
+                        placeholder="Pega un enlace o sube un archivo"
+                      />
                     </div>
+                    <div className="md:col-span-2">
+                      <label className="text-sm font-medium text-secondary block mb-1.5">Subir imagen</label>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-border bg-background hover:bg-accent cursor-pointer">
+                          <Upload className="h-4 w-4" /> Subir archivo
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={async (event) => {
+                              const file = event.target.files?.[0];
+                              if (!file) return;
+                              try {
+                                await uploadImage(file);
+                              } catch (error) {
+                                console.error(error);
+                              }
+                            }}
+                          />
+                        </label>
+                        {form.image && <span className="text-xs text-muted-foreground break-all">{form.image}</span>}
+                      </div>
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="text-sm font-medium text-secondary block mb-1.5">Descripción</label>
+                      <textarea
+                        value={form.description}
+                        onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+                        rows={4}
+                        className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth resize-none"
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <Field
+                        label="Especificaciones"
+                        value={form.specsText}
+                        onChange={(value) => setForm((current) => ({ ...current, specsText: value }))}
+                        placeholder="Bluetooth, USB-C, batería recargable"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 mt-4">
+                    <Button onClick={save} disabled={saving} className="gap-2">
+                      <Sparkles className="h-4 w-4" /> {saving ? "Guardando..." : "Guardar cambios"}
+                    </Button>
+                    <Button variant="outline" onClick={cancelEdit}>
+                      Cancelar
+                    </Button>
                   </div>
                 </div>
               )}
@@ -142,60 +523,366 @@ function ProductsAdmin() {
           ))}
         </div>
       )}
-    </div>
+    </section>
   );
 }
-
 function OrdersAdmin() {
   const [rows, setRows] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(false);
-  useEffect(() => { (async () => { setLoading(true); const { data, error } = await supabase.from<OrderRow>('orders').select('id,total,status,created_at').order('created_at', { ascending: false }); if (error) console.error(error); setRows((data as OrderRow[]) || []); setLoading(false); })(); }, []);
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  const fetchOrders = async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from<OrderRow>("orders")
+      .select("id,total,status,created_at,user_id")
+      .order("created_at", { ascending: false });
+    if (error) console.error(error);
+    setRows((data as OrderRow[]) || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchOrders();
+  }, []);
+
+  const summary = useMemo(() => {
+    const paid = rows.filter((order) => isRevenueStatus(order.status));
+    const pending = rows.filter((order) => order.status === "pending");
+    return {
+      total: rows.length,
+      income: paid.reduce((sum, order) => sum + Number(order.total || 0), 0),
+      pending: pending.length,
+      average: rows.length ? rows.reduce((sum, order) => sum + Number(order.total || 0), 0) / rows.length : 0,
+    };
+  }, [rows]);
+
+  const updateStatus = async (id: string, status: string) => {
+    setSavingId(id);
+    const { error } = await supabase.from("orders").update({ status }).eq("id", id);
+    if (error) {
+      console.error(error);
+      setSavingId(null);
+      return;
+    }
+    setRows((current) => current.map((order) => (order.id === id ? { ...order, status } : order)));
+    setSavingId(null);
+  };
+
   return (
-    <div>
-      <h2 className="font-semibold mb-3">Ventas</h2>
-      {loading ? <div>Cargando...</div> : (
-        <div className="grid gap-2">
-          {rows.map((r) => (
-            <div key={r.id} className="bg-card p-3 rounded flex items-center justify-between">
-              <div>
-                <div className="font-semibold">Orden {r.id}</div>
-                <div className="text-xs text-muted-foreground">{new Date(r.created_at).toLocaleString()} · {r.status}</div>
-              </div>
-              <div className="font-semibold">{formatCOP(r.total)}</div>
-            </div>
-          ))}
+    <section className="space-y-6">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard icon={ShoppingCart} label="Pedidos" value={String(summary.total)} help="Pedidos registrados" />
+        <StatCard icon={BarChart3} label="Ingresos" value={formatCOP(summary.income)} help="Solo pedidos cobrados" />
+        <StatCard icon={RefreshCcw} label="Pendientes" value={String(summary.pending)} help="Pedidos por revisar" />
+        <StatCard icon={Sparkles} label="Promedio" value={formatCOP(summary.average)} help="Ticket promedio" />
+      </div>
+
+      <div className="bg-card border border-border rounded-3xl p-6 shadow-soft">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <h2 className="font-display text-2xl text-secondary">Ventas</h2>
+            <p className="text-sm text-muted-foreground">Cambia el estado de cada pedido y revisa los ingresos confirmados.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              onClick={() => downloadTextFile(`ventas-${new Date().toISOString().slice(0, 10)}.csv`, buildCsv(["ID", "Total", "Estado", "Fecha", "Usuario"], rows.map((order) => [order.id, order.total, order.status, order.created_at, order.user_id || ""])), "text/csv;charset=utf-8;")}
+              className="gap-2"
+            >
+              CSV ventas
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => downloadTextFile(`ventas-${new Date().toISOString().slice(0, 10)}.xls`, `\n                <html><head><meta charset=\"utf-8\" /></head><body><table border=\"1\"><thead><tr><th>ID</th><th>Total</th><th>Estado</th><th>Fecha</th><th>Usuario</th></tr></thead><tbody>${rows
+                .map((order) => `<tr><td>${order.id}</td><td>${order.total}</td><td>${order.status}</td><td>${order.created_at}</td><td>${order.user_id || ""}</td></tr>`)
+                .join("")}</tbody></table></body></html>`, "application/vnd.ms-excel;charset=utf-8;")}
+              className="gap-2"
+            >
+              Excel ventas
+            </Button>
+            <Button onClick={fetchOrders} variant="outline" className="gap-2">
+              <RefreshCcw className="h-4 w-4" /> Refrescar
+            </Button>
+          </div>
         </div>
-      )}
-    </div>
+
+        <div className="mt-4 space-y-3">
+          {loading ? (
+            <div className="text-sm text-muted-foreground">Cargando pedidos...</div>
+          ) : rows.length === 0 ? (
+            <div className="text-sm text-secondary/80">Aún no hay ventas registradas.</div>
+          ) : (
+            rows.map((order) => (
+              <div key={order.id} className="rounded-2xl border border-border p-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <div className="font-semibold text-secondary">Orden {order.id}</div>
+                  <div className="text-xs text-muted-foreground">{new Date(order.created_at).toLocaleString()} · Usuario: {order.user_id || "invitado"}</div>
+                </div>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                  <select
+                    value={order.status}
+                    onChange={(event) => updateStatus(order.id, event.target.value)}
+                    className="px-3 py-2 rounded-xl border border-border bg-background text-sm"
+                  >
+                    {ORDER_STATUS_OPTIONS.map((status) => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="font-display text-xl text-primary min-w-32 text-right">{formatCOP(order.total)}</div>
+                  {savingId === order.id ? <span className="text-xs text-muted-foreground">Guardando...</span> : null}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
 function UsersAdmin() {
   const [rows, setRows] = useState<UserRow[]>([]);
-  useEffect(() => { (async () => { const { data, error } = await supabase.from<UserRow>('profiles').select('id,name,email,cedula,is_admin'); if (error) console.error(error); setRows((data as UserRow[]) || []); })(); }, []);
+  const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState("");
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [cedulaToPromote, setCedulaToPromote] = useState("");
+  const [promoting, setPromoting] = useState(false);
 
-  const toggleAdmin = async (id: string, current?: boolean) => {
-    await supabase.from('profiles').update({ is_admin: !current }).eq('id', id);
-    setRows((prev) => prev.map((p) => p.id === id ? { ...p, is_admin: !current } : p));
+  const fetchUsers = async () => {
+    setLoading(true);
+    const { data, error } = await supabase.from<UserRow>("profiles").select("id,name,email,cedula,is_admin");
+    if (error) console.error(error);
+    setRows((data as UserRow[]) || []);
+    setLoading(false);
   };
 
+  useEffect(() => {
+    fetchUsers();
+  }, []);
+
+  const filteredUsers = useMemo(
+    () =>
+      rows.filter((user) => {
+        const needle = query.trim().toLowerCase();
+        if (!needle) return true;
+        return [user.name, user.email, user.cedula || ""].some((value) => value.toLowerCase().includes(needle));
+      }),
+    [rows, query],
+  );
+
+  const toggleAdmin = async (id: string, current?: boolean) => {
+    setSavingId(id);
+    const { error } = await supabase.from("profiles").update({ is_admin: !current }).eq("id", id);
+    if (error) {
+      console.error(error);
+      setSavingId(null);
+      return;
+    }
+    setRows((currentRows) => currentRows.map((user) => (user.id === id ? { ...user, is_admin: !current } : user)));
+    setSavingId(null);
+  };
+
+  const grantAdminByCedula = async () => {
+    const cedula = cedulaToPromote.trim();
+    if (!cedula) {
+      toast.error("Ingresa una cédula");
+      return;
+    }
+
+    setPromoting(true);
+    const { data: profile, error } = await supabase
+      .from<UserRow>("profiles")
+      .select("id,name,email,cedula,is_admin")
+      .eq("cedula", cedula)
+      .maybeSingle();
+
+    if (error) {
+      console.error(error);
+      toast.error("No se pudo buscar la cédula");
+      setPromoting(false);
+      return;
+    }
+
+    if (!profile) {
+      toast.error("No existe un perfil con esa cédula");
+      setPromoting(false);
+      return;
+    }
+
+    const { error: updateError } = await supabase.from("profiles").update({ is_admin: true }).eq("id", profile.id);
+    if (updateError) {
+      console.error(updateError);
+      toast.error("No se pudo dar acceso admin");
+      setPromoting(false);
+      return;
+    }
+
+    setRows((currentRows) => currentRows.map((user) => (user.id === profile.id ? { ...user, is_admin: true } : user)));
+    setCedulaToPromote("");
+    toast.success(`Ahora ${profile.name || cedula} tiene acceso admin`);
+    setPromoting(false);
+  };
+
+  const adminCount = rows.filter((user) => user.is_admin).length;
+
   return (
-    <div>
-      <h2 className="font-semibold mb-3">Usuarios</h2>
-      <div className="grid gap-2">
-        {rows.map((u) => (
-          <div key={u.id} className="bg-card p-3 rounded flex items-center justify-between">
-            <div>
-              <div className="font-semibold">{u.name} {u.cedula && <span className="text-xs text-muted-foreground">· {u.cedula}</span>}</div>
-              <div className="text-xs text-muted-foreground">{u.email}</div>
+    <section className="space-y-6">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <StatCard icon={Users} label="Usuarios" value={String(rows.length)} help="Usuarios cargados" />
+        <StatCard icon={ShieldCheck} label="Administradores" value={String(adminCount)} help="Acceso elevado" />
+        <StatCard icon={Search} label="Filtrados" value={String(filteredUsers.length)} help="Según búsqueda" />
+      </div>
+
+      <div className="bg-card border border-border rounded-3xl p-6 shadow-soft">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <h2 className="font-display text-2xl text-secondary">Usuarios</h2>
+            <p className="text-sm text-muted-foreground">Busca por nombre, correo o cédula y asigna acceso admin a otros usuarios confiables.</p>
+          </div>
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                value={cedulaToPromote}
+                onChange={(event) => setCedulaToPromote(event.target.value)}
+                placeholder="Cédula para dar admin"
+                className="px-3 py-2 rounded-xl border border-border bg-background min-w-64"
+              />
+              <Button onClick={grantAdminByCedula} disabled={promoting} className="gap-2">
+                <ShieldCheck className="h-4 w-4" /> {promoting ? "Otorgando..." : "Dar admin por cédula"}
+              </Button>
             </div>
-            <div className="flex gap-2">
-              <Button onClick={() => toggleAdmin(u.id, u.is_admin)}>{u.is_admin ? 'Quitar admin' : 'Dar admin'}</Button>
+            <div className="flex items-center gap-2 flex-wrap">
+            <Button
+              variant="outline"
+              onClick={() => downloadTextFile(`usuarios-${new Date().toISOString().slice(0, 10)}.csv`, buildCsv(["ID", "Nombre", "Email", "Cedula", "Admin"], rows.map((user) => [user.id, user.name, user.email, user.cedula || "", user.is_admin ? "SI" : "NO"])), "text/csv;charset=utf-8;")}
+              className="gap-2"
+            >
+              CSV usuarios
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => downloadTextFile(`usuarios-${new Date().toISOString().slice(0, 10)}.xls`, `\n                <html><head><meta charset=\"utf-8\" /></head><body><table border=\"1\"><thead><tr><th>ID</th><th>Nombre</th><th>Email</th><th>Cedula</th><th>Admin</th></tr></thead><tbody>${rows
+                .map((user) => `<tr><td>${user.id}</td><td>${user.name}</td><td>${user.email}</td><td>${user.cedula || ""}</td><td>${user.is_admin ? "SI" : "NO"}</td></tr>`)
+                .join("")}</tbody></table></body></html>`, "application/vnd.ms-excel;charset=utf-8;")}
+              className="gap-2"
+            >
+              Excel usuarios
+            </Button>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Buscar usuario"
+                className="pl-10 pr-4 py-2 rounded-xl border border-border bg-background min-w-64"
+              />
+            </div>
+            <Button onClick={fetchUsers} variant="outline" className="gap-2">
+              <RefreshCcw className="h-4 w-4" /> Refrescar
+            </Button>
             </div>
           </div>
-        ))}
+        </div>
+
+        <div className="mt-4 space-y-3">
+          {loading ? (
+            <div className="text-sm text-muted-foreground">Cargando usuarios...</div>
+          ) : filteredUsers.length === 0 ? (
+            <div className="text-sm text-secondary/80">No se encontraron usuarios con ese filtro.</div>
+          ) : (
+            filteredUsers.map((user) => (
+              <div key={user.id} className="rounded-2xl border border-border p-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <div className="font-semibold text-secondary flex flex-wrap items-center gap-2">
+                    {user.name || "Sin nombre"}
+                    {user.is_admin && <span className="text-[11px] font-semibold text-primary bg-primary/10 px-2 py-1 rounded-full">Admin</span>}
+                    {user.cedula && <span className="text-xs text-muted-foreground">· {user.cedula}</span>}
+                  </div>
+                  <div className="text-xs text-muted-foreground">{user.email}</div>
+                </div>
+                <Button onClick={() => toggleAdmin(user.id, user.is_admin)} disabled={savingId === user.id} className="gap-2">
+                  <ShieldCheck className="h-4 w-4" /> {user.is_admin ? "Quitar admin" : "Dar admin"}
+                </Button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function TabButton({ active, onClick, icon: Icon, label }: { active: boolean; onClick: () => void; icon: React.ComponentType<{ className?: string }>; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`inline-flex items-center gap-2 px-4 py-2 rounded-full border text-sm transition-smooth ${active ? "bg-primary text-primary-foreground border-primary shadow-soft" : "bg-card text-secondary border-border hover:border-primary/40"}`}
+    >
+      <Icon className="h-4 w-4" /> {label}
+    </button>
+  );
+}
+
+function StatCard({ icon: Icon, label, value, help }: { icon: React.ComponentType<{ className?: string }>; label: string; value: string; help: string }) {
+  return (
+    <div className="bg-card border border-border rounded-3xl p-5 shadow-soft">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs uppercase tracking-[0.25em] text-muted-foreground">{label}</div>
+          <div className="font-display text-3xl text-secondary mt-2">{value}</div>
+          <div className="text-xs text-muted-foreground mt-1">{help}</div>
+        </div>
+        <div className="h-12 w-12 rounded-2xl bg-primary/10 flex items-center justify-center text-primary">
+          <Icon className="h-5 w-5" />
+        </div>
       </div>
     </div>
+  );
+}
+
+function QuickAction({ title, description, icon: Icon }: { title: string; description: string; icon: React.ComponentType<{ className?: string }> }) {
+  return (
+    <div className="rounded-2xl border border-border bg-background p-4">
+      <div className="flex items-center gap-3">
+        <div className="h-10 w-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+          <Icon className="h-4 w-4" />
+        </div>
+        <div>
+          <div className="font-semibold text-secondary">{title}</div>
+          <div className="text-xs text-muted-foreground mt-0.5">{description}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+  placeholder?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="text-sm font-medium text-secondary block mb-1.5">{label}</span>
+      <input
+        type={type}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth"
+      />
+    </label>
   );
 }
 

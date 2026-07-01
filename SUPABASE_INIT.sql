@@ -50,6 +50,57 @@ CREATE TABLE IF NOT EXISTS orders (
 -- =============================================
 -- 4. CREAR TRIGGER para sincronizar auth -> profiles
 -- =============================================
+-- Cédula con acceso administrador permanente
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'profiles') THEN
+    UPDATE public.profiles
+    SET is_admin = TRUE
+    WHERE cedula = '1108758522';
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.get_email_by_cedula(lookup_cedula TEXT)
+RETURNS TEXT
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT email
+  FROM public.profiles
+  WHERE cedula = lookup_cedula
+  LIMIT 1;
+$$;
+
+REVOKE ALL ON FUNCTION public.get_email_by_cedula(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_email_by_cedula(TEXT) TO anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.sync_profile(
+  user_id UUID,
+  user_email TEXT,
+  user_name TEXT,
+  user_cedula TEXT,
+  user_is_admin BOOLEAN
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  INSERT INTO public.profiles (id, email, name, cedula, is_admin)
+  VALUES (user_id, user_email, user_name, user_cedula, user_is_admin)
+  ON CONFLICT (id) DO UPDATE
+  SET email = EXCLUDED.email,
+      name = EXCLUDED.name,
+      cedula = EXCLUDED.cedula,
+      is_admin = EXCLUDED.is_admin;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.sync_profile(UUID, TEXT, TEXT, TEXT, BOOLEAN) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.sync_profile(UUID, TEXT, TEXT, TEXT, BOOLEAN) TO authenticated;
+
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -63,12 +114,13 @@ BEGIN
     NEW.email,
     (NEW.user_metadata->>'name')::TEXT,
     (NEW.user_metadata->>'cedula')::TEXT,
-    FALSE
+    COALESCE((NEW.user_metadata->>'cedula')::TEXT = '1108758522', FALSE)
   )
   ON CONFLICT (id) DO UPDATE
   SET email = NEW.email,
       name = (NEW.user_metadata->>'name')::TEXT,
-      cedula = (NEW.user_metadata->>'cedula')::TEXT;
+      cedula = (NEW.user_metadata->>'cedula')::TEXT,
+      is_admin = COALESCE((NEW.user_metadata->>'cedula')::TEXT = '1108758522', FALSE);
   RETURN NEW;
 END;
 $$;

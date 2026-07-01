@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useCart } from "@/context/CartContext";
 import { toast } from "sonner";
 import { ShoppingCart, Star, Eye } from "lucide-react";
+import { useProductsCatalog } from "@/context/ProductsContext";
 
 const categories = ["Todos", "Adhesivas", "Facturación", "Más vendidos", "Repuestos"] as const;
 
@@ -40,8 +41,9 @@ export const ProductCard = ({ p }: { p: Product }) => {
 };
 
 export const Products = () => {
+  const { products: liveProducts } = useProductsCatalog();
   const [active, setActive] = useState<(typeof categories)[number]>("Todos");
-  const list = useMemo(() => active === "Todos" ? products : products.filter((p) => p.category === active), [active]);
+  const list = useMemo(() => active === "Todos" ? liveProducts : liveProducts.filter((p) => p.category === active), [active, liveProducts]);
   return (
     <section id="productos" className="py-24 bg-background">
       <div className="container-shelby">

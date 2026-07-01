@@ -9,13 +9,13 @@ import heroImg from "@/assets/hero-warehouse.jpg";
 import logo from "@/assets/products/logo.png";
 
 const loginSchema = z.object({
-  cedula: z.string().trim().min(5, "Ingresa tu cédula").max(20),
+  cedula: z.string().trim().min(6, "Ingresa tu cédula").max(20),
   password: z.string().min(6, "Mínimo 6 caracteres").max(72),
 });
 const registerSchema = z.object({
   name: z.string().trim().min(2, "Nombre requerido").max(80),
-  cedula: z.string().trim().min(5, "Cédula requerida").max(20),
-  email: z.string().email("Email válido").max(255),
+  cedula: z.string().trim().min(6, "Ingresa tu cédula").max(20),
+  email: z.string().trim().email("Ingresa un correo válido").max(255),
   password: z.string().min(6, "Mínimo 6 caracteres").max(72),
 });
 
@@ -35,7 +35,6 @@ const Login = () => {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setErrors({});
-
     const schema = mode === "login" ? loginSchema : registerSchema;
     const parsed = schema.safeParse(mode === "login" ? { cedula, password } : { name, cedula, email, password });
     if (!parsed.success) {
@@ -44,18 +43,16 @@ const Login = () => {
       setErrors(fe);
       return;
     }
-
     setLoading(true);
     try {
       if (mode === "login") {
         await login(cedula, password);
         toast.success("¡Bienvenido de nuevo!");
-        navigate(redirect);
       } else {
         await register(name, cedula, email, password);
-        toast.success("Cuenta creada", { description: "Ya puedes iniciar sesión." });
-        navigate(redirect);
+        toast.success("¡Cuenta creada!");
       }
+      navigate(redirect);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "No pudimos completar la acción");
     } finally {
@@ -90,58 +87,46 @@ const Login = () => {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {mode === "register" && (
-              <>
-                <div>
-                  <label className="text-sm font-medium text-secondary block mb-1.5">Nombre completo</label>
-                  <div className="relative">
-                    <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Tu nombre"
-                      className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="name" />
-                  </div>
-                  {errors.name && <p className="text-xs text-destructive mt-1">{errors.name}</p>}
+              <div>
+                <label className="text-sm font-medium text-secondary block mb-1.5">Nombre completo</label>
+                <div className="relative">
+                  <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Tu nombre"
+                    className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="name" />
                 </div>
-                <div>
-                  <label className="text-sm font-medium text-secondary block mb-1.5">Cédula</label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <input type="text" value={cedula} onChange={(e) => setCedula(e.target.value)} placeholder="12345678"
-                      className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="off" />
-                  </div>
-                  {errors.cedula && <p className="text-xs text-destructive mt-1">{errors.cedula}</p>}
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-secondary block mb-1.5">Correo electrónico</label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@correo.com"
-                      className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="email" />
-                  </div>
-                  {errors.email && <p className="text-xs text-destructive mt-1">{errors.email}</p>}
-                </div>
-              </>
+                {errors.name && <p className="text-xs text-destructive mt-1">{errors.name}</p>}
+              </div>
             )}
-
+            <div>
+              <label className="text-sm font-medium text-secondary block mb-1.5">Cédula</label>
+              <div className="relative">
+                <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <input type="text" value={cedula} onChange={(e) => setCedula(e.target.value)} placeholder="Tu cédula"
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="username" />
+              </div>
+              {errors.cedula && <p className="text-xs text-destructive mt-1">{errors.cedula}</p>}
+            </div>
+            {mode === "register" && (
+              <div>
+                <label className="text-sm font-medium text-secondary block mb-1.5">Correo electrónico</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@correo.com"
+                    className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="email" />
+                </div>
+                {errors.email && <p className="text-xs text-destructive mt-1">{errors.email}</p>}
+              </div>
+            )}
             <div>
               <label className="text-sm font-medium text-secondary block mb-1.5">Contraseña</label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
-                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete={mode === "login" ? "current-password" : "new-password"} />
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth"
+                  autoComplete={mode === "login" ? "current-password" : "new-password"} />
               </div>
               {errors.password && <p className="text-xs text-destructive mt-1">{errors.password}</p>}
             </div>
-
-            {mode === "login" && (
-              <div>
-                <label className="text-sm font-medium text-secondary block mb-1.5">Cédula</label>
-                <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <input type="text" value={cedula} onChange={(e) => setCedula(e.target.value)} placeholder="12345678"
-                    className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="off" />
-                </div>
-                {errors.cedula && <p className="text-xs text-destructive mt-1">{errors.cedula}</p>}
-              </div>
-            )}
 
             <Button type="submit" disabled={loading} className="w-full h-12 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft">
               {loading ? (

@@ -8,16 +8,18 @@ import { getProductById, formatCOP, products } from "@/data/products";
 import { useCart } from "@/context/CartContext";
 import { toast } from "sonner";
 import { ShoppingCart, Check, Star, Minus, Plus, ArrowLeft, MessageCircle } from "lucide-react";
+import { useProductsCatalog } from "@/context/ProductsContext";
 
 const ProductDetail = () => {
   const { productId } = useParams();
-  const product = getProductById(productId || "");
+  const { products: liveProducts } = useProductsCatalog();
+  const product = liveProducts.find((item) => item.id === (productId || ""));
   const { add } = useCart();
   const [qty, setQty] = useState(1);
   const [adding, setAdding] = useState(false);
 
   if (!product) return <Navigate to="/products" replace />;
-  const related = products.filter((p) => p.category === product.category && p.id !== product.id).slice(0, 3);
+  const related = liveProducts.filter((p) => p.category === product.category && p.id !== product.id).slice(0, 3);
 
   const handleAdd = async () => {
     setAdding(true);

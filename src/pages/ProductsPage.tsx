@@ -3,18 +3,19 @@ import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
 import { WhatsAppButton } from "@/components/shelby/WhatsAppButton";
 import { ProductCard } from "@/components/shelby/Products";
-import { products } from "@/data/products";
+import { useProductsCatalog } from "@/context/ProductsContext";
 
 const categories = ["Todos", "Adhesivas", "Facturación", "Más vendidos", "Repuestos"] as const;
 
 const ProductsPage = () => {
+  const { products } = useProductsCatalog();
   const [active, setActive] = useState<(typeof categories)[number]>("Todos");
   const [query, setQuery] = useState("");
   const list = useMemo(() => {
     let l = active === "Todos" ? products : products.filter((p) => p.category === active);
     if (query.trim()) { const q = query.toLowerCase(); l = l.filter((p) => p.name.toLowerCase().includes(q)); }
     return l;
-  }, [active, query]);
+  }, [active, query, products]);
 
   return (
     <div className="min-h-screen bg-background">

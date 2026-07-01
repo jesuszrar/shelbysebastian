@@ -282,7 +282,7 @@ function PaymentOption({ value, selected, onSelect, icon: Icon, title, descripti
 }) {
   const active = selected === value;
   return (
-    <label className={`relative cursor-pointer flex items-start gap-4 border rounded-xl p-4 transition-smooth ${active ? "border-primary bg-accent shadow-soft" : "border-border hover:border-primary/40"}`}>
+    <label className={`relative cursor-pointer flex items-start gap-4 border rounded-xl p-4 transition-smooth ${active ? "border-primary/50 bg-card shadow-soft ring-1 ring-primary/10" : "border-border hover:border-primary/40 bg-background"}`}>
       <input type="radio" name="payment" value={value} checked={active} onChange={() => onSelect(value)} className="sr-only" />
       <div className={`h-10 w-10 rounded-lg flex items-center justify-center flex-shrink-0 transition-smooth ${active ? "bg-primary shadow-soft" : "bg-muted"}`}>
         <Icon className={`h-5 w-5 ${active ? "text-primary-foreground" : "text-muted-foreground"}`} />
@@ -290,9 +290,9 @@ function PaymentOption({ value, selected, onSelect, icon: Icon, title, descripti
       <div className="flex-1">
         <div className="flex items-center gap-2">
           <span className="font-semibold text-secondary">{title}</span>
-          {badge && <span className="text-[10px] uppercase tracking-wider bg-primary text-primary-foreground px-2 py-0.5 rounded-full">{badge}</span>}
+          {badge && <span className="text-[10px] uppercase tracking-wider bg-secondary text-secondary-foreground px-2 py-0.5 rounded-full">{badge}</span>}
         </div>
-        <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
+        <p className={`text-xs mt-0.5 ${active ? "text-secondary/90" : "text-muted-foreground"}`}>{description}</p>
       </div>
     </label>
   );

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Link, NavLink } from "react-router-dom";
-import { Menu, ShoppingCart, User, X, LogOut } from "lucide-react";
+import { Menu, ShoppingCart, User, X, LogOut, ShieldCheck } from "lucide-react";
 import logo from "@/assets/products/logo.png";
 import { Button } from "@/components/ui/button";
 import { useCart } from "@/context/CartContext";
@@ -19,7 +19,7 @@ export const Navbar = () => {
   const [open, setOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const { count } = useCart();
-  const { user, logout } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20);
@@ -64,6 +64,11 @@ export const Navbar = () => {
           {user ? (
             <>
               <span className="hidden md:inline text-sm text-primary/80 max-w-[140px] truncate">Hola, {user.name.split(" ")[0]}</span>
+              {isAdmin && (
+                <Button asChild variant="ghost" size="sm" className="hidden md:inline-flex gap-2 text-primary">
+                  <Link to="/admin"><ShieldCheck className="h-4 w-4" /> Admin</Link>
+                </Button>
+              )}
               <Button variant="ghost" size="icon" className="hidden md:inline-flex" onClick={logout} aria-label="Cerrar sesión" title="Cerrar sesión"><LogOut className="h-5 w-5" /></Button>
             </>
           ) : (
@@ -120,6 +125,11 @@ export const Navbar = () => {
                   >
                     Cerrar sesión
                   </button>
+                )}
+                {user && isAdmin && (
+                  <Link to="/admin" onClick={() => setOpen(false)} className="py-3 text-primary font-medium border-b border-border/50 inline-flex items-center gap-2">
+                    <ShieldCheck className="h-4 w-4" /> Panel admin
+                  </Link>
                 )}
               </div>
             </div>

@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/context/AuthContext";
 import { CartProvider } from "@/context/CartContext";
+import { ProductsProvider } from "@/context/ProductsContext";
 import Index from "./pages/Index";
 import ProductsPage from "./pages/ProductsPage";
 import ProductDetail from "./pages/ProductDetail";
@@ -29,46 +30,31 @@ const ScrollToTop = () => {
   return null;
 };
 
-const RedirectFallback = () => {
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const redirect = params.get("redirect");
-
-    if (redirect) {
-      const safeRedirect = redirect.startsWith("/") ? redirect : `/${redirect}`;
-      if (window.location.pathname !== safeRedirect) {
-        window.history.replaceState({}, "", safeRedirect);
-      }
-    }
-  }, []);
-
-  return null;
-};
-
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
       <Sonner richColors position="top-right" />
       <BrowserRouter>
-        <AuthProvider>
-          <CartProvider>
-            <ScrollToTop />
-            <RedirectFallback />
-            <Routes>
-              <Route path="/" element={<Index />} />
-              <Route path="/products" element={<ProductsPage />} />
-              <Route path="/products/:productId" element={<ProductDetail />} />
-              <Route path="/cart" element={<Cart />} />
-              <Route path="/login" element={<Login />} />
-              {/* Checkout no requiere autenticación; permite comprar como invitado */}
-              <Route path="/checkout" element={<Checkout />} />
-              <Route path="/admin" element={<ProtectedAdminRoute><Admin /></ProtectedAdminRoute>} />
-              <Route path="/order-success" element={<OrderSuccess />} />
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </CartProvider>
-        </AuthProvider>
+        <ProductsProvider>
+          <AuthProvider>
+            <CartProvider>
+              <ScrollToTop />
+              <Routes>
+                <Route path="/" element={<Index />} />
+                <Route path="/products" element={<ProductsPage />} />
+                <Route path="/products/:productId" element={<ProductDetail />} />
+                <Route path="/cart" element={<Cart />} />
+                <Route path="/login" element={<Login />} />
+                {/* Checkout no requiere autenticación; permite comprar como invitado */}
+                <Route path="/checkout" element={<Checkout />} />
+                <Route path="/admin" element={<ProtectedAdminRoute><Admin /></ProtectedAdminRoute>} />
+                <Route path="/order-success" element={<OrderSuccess />} />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </CartProvider>
+          </AuthProvider>
+        </ProductsProvider>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>
