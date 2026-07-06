@@ -21,9 +21,21 @@ type StoredSession = { user: { id: string; email: string; user_metadata: Record<
 
 const normalizeCedula = (value: string) => value.replace(/\D/g, "").trim();
 
-const corsOrigins = process.env.CORS_ORIGIN?.split(",").map((value) => value.trim()).filter(Boolean);
+const corsOrigins = process.env.CORS_ORIGIN?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
+const corsOriginPattern = /^https:\/\/[a-z0-9-]+\.(netlify\.app|vercel\.app)$/i;
 
-app.use(cors({ origin: corsOrigins?.length ? corsOrigins : true, credentials: true }));
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (corsOrigins.includes(origin) || corsOriginPattern.test(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`Origin not allowed by CORS: ${origin}`));
+    },
+    credentials: true,
+  }),
+);
 app.use(express.json({ limit: "15mb" }));
 app.use("/uploads", express.static(uploadsDir));
 
