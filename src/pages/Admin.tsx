@@ -704,7 +704,8 @@ function UsersAdmin() {
       const { error } = await supabase.from("profiles").update({ is_admin: !current }).eq("id", id);
       if (error) {
         console.error(error);
-        toast.error("No se pudo actualizar el admin");
+        const detail = error.message || JSON.stringify(error);
+        toast.error(detail.length > 180 ? detail.slice(0, 180) + "…" : detail);
         return;
       }
       setRows((currentRows) => currentRows.map((user) => (user.id === id ? { ...user, is_admin: !current } : user)));
@@ -745,7 +746,8 @@ function UsersAdmin() {
     const { error: updateError } = await supabase.from("profiles").update({ is_admin: true }).eq("id", profile.id);
     if (updateError) {
       console.error(updateError);
-      toast.error("No se pudo dar acceso admin");
+      const detail = updateError.message || JSON.stringify(updateError);
+      toast.error(detail.length > 180 ? detail.slice(0, 180) + "…" : detail);
       setPromoting(false);
       return;
     }
