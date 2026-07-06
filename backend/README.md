@@ -14,7 +14,7 @@ This folder is the new backend for the app after moving away from Supabase.
 ## Next steps
 
 1. Create a MySQL database.
-2. Copy `.env.example` to `.env` and set `DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGIN`, and `MERCADOPAGO_ACCESS_TOKEN`.
+2. Copy `.env.example` to `.env` and set `DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGIN`, and either `MERCADOPAGO_ACCESS_TOKEN_CLIENT` or `MERCADOPAGO_ACCESS_TOKEN`.
 3. Run these commands from PowerShell inside `backend/`:
 
 ```powershell

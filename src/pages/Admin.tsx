@@ -700,14 +700,19 @@ function UsersAdmin() {
 
   const toggleAdmin = async (id: string, current?: boolean) => {
     setSavingId(id);
-    const { error } = await supabase.from("profiles").update({ is_admin: !current }).eq("id", id);
-    if (error) {
-      console.error(error);
+    try {
+      const { error } = await supabase.from("profiles").update({ is_admin: !current }).eq("id", id);
+      if (error) {
+        console.error(error);
+        toast.error("No se pudo actualizar el admin");
+        return;
+      }
+      setRows((currentRows) => currentRows.map((user) => (user.id === id ? { ...user, is_admin: !current } : user)));
+      toast.success(current ? "Se quitó el acceso admin" : "Se otorgó acceso admin");
+      await fetchUsers();
+    } finally {
       setSavingId(null);
-      return;
     }
-    setRows((currentRows) => currentRows.map((user) => (user.id === id ? { ...user, is_admin: !current } : user)));
-    setSavingId(null);
   };
 
   const grantAdminByCedula = async () => {
@@ -748,6 +753,7 @@ function UsersAdmin() {
     setRows((currentRows) => currentRows.map((user) => (user.id === profile.id ? { ...user, is_admin: true } : user)));
     setCedulaToPromote("");
     toast.success(`Ahora ${profile.name || cedula} tiene acceso admin`);
+    await fetchUsers();
     setPromoting(false);
   };
 
@@ -775,12 +781,13 @@ function UsersAdmin() {
                 placeholder="Cédula para dar admin"
                 className="px-3 py-2 rounded-xl border border-border bg-background min-w-64"
               />
-              <Button onClick={grantAdminByCedula} disabled={promoting} className="gap-2">
+              <Button type="button" onClick={grantAdminByCedula} disabled={promoting} className="gap-2">
                 <ShieldCheck className="h-4 w-4" /> {promoting ? "Otorgando..." : "Dar admin por cédula"}
               </Button>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
             <Button
+              type="button"
               variant="outline"
               onClick={() => downloadTextFile(`usuarios-${new Date().toISOString().slice(0, 10)}.csv`, buildCsv(["ID", "Nombre", "Email", "Cedula", "Admin"], rows.map((user) => [user.id, user.name, user.email, user.cedula || "", user.is_admin ? "SI" : "NO"])), "text/csv;charset=utf-8;")}
               className="gap-2"
@@ -788,6 +795,7 @@ function UsersAdmin() {
               CSV usuarios
             </Button>
             <Button
+              type="button"
               variant="outline"
               onClick={() => downloadTextFile(`usuarios-${new Date().toISOString().slice(0, 10)}.xls`, `\n                <html><head><meta charset=\"utf-8\" /></head><body><table border=\"1\"><thead><tr><th>ID</th><th>Nombre</th><th>Email</th><th>Cedula</th><th>Admin</th></tr></thead><tbody>${rows
                 .map((user) => `<tr><td>${user.id}</td><td>${user.name}</td><td>${user.email}</td><td>${user.cedula || ""}</td><td>${user.is_admin ? "SI" : "NO"}</td></tr>`)
@@ -805,7 +813,7 @@ function UsersAdmin() {
                 className="pl-10 pr-4 py-2 rounded-xl border border-border bg-background min-w-64"
               />
             </div>
-            <Button onClick={fetchUsers} variant="outline" className="gap-2">
+            <Button type="button" onClick={fetchUsers} variant="outline" className="gap-2">
               <RefreshCcw className="h-4 w-4" /> Refrescar
             </Button>
             </div>
