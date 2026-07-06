@@ -460,13 +460,17 @@ app.patch("/api/data/:table", async (req, res) => {
     const matched = applyFilters(rows.map(serializeUser) as Record<string, unknown>[], filters);
     const updated = [] as User[];
     for (const row of matched) {
+      const nextName = payload.name !== undefined ? String(payload.name) : undefined;
+      const nextEmail = payload.email !== undefined ? String(payload.email).trim().toLowerCase() : undefined;
+      const nextCedula = payload.cedula !== undefined ? normalizeCedula(String(payload.cedula)) : undefined;
+      const nextIsAdmin = payload.is_admin !== undefined ? Boolean(payload.is_admin) : payload.isAdmin !== undefined ? Boolean(payload.isAdmin) : undefined;
       const next = await prisma.user.update({
         where: { id: String(row.id) },
         data: {
-          ...payload,
-          email: payload.email ? String(payload.email).trim().toLowerCase() : undefined,
-          cedula: payload.cedula ? normalizeCedula(String(payload.cedula)) : undefined,
-          isAdmin: payload.is_admin !== undefined ? Boolean(payload.is_admin) : payload.isAdmin !== undefined ? Boolean(payload.isAdmin) : undefined,
+          name: nextName,
+          email: nextEmail,
+          cedula: nextCedula,
+          isAdmin: nextIsAdmin,
         },
       });
       updated.push(next);
