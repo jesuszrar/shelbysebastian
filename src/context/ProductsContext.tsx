@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase } from "@/integrations/api/client";
 import { products as defaultProducts, type Product } from "@/data/products";
 
 type ProductRow = {
@@ -64,6 +64,14 @@ const seedProducts = async () => {
     specs: product.specs,
     stock: 0,
   }));
+
+  // Check if the products table exists before attempting upsert.
+  const check = await supabase.from("products").select("id").limit(1);
+  if (check.error) {
+    // Likely the table doesn't exist or the API key points to a different project
+    console.error("Skipping seed: products table not available", check.error);
+    return;
+  }
 
   const { error } = await supabase.from("products").upsert(rows, { onConflict: "id" });
   if (error) {

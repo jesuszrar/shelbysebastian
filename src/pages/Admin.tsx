@@ -3,7 +3,7 @@ import { Footer } from "@/components/shelby/Footer";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Button } from "@/components/ui/button";
 import { useProductsCatalog } from "@/context/ProductsContext";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase } from "@/integrations/api/client";
 import { formatCOP, products as defaultProducts, type Product } from "@/data/products";
 import { toast } from "sonner";
 import {
@@ -314,7 +314,12 @@ function ProductsAdmin() {
     const extension = file.name.split(".").pop() || "jpg";
     const path = `products/${editing}-${Date.now()}.${extension}`;
     const { error: uploadError } = await supabase.storage.from("product-images").upload(path, file, { upsert: true });
-    if (uploadError) throw uploadError;
+    if (uploadError) {
+      console.error('Image upload error:', uploadError);
+      const detail = uploadError.message || JSON.stringify(uploadError);
+      toast.error(detail.length > 240 ? detail.slice(0, 240) + '…' : detail);
+      throw uploadError;
+    }
     const { data } = supabase.storage.from("product-images").getPublicUrl(path);
     setForm((current) => ({ ...current, image: data.publicUrl }));
   };
@@ -334,8 +339,16 @@ function ProductsAdmin() {
 
     const { error } = await supabase.from("products").upsert({ id: editing, ...payload }, { onConflict: "id" });
     if (error) {
-      console.error(error);
-      toast.error("No se pudo guardar el producto");
+      console.error("Backend upsert error:", error);
+      const detailed = (error && (error.message || JSON.stringify(error))) || "No se pudo guardar el producto";
+      // Detect missing table and give actionable guidance
+      if (typeof detailed === "string" && (detailed.includes("Could not find the table") || detailed.includes("relation \"products\" does not exist") || detailed.includes("table \"public.products\""))) {
+        toast.error("La tabla 'products' no existe o el backend no está conectado. Revisa MYSQL_SETUP.md y ejecuta la migración de Prisma en el backend.");
+        console.error("Backend table missing. Check MYSQL_SETUP.md and run the Prisma migration in the backend.");
+      } else {
+        const short = typeof detailed === "string" && detailed.length > 240 ? detailed.slice(0, 240) + "…" : detailed;
+        toast.error(short);
+      }
       setSaving(false);
       return;
     }
@@ -365,7 +378,13 @@ function ProductsAdmin() {
 
     if (error) {
       console.error(error);
-      toast.error("No se pudo crear el producto");
+      const detailed = (error && (error.message || JSON.stringify(error))) || "No se pudo crear el producto";
+      if (typeof detailed === "string" && (detailed.includes("Could not find the table") || detailed.includes("relation \"products\" does not exist") || detailed.includes("table \"public.products\""))) {
+        toast.error("La tabla 'products' no existe o el backend no está conectado. Revisa MYSQL_SETUP.md y ejecuta la migración de Prisma en el backend.");
+        console.error("Backend table missing. Check MYSQL_SETUP.md and run the Prisma migration in the backend.");
+      } else {
+        toast.error("No se pudo crear el producto");
+      }
       return;
     }
 
@@ -387,7 +406,13 @@ function ProductsAdmin() {
     const { error } = await supabase.from("products").delete().eq("id", id);
     if (error) {
       console.error(error);
-      toast.error("No se pudo eliminar el producto");
+      const detailed = (error && (error.message || JSON.stringify(error))) || "No se pudo eliminar el producto";
+      if (typeof detailed === "string" && (detailed.includes("Could not find the table") || detailed.includes("relation \"products\" does not exist") || detailed.includes("table \"public.products\""))) {
+        toast.error("La tabla 'products' no existe o el backend no está conectado. Revisa MYSQL_SETUP.md y ejecuta la migración de Prisma en el backend.");
+        console.error("Backend table missing. Check MYSQL_SETUP.md and run the Prisma migration in the backend.");
+      } else {
+        toast.error("No se pudo eliminar el producto");
+      }
       return;
     }
     await refreshProducts();

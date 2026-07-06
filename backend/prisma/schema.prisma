@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  password  String
+  cedula    String   @unique
+  isAdmin   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orders    Order[]
+}
+
+model Product {
+  id          String   @id
+  name        String
+  category    String
+  price       Decimal  @db.Decimal(12, 2)
+  stock       Int      @default(0)
+  image       String?
+  description String?  @db.Text
+  specs       Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Order {
+  id        String   @id
+  items     Json
+  total     Decimal  @db.Decimal(12, 2)
+  status    String   @default("pending")
+  userId    String?
+  createdAt DateTime @default(now())
+
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model CedulaEmail {
+  cedula    String   @id
+  email     String   @unique
+  userId    String?  @unique
+  createdAt DateTime @default(now())
+}

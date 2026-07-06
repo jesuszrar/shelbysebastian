@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase } from "@/integrations/api/client";
 import type { Session, User as SbUser } from "@supabase/supabase-js";
 
 export type User = { id: string; name: string; email: string; cedula?: string };
@@ -18,60 +18,11 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-const PROFILE_FALLBACK_STORAGE_KEY = "shelby_profile_fallbacks";
-const AUTH_FALLBACK_STORAGE_KEY = "shelby_auth_fallbacks";
 const ACTIVE_CEDULA_STORAGE_KEY = "shelby_active_cedula";
+const CEDULA_EMAIL_STORAGE_KEY = "shelby_cedula_email_map";
 const ADMIN_CEDULA = "1108758522";
 
-type ProfileFallback = {
-  email: string;
-  name: string;
-  cedula: string;
-};
-
-type AuthFallback = ProfileFallback & {
-  id: string;
-  passwordHash: string;
-  is_admin: boolean;
-};
-
-const readProfileFallbacks = (): Record<string, ProfileFallback> => {
-  if (typeof window === "undefined") return {};
-
-  try {
-    const raw = window.localStorage.getItem(PROFILE_FALLBACK_STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, ProfileFallback>) : {};
-  } catch {
-    return {};
-  }
-};
-
-const writeProfileFallback = (profile: ProfileFallback) => {
-  if (typeof window === "undefined") return;
-
-  const fallbacks = readProfileFallbacks();
-  fallbacks[profile.cedula] = profile;
-  window.localStorage.setItem(PROFILE_FALLBACK_STORAGE_KEY, JSON.stringify(fallbacks));
-};
-
-const readAuthFallbacks = (): Record<string, AuthFallback> => {
-  if (typeof window === "undefined") return {};
-
-  try {
-    const raw = window.localStorage.getItem(AUTH_FALLBACK_STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, AuthFallback>) : {};
-  } catch {
-    return {};
-  }
-};
-
-const writeAuthFallback = (authFallback: AuthFallback) => {
-  if (typeof window === "undefined") return;
-
-  const fallbacks = readAuthFallbacks();
-  fallbacks[authFallback.cedula] = authFallback;
-  window.localStorage.setItem(AUTH_FALLBACK_STORAGE_KEY, JSON.stringify(fallbacks));
-};
+const normalizeCedula = (cedula: string) => cedula.replace(/\D/g, "").trim();
 
 const setActiveCedula = (cedula: string) => {
   if (typeof window === "undefined") return;
@@ -91,10 +42,37 @@ const clearActiveCedula = () => {
   window.localStorage.removeItem(ACTIVE_CEDULA_STORAGE_KEY);
 };
 
-const hashPassword = async (password: string) => {
-  const bytes = new TextEncoder().encode(password);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+const readCedulaEmailMap = (): Record<string, string> => {
+  if (typeof window === "undefined") return {};
+
+  try {
+    const raw = window.localStorage.getItem(CEDULA_EMAIL_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeCedulaEmailMap = (cedula: string, email: string) => {
+  if (typeof window === "undefined") return;
+
+  const current = readCedulaEmailMap();
+  current[normalizeCedula(cedula)] = email;
+  window.localStorage.setItem(CEDULA_EMAIL_STORAGE_KEY, JSON.stringify(current));
+};
+
+const persistCedulaEmail = async (cedula: string, email: string) => {
+  const normalizedCedula = normalizeCedula(cedula);
+
+  writeCedulaEmailMap(normalizedCedula, email);
+
+  const { error } = await supabase
+    .from("cedula_emails")
+    .upsert({ cedula: normalizedCedula, email: email.trim() }, { onConflict: "cedula" });
+
+  if (error) {
+    console.error("Error saving cedula email map", error);
+  }
 };
 
 const toUser = (u: SbUser | null | undefined): User | null =>
@@ -139,44 +117,45 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       if (data.session?.user) {
         setUser(toUser(data.session.user));
       } else {
-        const localFallbacks = readAuthFallbacks();
-        const activeCedula = getActiveCedula();
-        const fallback = (activeCedula ? localFallbacks[activeCedula] : null) ?? Object.values(localFallbacks)[0] ?? null;
-        setUser(
-          fallback
-            ? {
-                id: fallback.id,
-                email: fallback.email,
-                name: fallback.name,
-                cedula: fallback.cedula,
-              }
-            : null,
-        );
+        setUser(null);
       }
       setLoading(false);
     });
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  const buildLocalUser = (fallback: AuthFallback): User => ({
-    id: fallback.id,
-    email: fallback.email,
-    name: fallback.name,
-    cedula: fallback.cedula,
-  });
-
   const findEmailByCedula = async (cedula: string) => {
-    const { data: rpcEmail, error: rpcError } = await supabase.rpc('get_email_by_cedula', { lookup_cedula: cedula });
+    const normalizedCedula = normalizeCedula(cedula);
+
+    const { data: mapRow, error: mapError } = await supabase
+      .from("cedula_emails")
+      .select("email")
+      .eq("cedula", normalizedCedula)
+      .maybeSingle();
+
+    if (!mapError && mapRow?.email) {
+      return mapRow.email;
+    }
+
+    const localEmail = readCedulaEmailMap()[normalizedCedula];
+    if (localEmail) {
+      return localEmail;
+    }
+
+    if (mapError && mapError.code !== "PGRST116") {
+      console.error("Error fetching cedula email map", mapError);
+    }
+
+    const { data: rpcEmail, error: rpcError } = await supabase.rpc('get_email_by_cedula', { lookup_cedula: normalizedCedula });
     if (!rpcError && rpcEmail) {
       return rpcEmail as string;
     }
 
-    const fallback = readProfileFallbacks()[cedula.trim()];
-    if (fallback?.email) {
-      return fallback.email;
-    }
-
-    const { data, error } = await supabase.from('profiles').select('email').eq('cedula', cedula).single();
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('email')
+      .or(`cedula.eq.${normalizedCedula},cedula.eq.${cedula.trim()}`)
+      .single();
     if (!error && data?.email) {
       return data.email;
     }
@@ -193,74 +172,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const login = async (cedula: string, password: string) => {
-    const normalizedCedula = cedula.trim();
-    const localFallback = readAuthFallbacks()[normalizedCedula];
-
-    if (localFallback) {
-      const passwordHash = await hashPassword(password.trim());
-      if (localFallback.passwordHash !== passwordHash) {
-        throw new Error('Cédula o contraseña incorrectos');
-      }
-
-      const { data: localSignIn, error: localSignInError } = await supabase.auth.signInWithPassword({
-        email: localFallback.email.trim(),
-        password: password.trim(),
-      });
-
-      if (!localSignInError && localSignIn.session) {
-        await syncSupabaseProfile(localSignIn.session.user, normalizedCedula, localFallback.name);
-        setActiveCedula(normalizedCedula);
-        if (normalizedCedula === ADMIN_CEDULA) {
-          await supabase.auth.updateUser({ data: { is_admin: true } });
-        }
-        return localSignIn;
-      }
-
-      const { data: localSignUp, error: localSignUpError } = await supabase.auth.signUp({
-        email: localFallback.email.trim(),
-        password: password.trim(),
-        options: {
-          data: {
-            name: localFallback.name,
-            cedula: localFallback.cedula,
-          },
-        },
-      });
-
-      if (!localSignUpError) {
-        const signedUpUser = localSignUp.user ?? null;
-        const { data: postSignIn, error: postSignInError } = await supabase.auth.signInWithPassword({
-          email: localFallback.email.trim(),
-          password: password.trim(),
-        });
-
-        if (!postSignInError && postSignIn.session) {
-          await syncSupabaseProfile(postSignIn.session.user, normalizedCedula, localFallback.name);
-          setActiveCedula(normalizedCedula);
-          if (normalizedCedula === ADMIN_CEDULA) {
-            await supabase.auth.updateUser({ data: { is_admin: true } });
-          }
-          return postSignIn;
-        }
-
-        if (signedUpUser) {
-          await supabase.from('profiles').upsert(
-            {
-              id: signedUpUser.id,
-              email: localFallback.email.trim(),
-              name: localFallback.name,
-              cedula: localFallback.cedula,
-              is_admin: normalizedCedula === ADMIN_CEDULA,
-            },
-            { onConflict: 'id' },
-          );
-        }
-      }
-
-      setActiveCedula(normalizedCedula);
-      setUser(buildLocalUser(localFallback));
-      return;
-    }
+    const normalizedCedula = normalizeCedula(cedula);
 
     const email = await findEmailByCedula(normalizedCedula);
     if (!email) {
@@ -277,7 +189,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
     setActiveCedula(normalizedCedula);
     if (data.session?.user) {
-      await syncSupabaseProfile(data.session.user, normalizedCedula, name.trim());
+      const sessionUserName = (data.session.user.user_metadata?.name as string) ?? data.session.user.email?.split("@")[0] ?? "Cliente";
+      await syncSupabaseProfile(data.session.user, normalizedCedula, sessionUserName);
     }
     if (normalizedCedula === ADMIN_CEDULA) {
       await supabase.auth.updateUser({ data: { is_admin: true } });
@@ -288,24 +201,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const register = async (name: string, cedula: string, email: string, password: string) => {
     const normalizedEmail = email.trim();
-    const normalizedCedula = cedula.trim();
-    const fallbackId = crypto.randomUUID();
-    const passwordHash = await hashPassword(password.trim());
-
-    writeProfileFallback({
-      email: normalizedEmail,
-      name: name.trim(),
-      cedula: normalizedCedula,
-    });
-
-    writeAuthFallback({
-      id: fallbackId,
-      email: normalizedEmail,
-      name: name.trim(),
-      cedula: normalizedCedula,
-      passwordHash,
-      is_admin: normalizedCedula === ADMIN_CEDULA,
-    });
+    const normalizedCedula = normalizeCedula(cedula);
 
     const { data, error } = await supabase.auth.signUp({
       email: normalizedEmail,
@@ -315,46 +211,40 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       },
     });
     if (error) throw new Error(error.message);
-
-    if (data.user) {
-      const profile = {
-        id: data.user.id,
-        name: name.trim(),
-        email: normalizedEmail,
-        cedula: normalizedCedula,
-        is_admin: normalizedCedula === ADMIN_CEDULA,
-      };
-      const { error: profileError } = await supabase.from('profiles').upsert(profile, { onConflict: 'id' }).select().single();
-      if (profileError) {
-        console.error('Error creating profile after signup', profileError);
-      }
-
-      writeProfileFallback({
-        email: normalizedEmail,
-        name: name.trim(),
-        cedula: normalizedCedula,
-      });
-
-      writeAuthFallback({
-        id: data.user.id,
-        email: normalizedEmail,
-        name: name.trim(),
-        cedula: normalizedCedula,
-        passwordHash,
-        is_admin: normalizedCedula === ADMIN_CEDULA,
-      });
+    if (!data.user) {
+      throw new Error("No se pudo crear el usuario. Intenta nuevamente.");
     }
 
-    if (!data.session) {
+    await persistCedulaEmail(normalizedCedula, normalizedEmail);
+
+    // Try to sync the profile immediately. If signup didn't return a session,
+    // this may fail due to project auth settings, but trigger-based sync should still run.
+    await syncSupabaseProfile(data.user, normalizedCedula, name.trim());
+
+    let activeUser: SbUser | null = data.session?.user ?? null;
+
+    if (!activeUser) {
       const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
         email: normalizedEmail,
         password: password.trim(),
       });
 
-      if (!signInError && signInData?.session && normalizedCedula === ADMIN_CEDULA) {
-        setActiveCedula(normalizedCedula);
-        await supabase.auth.updateUser({ data: { is_admin: true } });
+      if (signInError) {
+        const message = signInError.message.toLowerCase();
+        // Supabase can return this when email confirmation is required.
+        if ((message.includes("email") && message.includes("confirm")) || message.includes("invalid login credentials")) {
+          return;
+        }
+        throw new Error(signInError.message);
       }
+
+      activeUser = signInData.session?.user ?? null;
+      if (activeUser) {
+        await syncSupabaseProfile(activeUser, normalizedCedula, name.trim());
+      }
+    }
+
+    if (!activeUser) {
       return;
     }
 
