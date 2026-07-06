@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, Link, Navigate } from "react-router-dom";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
@@ -9,6 +9,7 @@ import { useCart } from "@/context/CartContext";
 import { toast } from "sonner";
 import { ShoppingCart, Check, Star, Minus, Plus, ArrowLeft, MessageCircle } from "lucide-react";
 import { useProductsCatalog } from "@/context/ProductsContext";
+import { trackAddToCart, trackViewContent } from "@/lib/metaPixel";
 
 const ProductDetail = () => {
   const { productId } = useParams();
@@ -21,9 +22,27 @@ const ProductDetail = () => {
   if (!product) return <Navigate to="/products" replace />;
   const related = liveProducts.filter((p) => p.category === product.category && p.id !== product.id).slice(0, 3);
 
+  useEffect(() => {
+    trackViewContent({
+      content_ids: [product.id],
+      content_name: product.name,
+      content_type: "product",
+      currency: "COP",
+      value: product.price,
+    });
+  }, [product]);
+
   const handleAdd = async () => {
     setAdding(true);
     add(product.id, qty);
+    trackAddToCart({
+      content_ids: [product.id],
+      content_name: product.name,
+      content_type: "product",
+      currency: "COP",
+      value: product.price * qty,
+      contents: [{ id: product.id, quantity: qty, item_price: product.price }],
+    });
     await new Promise((r) => setTimeout(r, 300));
     toast.success("Añadido al carrito", { description: `${qty} × ${product.name}` });
     setAdding(false);

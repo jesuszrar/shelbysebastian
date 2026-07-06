@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { z } from "zod";
 import { Navbar } from "@/components/shelby/Navbar";
@@ -10,6 +10,7 @@ import { formatCOP } from "@/data/products";
 import { supabase } from "@/integrations/api/client";
 import { toast } from "sonner";
 import { CreditCard, Truck, MessageCircle, Lock, ShoppingBag, Copy, CheckCircle2, Loader2, Smartphone, Building2 } from "lucide-react";
+import { trackInitiateCheckout } from "@/lib/metaPixel";
 
 type PaymentMethod = "mercadopago" | "nequi" | "transferencia";
 
@@ -44,6 +45,16 @@ const Checkout = () => {
   const [step, setStep] = useState<"form" | "manual">("form");
 
   const orderId = useMemo(() => `SHB-${Date.now().toString(36).toUpperCase().slice(-6)}`, []);
+
+  useEffect(() => {
+    trackInitiateCheckout({
+      content_ids: detailedItems.map((it) => it.product.id),
+      contents: detailedItems.map((it) => ({ id: it.product.id, quantity: it.quantity, item_price: it.product.price })),
+      currency: "COP",
+      num_items: detailedItems.reduce((sum, it) => sum + it.quantity, 0),
+      value: total,
+    });
+  }, [detailedItems, total]);
 
   const update = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const v = e.target.value;

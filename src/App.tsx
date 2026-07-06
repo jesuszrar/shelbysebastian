@@ -17,6 +17,7 @@ import OrderSuccess from "./pages/OrderSuccess";
 import NotFound from "./pages/NotFound";
 import Admin from "./pages/Admin";
 import ProtectedAdminRoute from "@/components/ProtectedAdminRoute";
+import { trackPageView } from "@/lib/metaPixel";
 
 const queryClient = new QueryClient();
 
@@ -25,6 +26,7 @@ const ScrollToTop = () => {
 
   useEffect(() => {
     window.scrollTo(0, 0);
+    trackPageView();
   }, [pathname]);
 
   return null;

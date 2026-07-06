@@ -1,9 +1,11 @@
+import { useEffect } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { CheckCircle2, MessageCircle, ShoppingBag, XCircle } from "lucide-react";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
 import { Button } from "@/components/ui/button";
 import { formatCOP } from "@/data/products";
+import { trackPurchase } from "@/lib/metaPixel";
 
 const OrderSuccess = () => {
   const [params] = useSearchParams();
@@ -13,6 +15,17 @@ const OrderSuccess = () => {
   const status = (params.get("status") as "paid" | "pending" | "failed" | null) || "paid";
   const isFailed = status === "failed";
   const isPending = status === "pending";
+
+  useEffect(() => {
+    if (!isFailed && !isPending) {
+      trackPurchase({
+        content_ids: order ? [order] : undefined,
+        currency: "COP",
+        value: Number.isNaN(totalNum) ? undefined : totalNum,
+        status,
+      });
+    }
+  }, [isFailed, isPending, order, status, totalNum]);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">

@@ -6,12 +6,24 @@ import { useCart } from "@/context/CartContext";
 import { toast } from "sonner";
 import { ShoppingCart, Star, Eye } from "lucide-react";
 import { useProductsCatalog } from "@/context/ProductsContext";
+import { trackAddToCart } from "@/lib/metaPixel";
 
 const categories = ["Todos", "Adhesivas", "Facturación", "Más vendidos", "Repuestos"] as const;
 
 export const ProductCard = ({ p }: { p: Product }) => {
   const { add } = useCart();
-  const handleAdd = () => { add(p.id, 1); toast.success("Añadido al carrito", { description: p.name }); };
+  const handleAdd = () => {
+    add(p.id, 1);
+    trackAddToCart({
+      content_ids: [p.id],
+      content_name: p.name,
+      content_type: "product",
+      currency: "COP",
+      value: p.price,
+      contents: [{ id: p.id, quantity: 1, item_price: p.price }],
+    });
+    toast.success("Añadido al carrito", { description: p.name });
+  };
   return (
     <article className="group relative bg-card border border-border rounded-2xl overflow-hidden shadow-soft hover:shadow-elegant transition-smooth hover:-translate-y-1 flex flex-col">
       {p.badge && <span className="absolute top-3 left-3 z-10 bg-brand-red text-white text-xs font-bold px-2.5 py-1 rounded-md shadow-soft">{p.badge}</span>}
