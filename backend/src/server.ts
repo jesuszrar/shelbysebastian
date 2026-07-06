@@ -165,6 +165,10 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "shelby-mysql-backend" });
 });
 
+app.get("/", (_req, res) => {
+  res.json({ ok: true, message: "Shelby MySQL backend is running" });
+});
+
 app.post("/api/auth/register", async (req, res) => {
   const { email, password, data = {} } = req.body as { email?: string; password?: string; data?: { name?: string; cedula?: string } };
   if (!email || !password || !data.name || !data.cedula) {
