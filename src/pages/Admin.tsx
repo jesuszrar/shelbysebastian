@@ -461,7 +461,7 @@ function ProductsAdmin() {
                   {product.specs?.length ? (
                     <div className="mt-3 flex flex-wrap gap-2">
                       {product.specs.map((spec) => (
-                        <span key={spec} className="text-xs px-2 py-1 rounded-full bg-accent text-secondary">
+                        <span key={spec} className="text-xs px-2 py-1 rounded-full bg-primary/15 text-primary border border-primary/20 font-medium">
                           {spec}
                         </span>
                       ))}
