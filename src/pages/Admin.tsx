@@ -429,7 +429,7 @@ function ProductsAdmin() {
           <Button onClick={refreshProducts} variant="outline" className="gap-2">
             <RefreshCcw className="h-4 w-4" /> Refrescar
           </Button>
-          <Button onClick={createNew} className="gap-2">
+          <Button onClick={createNew} variant="secondary" className="gap-2">
             <Plus className="h-4 w-4" /> Nuevo producto
           </Button>
         </div>
@@ -535,7 +535,7 @@ function ProductsAdmin() {
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2 mt-4">
-                    <Button onClick={save} disabled={saving} className="gap-2">
+                    <Button onClick={save} disabled={saving} variant="secondary" className="gap-2">
                       <Sparkles className="h-4 w-4" /> {saving ? "Guardando..." : "Guardar cambios"}
                     </Button>
                     <Button variant="outline" onClick={cancelEdit}>
@@ -783,7 +783,7 @@ function UsersAdmin() {
                 placeholder="Cédula para dar admin"
                 className="px-3 py-2 rounded-xl border border-border bg-background min-w-64"
               />
-              <Button type="button" onClick={grantAdminByCedula} disabled={promoting} className="gap-2">
+              <Button type="button" onClick={grantAdminByCedula} disabled={promoting} variant="secondary" className="gap-2">
                 <ShieldCheck className="h-4 w-4" /> {promoting ? "Otorgando..." : "Dar admin por cédula"}
               </Button>
             </div>
@@ -838,7 +838,7 @@ function UsersAdmin() {
                   </div>
                   <div className="text-xs text-muted-foreground">{user.email}</div>
                 </div>
-                <Button onClick={() => toggleAdmin(user.id, user.is_admin)} disabled={savingId === user.id} className="gap-2">
+                <Button onClick={() => toggleAdmin(user.id, user.is_admin)} disabled={savingId === user.id} variant="secondary" className="gap-2">
                   <ShieldCheck className="h-4 w-4" /> {user.is_admin ? "Quitar admin" : "Dar admin"}
                 </Button>
               </div>
