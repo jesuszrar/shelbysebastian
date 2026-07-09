@@ -28,6 +28,7 @@ const mergeProduct = (base: Product, row?: ProductRow): Product => ({
   category: (row?.category as Product["category"]) || base.category,
   image: row?.image || base.image,
   price: typeof row?.price === "number" ? row.price : base.price,
+  stock: typeof row?.stock === "number" ? row.stock : base.stock,
   description: row?.description || base.description,
   specs: row?.specs?.length ? row.specs : base.specs,
 });
@@ -45,6 +46,7 @@ const rowToProduct = (row: ProductRow): Product => {
     category: (row.category as Product["category"]) || "Adhesivas",
     image: row.image || defaultProducts[0]?.image || "",
     price: typeof row.price === "number" ? row.price : 0,
+    stock: typeof row.stock === "number" ? row.stock : 0,
     oldPrice: undefined,
     badge: undefined,
     highlight: false,
