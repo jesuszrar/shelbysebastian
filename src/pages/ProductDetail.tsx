@@ -20,6 +20,8 @@ const ProductDetail = () => {
   const [adding, setAdding] = useState(false);
 
   if (!product) return <Navigate to="/products" replace />;
+  const stock = Math.max(0, Number(product.stock ?? 0));
+  const maxQty = Math.max(1, stock || 1);
   const related = liveProducts.filter((p) => p.category === product.category && p.id !== product.id).slice(0, 3);
 
   useEffect(() => {
@@ -33,8 +35,9 @@ const ProductDetail = () => {
   }, [product]);
 
   const handleAdd = async () => {
+    if (stock <= 0) return;
     setAdding(true);
-    add(product.id, qty);
+    add(product.id, Math.min(qty, maxQty));
     trackAddToCart({
       content_ids: [product.id],
       content_name: product.name,
@@ -74,6 +77,9 @@ const ProductDetail = () => {
                 <span className="font-display text-4xl text-secondary">{formatCOP(product.price)}</span>
                 {product.oldPrice && <span className="text-lg text-muted-foreground line-through">{formatCOP(product.oldPrice)}</span>}
               </div>
+              <div className={`mt-4 inline-flex items-center gap-2 text-sm font-medium px-3 py-1.5 rounded-full border ${stock > 0 ? "bg-primary/10 text-primary border-primary/20" : "bg-destructive/10 text-destructive border-destructive/20"}`}>
+                {stock > 0 ? `Stock disponible: ${stock}` : "Sin stock disponible"}
+              </div>
               <p className="mt-5 text-muted-foreground leading-relaxed">{product.description}</p>
               <ul className="mt-6 space-y-2">
                 {product.specs.map((s) => (
@@ -85,20 +91,20 @@ const ProductDetail = () => {
               <div className="mt-8 flex items-center gap-3">
                 <span className="text-sm font-medium text-secondary">Cantidad:</span>
                 <div className="flex items-center border border-border rounded-xl">
-                  <button onClick={() => setQty((q) => Math.max(1, q - 1))} className="h-10 w-10 flex items-center justify-center hover:bg-muted"><Minus className="h-4 w-4" /></button>
+                  <button onClick={() => setQty((q) => Math.max(1, q - 1))} className="h-10 w-10 flex items-center justify-center hover:bg-muted" disabled={stock <= 0}><Minus className="h-4 w-4" /></button>
                   <span className="w-12 text-center font-semibold">{qty}</span>
-                  <button onClick={() => setQty((q) => q + 1)} className="h-10 w-10 flex items-center justify-center hover:bg-muted"><Plus className="h-4 w-4" /></button>
+                  <button onClick={() => setQty((q) => Math.min(maxQty, q + 1))} className="h-10 w-10 flex items-center justify-center hover:bg-muted" disabled={stock <= 0 || qty >= maxQty}><Plus className="h-4 w-4" /></button>
                 </div>
               </div>
               <div className="mt-6 flex flex-wrap gap-3">
-                <Button onClick={handleAdd} disabled={adding} size="lg" className="flex-1 min-w-[200px] bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft h-14">
-                  {adding ? "Añadiendo..." : <><ShoppingCart className="h-5 w-5" /> Añadir al carrito</>}
+                <Button onClick={handleAdd} disabled={adding || stock <= 0} size="lg" className="flex-1 min-w-[200px] bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft h-14 disabled:opacity-50">
+                  {adding ? "Añadiendo..." : stock > 0 ? <><ShoppingCart className="h-5 w-5" /> Añadir al carrito</> : "Sin stock"}
                 </Button>
                 <Button asChild size="lg" variant="outline" className="border-whatsapp text-whatsapp hover:bg-whatsapp hover:text-white h-14">
                   <a href={`https://wa.me/573228426561?text=${waMsg}`} target="_blank" rel="noopener noreferrer"><MessageCircle className="h-5 w-5" /> Pedir por WhatsApp</a>
                 </Button>
               </div>
-              <p className="mt-4 text-xs text-muted-foreground">✓ Envío gratis desde $260.000 · ✓ Garantía 30 días · ✓ Despacho en 24h</p>
+              <p className="mt-4 text-xs text-muted-foreground">✓ Envío gratis desde $460.000 · ✓ Garantía 30 días · ✓ Despacho en 24h</p>
             </div>
           </div>
           {related.length > 0 && (

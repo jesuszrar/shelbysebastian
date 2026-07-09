@@ -14,6 +14,7 @@ export type Product = {
   category: ProductCategory;
   image: string;
   price: number;
+  stock?: number;
   oldPrice?: number;
   badge?: string;
   highlight?: boolean;

@@ -218,7 +218,7 @@ const Checkout = () => {
                   <textarea value={form.notes} onChange={update("notes")} rows={3} className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth resize-none" placeholder="Referencias del lugar..." />
                 </div>
                 <p className="text-xs text-muted-foreground mt-3">
-                  💡 Envío a Bogotá $8.000 · Otras ciudades $15.000 · Gratis desde $260.000
+                  💡 Envío a Bogotá $15.000 · Otras ciudades $15.000 · Gratis desde $460.000
                 </p>
               </Section>
               <Section icon={CreditCard} title="Método de pago">

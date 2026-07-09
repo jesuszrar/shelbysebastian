@@ -1,6 +1,6 @@
 import { Truck, ShieldCheck, Headphones, Zap, CreditCard, Package } from "lucide-react";
 const items = [
-  { icon: Truck, title: "Envío gratis desde $260.000", desc: "A toda Colombia, sin letra pequeña ni recargos sorpresa." },
+  { icon: Truck, title: "Envío gratis desde $460.000", desc: "A toda Colombia, sin letra pequeña ni recargos sorpresa." },
   { icon: ShieldCheck, title: "Garantía de 30 días", desc: "Si tu equipo falla, lo respondemos. Sin vueltas." },
   { icon: Headphones, title: "Asesoría real, no robots", desc: "Te ayudamos por WhatsApp a elegir lo que de verdad necesitas." },
   { icon: Zap, title: "Despacho en 24 horas", desc: "Facturas hoy, recibes mañana en las principales ciudades." },

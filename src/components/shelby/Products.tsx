@@ -12,7 +12,9 @@ const categories = ["Todos", "Adhesivas", "Facturación", "Más vendidos", "Repu
 
 export const ProductCard = ({ p }: { p: Product }) => {
   const { add } = useCart();
+  const stock = Math.max(0, Number(p.stock ?? 0));
   const handleAdd = () => {
+    if (stock <= 0) return;
     add(p.id, 1);
     trackAddToCart({
       content_ids: [p.id],
@@ -27,6 +29,9 @@ export const ProductCard = ({ p }: { p: Product }) => {
   return (
     <article className="group relative bg-card border border-border rounded-2xl overflow-hidden shadow-soft hover:shadow-elegant transition-smooth hover:-translate-y-1 flex flex-col">
       {p.badge && <span className="absolute top-3 left-3 z-10 bg-brand-red text-white text-xs font-bold px-2.5 py-1 rounded-md shadow-soft">{p.badge}</span>}
+      <span className={`absolute top-3 right-3 z-10 text-[11px] font-semibold px-2.5 py-1 rounded-full shadow-soft ${stock > 0 ? "bg-background/95 text-secondary border border-border" : "bg-destructive/10 text-destructive border border-destructive/20"}`}>
+        {stock > 0 ? `Stock: ${stock}` : "Sin stock"}
+      </span>
       <Link to={`/products/${p.id}`} className="block aspect-square bg-muted overflow-hidden">
         <img src={p.image} alt={p.name} loading="lazy" className="w-full h-full object-cover group-hover:scale-105 transition-smooth duration-500" />
       </Link>
@@ -43,8 +48,9 @@ export const ProductCard = ({ p }: { p: Product }) => {
           <span className="font-display text-2xl text-secondary">{formatCOP(p.price)}</span>
           {p.oldPrice && <span className="text-sm text-muted-foreground line-through">{formatCOP(p.oldPrice)}</span>}
         </div>
+        <div className="mt-2 text-xs text-muted-foreground">{stock > 0 ? `Quedan ${stock} unidades` : "Producto sin disponibilidad"}</div>
         <div className="mt-auto pt-4 flex gap-2">
-          <Button onClick={handleAdd} className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft"><ShoppingCart className="h-4 w-4" /> Añadir</Button>
+          <Button onClick={handleAdd} disabled={stock <= 0} className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft disabled:opacity-50"><ShoppingCart className="h-4 w-4" /> {stock > 0 ? "Añadir" : "Sin stock"}</Button>
           <Button asChild variant="outline" size="icon" className="border-border"><Link to={`/products/${p.id}`} aria-label="Ver detalle"><Eye className="h-4 w-4" /></Link></Button>
         </div>
       </div>

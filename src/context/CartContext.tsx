@@ -23,8 +23,8 @@ const CartContext = createContext<CartContextValue | undefined>(undefined);
 
 const CART_KEY = "shelby:cart";
 const CITY_KEY = "shelby:city";
-const FREE_SHIPPING_THRESHOLD = 260000;
-const SHIPPING_BOGOTA = 8000;
+const FREE_SHIPPING_THRESHOLD = 460000;
+const SHIPPING_BOGOTA = 15000;
 const SHIPPING_OTHER = 15000;
 
 export const CartProvider = ({ children }: { children: ReactNode }) => {
@@ -32,6 +32,11 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   const [items, setItems] = useState<CartItem[]>([]);
   const [city, setCityState] = useState<string>("");
   const [hydrated, setHydrated] = useState(false);
+
+  const getStock = (productId: string) => {
+    const product = products.find((item) => item.id === productId);
+    return Math.max(0, Number(product?.stock ?? 0));
+  };
 
   useEffect(() => {
     try {
@@ -48,13 +53,19 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
 
   const add = (productId: string, quantity = 1) =>
     setItems((prev) => {
+      const stock = getStock(productId);
+      if (stock <= 0) return prev;
       const ex = prev.find((i) => i.productId === productId);
-      return ex ? prev.map((i) => i.productId === productId ? { ...i, quantity: i.quantity + quantity } : i) : [...prev, { productId, quantity }];
+      const nextQuantity = ex ? Math.min(stock, ex.quantity + quantity) : Math.min(stock, quantity);
+      if (nextQuantity <= 0) return prev;
+      return ex ? prev.map((i) => i.productId === productId ? { ...i, quantity: nextQuantity } : i) : [...prev, { productId, quantity: nextQuantity }];
     });
   const remove = (productId: string) => setItems((p) => p.filter((i) => i.productId !== productId));
   const setQuantity = (productId: string, quantity: number) => {
     if (quantity <= 0) return remove(productId);
-    setItems((p) => p.map((i) => i.productId === productId ? { ...i, quantity } : i));
+    const stock = getStock(productId);
+    if (stock <= 0) return remove(productId);
+    setItems((p) => p.map((i) => i.productId === productId ? { ...i, quantity: Math.min(stock, quantity) } : i));
   };
   const clear = () => setItems([]);
 

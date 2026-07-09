@@ -39,7 +39,7 @@ export const Navbar = () => {
   return (
     <header className={`fixed top-0 inset-x-0 z-50 transition-smooth ${scrolled ? "bg-background/90 backdrop-blur-md shadow-soft" : "bg-background/60 backdrop-blur-sm"}`}>
       <div className="bg-primary text-white text-xs sm:text-sm py-2 text-center px-4">
-        🇨🇴 Envío <span className="font-semibold text-[#DB9F74] drop-shadow-[0_0_1px_rgba(0,0,0,0.25)]">GRATIS</span> en compras superiores a $260.000 a toda Colombia
+        🇨🇴 Envío <span className="font-semibold text-[#DB9F74] drop-shadow-[0_0_1px_rgba(0,0,0,0.25)]">GRATIS</span> en compras superiores a $460.000 a toda Colombia
       </div>
       <nav className="container-shelby flex items-center justify-between py-3">
         <Link to="/" className="flex items-center gap-3 group">
