@@ -34,12 +34,21 @@ model Product {
 }
 
 model Order {
-  id        String   @id
-  items     Json
-  total     Decimal  @db.Decimal(12, 2)
-  status    String   @default("pending")
-  userId    String?
-  createdAt DateTime @default(now())
+  id              String   @id
+  items           Json
+  total           Decimal  @db.Decimal(12, 2)
+  shipping        Int      @default(0)
+  status          String   @default("pending")
+  paymentMethod   String?
+  customerName    String?
+  customerEmail   String?
+  customerPhone   String?
+  customerCity    String?
+  customerAddress String?
+  notes           String?  @db.Text
+  invoiceSentAt   DateTime?
+  userId          String?
+  createdAt       DateTime @default(now())
 
   user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 

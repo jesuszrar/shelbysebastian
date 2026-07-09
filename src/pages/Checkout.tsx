@@ -16,6 +16,7 @@ type PaymentMethod = "mercadopago" | "nequi" | "transferencia";
 
 const checkoutSchema = z.object({
   name: z.string().trim().min(2, "Nombre requerido").max(80),
+  email: z.string().trim().email("Correo inválido").max(120),
   phone: z.string().trim().min(7, "Teléfono inválido").max(20),
   city: z.string().trim().min(2, "Ciudad requerida").max(60),
   address: z.string().trim().min(5, "Dirección requerida").max(200),
@@ -34,6 +35,7 @@ const Checkout = () => {
   const navigate = useNavigate();
   const [form, setForm] = useState({
     name: user?.name ?? "",
+    email: user?.email ?? "",
     phone: "",
     city: storedCity || "",
     address: "",
@@ -60,6 +62,37 @@ const Checkout = () => {
     const v = e.target.value;
     setForm((f) => ({ ...f, [k]: v }));
     if (k === "city") setCity(v);
+  };
+
+  const saveOrder = async (status: "pending" | "paid", paymentMethod: PaymentMethod | "whatsapp", data: z.infer<typeof checkoutSchema>) => {
+    const { error } = await supabase.from("orders").upsert(
+      {
+        id: orderId,
+        items: detailedItems.map((it) => ({
+          productId: it.product.id,
+          title: it.product.name,
+          quantity: it.quantity,
+          unit_price: it.product.price,
+          lineTotal: it.product.price * it.quantity,
+        })),
+        total,
+        shipping,
+        status,
+        paymentMethod,
+        customerName: data.name,
+        customerEmail: data.email,
+        customerPhone: data.phone,
+        customerCity: data.city,
+        customerAddress: data.address,
+        notes: data.notes || null,
+        userId: user?.id || null,
+      },
+      { onConflict: "id" },
+    );
+
+    if (error) {
+      throw error;
+    }
   };
 
   if (detailedItems.length === 0 && step === "form") {
@@ -94,7 +127,7 @@ const Checkout = () => {
   const buildWhatsAppMessage = (data: z.infer<typeof checkoutSchema>, paymentLabel: string) => {
     const productLines = detailedItems.map((it) => `• ${it.quantity} × ${it.product.name} — ${formatCOP(it.product.price * it.quantity)}`).join("\n");
     return encodeURIComponent(
-      `¡Hola Shelby! Pedido *${orderId}*\n\n*Cliente:* ${data.name}\n*Teléfono:* ${data.phone}\n*Ciudad:* ${data.city}\n*Dirección:* ${data.address}\n*Pago:* ${paymentLabel}\n` +
+      `¡Hola Shelby! Pedido *${orderId}*\n\n*Cliente:* ${data.name}\n*Correo:* ${data.email}\n*Teléfono:* ${data.phone}\n*Ciudad:* ${data.city}\n*Dirección:* ${data.address}\n*Pago:* ${paymentLabel}\n` +
       (data.notes ? `*Notas:* ${data.notes}\n` : "") +
       `\n*Productos:*\n${productLines}\n\n*Subtotal:* ${formatCOP(subtotal)}\n*Envío:* ${shipping === 0 ? "Gratis" : formatCOP(shipping)}\n*Total:* ${formatCOP(total)}`
     );
@@ -108,10 +141,11 @@ const Checkout = () => {
     if (data.payment === "mercadopago") {
       setLoading(true);
       try {
+        await saveOrder("pending", data.payment, data);
         const { data: res, error } = await supabase.functions.invoke("create-mp-preference", {
           body: {
             orderId,
-            payer: { name: data.name, email: user?.email, phone: data.phone, address: data.address, city: data.city },
+            payer: { name: data.name, email: data.email, phone: data.phone, address: data.address, city: data.city },
             items: detailedItems.map((it) => ({
               id: it.product.id, title: it.product.name, quantity: it.quantity, unit_price: it.product.price,
               picture_url: typeof window !== "undefined" ? new URL(it.product.image, window.location.origin).href : it.product.image,
@@ -137,28 +171,42 @@ const Checkout = () => {
       return;
     }
 
-    setStep("manual");
+    try {
+      await saveOrder("pending", data.payment, data);
+      setStep("manual");
+    } catch (error) {
+      console.error(error);
+      toast.error("No se pudo guardar el pedido", { description: "Revisa tu conexión e intenta otra vez." });
+    }
   };
 
   const handleManualConfirm = async () => {
     const data = validate();
     if (!data || data.payment === "mercadopago") return;
     setLoading(true);
-    const paymentLabel = PAYMENT_DETAILS[data.payment].label;
-    const message = buildWhatsAppMessage(data, paymentLabel);
-    await new Promise((r) => setTimeout(r, 500));
-    const finalTotal = total;
-    clear();
-    setLoading(false);
-    toast.success("¡Pago reportado!", { description: "Validaremos tu transferencia en minutos." });
-    window.open(`https://wa.me/573228426561?text=${message}`, "_blank");
-    navigate(`/order-success?order=${orderId}&total=${finalTotal}&method=${encodeURIComponent(paymentLabel)}&status=pending`);
+    try {
+      const paymentLabel = PAYMENT_DETAILS[data.payment].label;
+      const message = buildWhatsAppMessage(data, paymentLabel);
+      await new Promise((r) => setTimeout(r, 500));
+      const finalTotal = total;
+      await saveOrder("paid", data.payment, data);
+      clear();
+      toast.success("¡Pago reportado!", { description: "Validaremos tu transferencia en minutos." });
+      window.open(`https://wa.me/573228426561?text=${message}`, "_blank");
+      navigate(`/order-success?order=${orderId}&total=${finalTotal}&method=${encodeURIComponent(paymentLabel)}&status=pending`);
+    } catch (error) {
+      console.error(error);
+      toast.error("No se pudo registrar el pago", { description: "Intenta de nuevo en unos segundos." });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleWhatsAppFallback = () => {
     const data = validate();
     if (!data) return;
     const paymentLabel = data.payment === "mercadopago" ? "A coordinar por WhatsApp" : PAYMENT_DETAILS[data.payment].label;
+    void saveOrder("pending", "whatsapp", data).catch((error) => console.error(error));
     window.open(`https://wa.me/573228426561?text=${buildWhatsAppMessage(data, paymentLabel)}`, "_blank");
   };
 
@@ -180,7 +228,7 @@ const Checkout = () => {
                 <PaymentDetailRow label="Entidad" value={details.bank} />
                 <PaymentDetailRow label="Monto a pagar" value={formatCOP(total)} copyable highlight />
               </div>
-              <div className="mt-6 bg-accent/40 border border-border rounded-2xl p-4 text-sm text-secondary/80">
+              <div className="mt-6 bg-muted/30 border border-border rounded-2xl p-4 text-sm text-secondary/90">
                 <strong className="text-secondary">Importante:</strong> incluye el N.º de pedido <span className="font-mono">{orderId}</span> en la descripción.
               </div>
               <Button onClick={handleManualConfirm} disabled={loading} size="lg" className="w-full mt-6 h-12 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft">
@@ -209,6 +257,7 @@ const Checkout = () => {
               <Section icon={Truck} title="Datos de envío">
                 <div className="grid sm:grid-cols-2 gap-4">
                   <Input label="Nombre completo" value={form.name} onChange={update("name")} error={errors.name} autoComplete="name" />
+                  <Input label="Correo electrónico" value={form.email} onChange={update("email")} error={errors.email} type="email" autoComplete="email" placeholder="cliente@correo.com" />
                   <Input label="Teléfono / WhatsApp" value={form.phone} onChange={update("phone")} error={errors.phone} type="tel" placeholder="3001234567" />
                   <Input label="Ciudad" value={form.city} onChange={update("city")} error={errors.city} placeholder="Bogotá, Medellín..." />
                   <Input label="Dirección" value={form.address} onChange={update("address")} error={errors.address} placeholder="Calle 123 # 45-67" />
@@ -316,7 +365,7 @@ function PaymentDetailRow({ label, value, copyable, highlight }: { label: string
     catch { toast.error("No se pudo copiar"); }
   };
   return (
-    <div className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 ${highlight ? "bg-accent border-primary/40" : "bg-background border-border"}`}>
+    <div className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 ${highlight ? "bg-primary/10 border-primary/20" : "bg-background border-border"}`}>
       <span className="text-xs uppercase tracking-wider text-muted-foreground">{label}</span>
       <div className="flex items-center gap-2">
         <span className={`font-mono ${highlight ? "font-display text-primary text-lg" : "text-secondary"}`}>{value}</span>

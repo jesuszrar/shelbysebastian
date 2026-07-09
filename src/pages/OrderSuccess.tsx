@@ -5,6 +5,7 @@ import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
 import { Button } from "@/components/ui/button";
 import { formatCOP } from "@/data/products";
+import { supabase } from "@/integrations/api/client";
 import { trackPurchase } from "@/lib/metaPixel";
 
 const OrderSuccess = () => {
@@ -27,6 +28,11 @@ const OrderSuccess = () => {
     }
   }, [isFailed, isPending, order, status, totalNum]);
 
+  useEffect(() => {
+    if (!order || status !== "paid") return;
+    void supabase.from("orders").update({ status: "paid", paymentMethod: method || "mercadopago" }).eq("id", order).catch((error) => console.error(error));
+  }, [method, order, status]);
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <Navbar />
@@ -43,10 +49,10 @@ const OrderSuccess = () => {
               {isFailed
                 ? "Tu pago no se procesó. Puedes intentarlo de nuevo o coordinar por WhatsApp."
                 : isPending
-                ? "Estamos validando tu pago. Te confirmamos por WhatsApp en cuanto se acredite."
-                : "Tu pago fue procesado correctamente. Te enviaremos los detalles del envío por WhatsApp."}
+                ? "Estamos validando tu pago. Te confirmamos por WhatsApp en cuanto se acredite y te enviaremos la factura al correo registrado."
+                : "Tu pago fue procesado correctamente. Te enviaremos la factura al correo registrado y los detalles del envío por WhatsApp."}
             </p>
-            <div className="mt-6 bg-accent/40 border border-border rounded-2xl p-5 text-left text-sm space-y-2">
+            <div className="mt-6 bg-muted/30 border border-border rounded-2xl p-5 text-left text-sm space-y-2 text-secondary/90">
               {order && <div className="flex justify-between"><span className="text-muted-foreground">N.º de pedido</span><span className="font-mono text-secondary">{order}</span></div>}
               {method && <div className="flex justify-between"><span className="text-muted-foreground">Método</span><span className="text-secondary">{method}</span></div>}
               {!Number.isNaN(totalNum) && totalNum > 0 && (

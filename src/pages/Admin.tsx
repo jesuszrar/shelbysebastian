@@ -52,8 +52,16 @@ type OrderRow = {
   id: string;
   total: number;
   status: string;
-  created_at: string;
+  createdAt?: string;
+  created_at?: string;
+  userId?: string | null;
   user_id?: string | null;
+  customerName?: string | null;
+  customerEmail?: string | null;
+  customerPhone?: string | null;
+  customerCity?: string | null;
+  customerAddress?: string | null;
+  paymentMethod?: string | null;
 };
 
 type UserRow = {
@@ -189,7 +197,7 @@ function OverviewPanel({ compact = false }: { compact?: boolean }) {
   useEffect(() => {
     const load = async () => {
       const [ordersResult, usersResult] = await Promise.all([
-        supabase.from<OrderRow>("orders").select("id,total,status,created_at,user_id").order("created_at", { ascending: false }),
+        supabase.from<OrderRow>("orders").select("id,total,status,createdAt,created_at,userId,user_id,customerName,customerEmail,customerPhone,customerCity,customerAddress,paymentMethod").order("createdAt", { ascending: false }),
         supabase.from<UserRow>("profiles").select("id,name,email,cedula,is_admin"),
       ]);
 
@@ -612,15 +620,15 @@ function OrdersAdmin() {
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
-              onClick={() => downloadTextFile(`ventas-${new Date().toISOString().slice(0, 10)}.csv`, buildCsv(["ID", "Total", "Estado", "Fecha", "Usuario"], rows.map((order) => [order.id, order.total, order.status, order.created_at, order.user_id || ""])), "text/csv;charset=utf-8;")}
+              onClick={() => downloadTextFile(`ventas-${new Date().toISOString().slice(0, 10)}.csv`, buildCsv(["ID", "Total", "Estado", "Correo", "Método", "Fecha", "Usuario"], rows.map((order) => [order.id, order.total, order.status, order.customerEmail || "", order.paymentMethod || "", order.createdAt || order.created_at || "", order.userId || order.user_id || ""])), "text/csv;charset=utf-8;")}
               className="gap-2"
             >
               CSV ventas
             </Button>
             <Button
               variant="outline"
-              onClick={() => downloadTextFile(`ventas-${new Date().toISOString().slice(0, 10)}.xls`, `\n                <html><head><meta charset=\"utf-8\" /></head><body><table border=\"1\"><thead><tr><th>ID</th><th>Total</th><th>Estado</th><th>Fecha</th><th>Usuario</th></tr></thead><tbody>${rows
-                .map((order) => `<tr><td>${order.id}</td><td>${order.total}</td><td>${order.status}</td><td>${order.created_at}</td><td>${order.user_id || ""}</td></tr>`)
+              onClick={() => downloadTextFile(`ventas-${new Date().toISOString().slice(0, 10)}.xls`, `\n                <html><head><meta charset=\"utf-8\" /></head><body><table border=\"1\"><thead><tr><th>ID</th><th>Total</th><th>Estado</th><th>Correo</th><th>Método</th><th>Fecha</th><th>Usuario</th></tr></thead><tbody>${rows
+                .map((order) => `<tr><td>${order.id}</td><td>${order.total}</td><td>${order.status}</td><td>${order.customerEmail || ""}</td><td>${order.paymentMethod || ""}</td><td>${order.createdAt || order.created_at || ""}</td><td>${order.userId || order.user_id || ""}</td></tr>`)
                 .join("")}</tbody></table></body></html>`, "application/vnd.ms-excel;charset=utf-8;")}
               className="gap-2"
             >
@@ -642,7 +650,8 @@ function OrdersAdmin() {
               <div key={order.id} className="rounded-2xl border border-border p-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div>
                   <div className="font-semibold text-secondary">Orden {order.id}</div>
-                  <div className="text-xs text-muted-foreground">{new Date(order.created_at).toLocaleString()} · Usuario: {order.user_id || "invitado"}</div>
+                  <div className="text-xs text-muted-foreground">{new Date(order.createdAt || order.created_at || Date.now()).toLocaleString()} · Usuario: {order.userId || order.user_id || "invitado"}</div>
+                  <div className="text-xs text-muted-foreground mt-1">{order.customerName || "Sin nombre"} · {order.customerEmail || "sin correo"} · {order.paymentMethod || "sin método"}</div>
                 </div>
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                   <select

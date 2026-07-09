@@ -19,6 +19,7 @@
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.14.3",
+    "nodemailer": "^9.0.3",
     "zod": "^3.25.76"
   },
   "devDependencies": {
@@ -27,6 +28,7 @@
     "@types/express": "^5.0.3",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.16.5",
+    "@types/nodemailer": "^8.0.1",
     "prisma": "^6.15.0",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"

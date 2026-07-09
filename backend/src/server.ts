@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import { PrismaClient, type Product, type Order, type User, type CedulaEmail, Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import nodemailer from "nodemailer";
 import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -15,6 +16,7 @@ const app = express();
 const port = Number(process.env.PORT || 3001);
 const jwtSecret = process.env.JWT_SECRET || "change-me";
 const uploadsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "uploads");
+const revenueStatuses = new Set(["paid", "approved", "completed"]);
 
 type AuthPayload = { sub: string; email: string; name: string; cedula: string; isAdmin: boolean };
 type StoredSession = { user: { id: string; email: string; user_metadata: Record<string, unknown> }; access_token: string } | null;
@@ -23,12 +25,38 @@ const normalizeCedula = (value: string) => value.replace(/\D/g, "").trim();
 
 const corsOrigins = process.env.CORS_ORIGIN?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
 const corsOriginPattern = /^https:\/\/[a-z0-9-]+\.(netlify\.app|vercel\.app)$/i;
+const corsOriginHostnames = corsOrigins
+  .map((value) => {
+    try {
+      return new URL(value).hostname.toLowerCase();
+    } catch {
+      return value.replace(/^https?:\/\//i, "").toLowerCase();
+    }
+  })
+  .filter(Boolean);
+
+const isAllowedCorsOrigin = (origin: string) => {
+  const normalizedOrigin = origin.toLowerCase();
+  if (corsOrigins.includes(origin) || corsOriginPattern.test(origin)) return true;
+
+  try {
+    const parsed = new URL(origin);
+    const hostname = parsed.hostname.toLowerCase();
+    const bareHostname = hostname.replace(/^www\./, "");
+    return corsOriginHostnames.some((allowed) => {
+      const allowedBare = allowed.replace(/^www\./, "");
+      return hostname === allowed || bareHostname === allowedBare || `www.${allowedBare}` === hostname || `www.${bareHostname}` === allowed || normalizedOrigin === `https://${allowedBare}` || normalizedOrigin === `https://www.${allowedBare}`;
+    });
+  } catch {
+    return false;
+  }
+};
 
 app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
-      if (corsOrigins.includes(origin) || corsOriginPattern.test(origin)) {
+      if (isAllowedCorsOrigin(origin)) {
         return callback(null, true);
       }
       return callback(new Error(`Origin not allowed by CORS: ${origin}`));
@@ -39,7 +67,7 @@ app.use(
 app.use(express.json({ limit: "15mb" }));
 app.use("/uploads", express.static(uploadsDir));
 
-const wrap = (value: unknown) => {
+const wrap = (value: unknown): unknown => {
   if (value instanceof Prisma.Decimal) return Number(value);
   if (Array.isArray(value)) return value.map(wrap);
   if (value && typeof value === "object") {
@@ -62,6 +90,113 @@ const serializeUser = (user: User | null) =>
 const serializeProduct = (product: Product) => wrap({ ...product, price: product.price });
 const serializeOrder = (order: Order) => wrap({ ...order, total: order.total });
 const serializeCedulaEmail = (row: CedulaEmail) => row;
+
+const getMailer = () => {
+  const host = process.env.SMTP_HOST;
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  if (!host || !user || !pass) return null;
+
+  return nodemailer.createTransport({
+    host,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: String(process.env.SMTP_SECURE || "false") === "true",
+    auth: { user, pass },
+  });
+};
+
+const moneyFormatter = new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 });
+
+const buildInvoiceText = (order: Order) => {
+  const items = Array.isArray(order.items) ? (order.items as Array<Record<string, unknown>>) : [];
+  const itemLines = items.map((item) => {
+    const title = String(item.title ?? item.name ?? "Producto");
+    const quantity = Number(item.quantity ?? 1);
+    const lineTotal = Number(item.lineTotal ?? item.total ?? Number(item.unit_price ?? item.price ?? 0) * quantity);
+    return `- ${quantity} x ${title} = ${moneyFormatter.format(lineTotal)}`;
+  });
+
+  return [
+    `Hola ${order.customerName || "cliente"},`,
+    "",
+    `Tu factura del pedido ${order.id} está lista.`,
+    "",
+    `Cliente: ${order.customerName || ""}`,
+    `Correo: ${order.customerEmail || ""}`,
+    `Ciudad: ${order.customerCity || ""}`,
+    `Dirección: ${order.customerAddress || ""}`,
+    `Teléfono: ${order.customerPhone || ""}`,
+    `Pago: ${order.paymentMethod || order.status}`,
+    "",
+    "Productos:",
+    ...(itemLines.length ? itemLines : ["- Sin detalle de productos"]),
+    "",
+    `Envío: ${moneyFormatter.format(Number(order.shipping || 0))}`,
+    `Total: ${moneyFormatter.format(Number(order.total || 0))}`,
+    "",
+    "Gracias por comprar con Shelby.",
+  ].join("\n");
+};
+
+const sendInvoiceEmail = async (order: Order) => {
+  const customerEmail = String(order.customerEmail || "").trim().toLowerCase();
+  if (!customerEmail) return;
+
+  const mailer = getMailer();
+  if (!mailer) {
+    console.warn(`SMTP no configurado, no se envió factura para el pedido ${order.id}`);
+    return;
+  }
+
+  const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER;
+  if (!fromEmail) return;
+
+  await mailer.sendMail({
+    from: `"${process.env.SMTP_FROM_NAME || "Shelby Importaciones"}" <${fromEmail}>`,
+    to: customerEmail,
+    subject: `Factura Shelby - Pedido ${order.id}`,
+    text: buildInvoiceText(order),
+  });
+};
+
+const normalizeOrderCreateData = (row: Record<string, unknown>) => ({
+  items: Array.isArray(row.items) ? row.items : [],
+  total: new Prisma.Decimal(Number(row.total ?? 0)),
+  shipping: Number(row.shipping ?? 0),
+  status: String(row.status ?? "pending"),
+  paymentMethod: row.paymentMethod !== undefined ? String(row.paymentMethod) : row.payment_method !== undefined ? String(row.payment_method) : undefined,
+  customerName: row.customerName !== undefined ? String(row.customerName) : row.customer_name !== undefined ? String(row.customer_name) : undefined,
+  customerEmail: row.customerEmail !== undefined ? String(row.customerEmail).trim().toLowerCase() : row.customer_email !== undefined ? String(row.customer_email).trim().toLowerCase() : undefined,
+  customerPhone: row.customerPhone !== undefined ? String(row.customerPhone) : row.customer_phone !== undefined ? String(row.customer_phone) : undefined,
+  customerCity: row.customerCity !== undefined ? String(row.customerCity) : row.customer_city !== undefined ? String(row.customer_city) : undefined,
+  customerAddress: row.customerAddress !== undefined ? String(row.customerAddress) : row.customer_address !== undefined ? String(row.customer_address) : undefined,
+  notes: row.notes !== undefined ? String(row.notes) : undefined,
+  userId: row.userId !== undefined ? String(row.userId) : row.user_id !== undefined ? String(row.user_id) : undefined,
+});
+
+const normalizeOrderUpdateData = (row: Record<string, unknown>) => {
+  const data: Record<string, unknown> = {};
+  if (row.items !== undefined) data.items = Array.isArray(row.items) ? row.items : [];
+  if (row.total !== undefined) data.total = new Prisma.Decimal(Number(row.total));
+  if (row.shipping !== undefined) data.shipping = Number(row.shipping);
+  if (row.status !== undefined) data.status = String(row.status);
+  if (row.paymentMethod !== undefined) data.paymentMethod = String(row.paymentMethod);
+  if (row.payment_method !== undefined) data.paymentMethod = String(row.payment_method);
+  if (row.customerName !== undefined) data.customerName = String(row.customerName);
+  if (row.customer_name !== undefined) data.customerName = String(row.customer_name);
+  if (row.customerEmail !== undefined) data.customerEmail = String(row.customerEmail).trim().toLowerCase();
+  if (row.customer_email !== undefined) data.customerEmail = String(row.customer_email).trim().toLowerCase();
+  if (row.customerPhone !== undefined) data.customerPhone = String(row.customerPhone);
+  if (row.customer_phone !== undefined) data.customerPhone = String(row.customer_phone);
+  if (row.customerCity !== undefined) data.customerCity = String(row.customerCity);
+  if (row.customer_city !== undefined) data.customerCity = String(row.customer_city);
+  if (row.customerAddress !== undefined) data.customerAddress = String(row.customerAddress);
+  if (row.customer_address !== undefined) data.customerAddress = String(row.customer_address);
+  if (row.notes !== undefined) data.notes = String(row.notes);
+  if (row.userId !== undefined) data.userId = String(row.userId);
+  if (row.user_id !== undefined) data.userId = String(row.user_id);
+  return data;
+};
 
 const issueSession = (user: User): StoredSession => {
   const payload: AuthPayload = {
@@ -358,15 +493,19 @@ app.post("/api/data/:table", async (req, res) => {
     const rows = Array.isArray(body) ? body : [body];
     const saved = [] as Order[];
     for (const row of rows as Array<Record<string, unknown>>) {
-      const order = await prisma.order.create({
-        data: {
-          id: String(row.id || crypto.randomUUID()),
-          items: row.items ?? [],
-          total: new Prisma.Decimal(Number(row.total ?? 0)),
-          status: String(row.status ?? "pending"),
-          userId: row.user_id ? String(row.user_id) : null,
+      const orderId = String(row.id || crypto.randomUUID());
+      const order = await prisma.order.upsert({
+        where: { id: orderId },
+        update: normalizeOrderCreateData(row),
+        create: {
+          id: orderId,
+          ...normalizeOrderCreateData(row),
         },
       });
+      if (revenueStatuses.has(order.status.toLowerCase()) && order.customerEmail && !order.invoiceSentAt) {
+        await sendInvoiceEmail(order);
+        await prisma.order.update({ where: { id: order.id }, data: { invoiceSentAt: new Date() } });
+      }
       saved.push(order);
     }
     return res.json(saved.map(serializeOrder));
@@ -443,13 +582,19 @@ app.patch("/api/data/:table", async (req, res) => {
     const matched = applyFilters(rows.map(serializeOrder) as Record<string, unknown>[], filters);
     const updated = [] as Order[];
     for (const row of matched) {
+      const existing = await prisma.order.findUnique({ where: { id: String(row.id) } });
       const next = await prisma.order.update({
         where: { id: String(row.id) },
-        data: {
-          ...payload,
-          total: payload.total !== undefined ? new Prisma.Decimal(Number(payload.total)) : undefined,
-        },
+        data: normalizeOrderUpdateData(payload),
       });
+      if (existing && !revenueStatuses.has(existing.status.toLowerCase()) && revenueStatuses.has(next.status.toLowerCase()) && next.customerEmail) {
+        try {
+          await sendInvoiceEmail(next);
+          await prisma.order.update({ where: { id: next.id }, data: { invoiceSentAt: new Date() } });
+        } catch (error) {
+          console.error("Error enviando factura", error);
+        }
+      }
       updated.push(next);
     }
     return res.json(updated.map(serializeOrder));
@@ -582,8 +727,8 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
     body: JSON.stringify(preference),
   });
 
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) return res.status(response.status).json({ error: data?.message || "Error creando preferencia", details: data });
+  const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!response.ok) return res.status(response.status).json({ error: String(data.message || "Error creando preferencia"), details: data });
   return res.json({ id: data.id, init_point: data.init_point, sandbox_init_point: data.sandbox_init_point });
 });
 
