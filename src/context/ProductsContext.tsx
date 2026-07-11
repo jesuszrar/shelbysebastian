@@ -7,6 +7,9 @@ type ProductRow = {
   name: string;
   category: string;
   price: number;
+  oldPrice?: number | null;
+  badge?: string | null;
+  highlight?: boolean | null;
   image: string | null;
   stock: number | null;
   description: string | null;
@@ -24,12 +27,15 @@ const ProductsContext = createContext<ProductsContextValue | undefined>(undefine
 
 const mergeProduct = (base: Product, row?: ProductRow): Product => ({
   ...base,
-  name: row?.name || base.name,
-  category: (row?.category as Product["category"]) || base.category,
-  image: row?.image || base.image,
+  name: row?.name ?? base.name,
+  category: (row?.category as Product["category"]) ?? base.category,
+  image: row?.image ?? base.image,
   price: typeof row?.price === "number" ? row.price : base.price,
+  oldPrice: row?.oldPrice !== undefined ? row.oldPrice : base.oldPrice,
+  badge: row?.badge !== undefined ? row.badge : base.badge,
+  highlight: row?.highlight !== undefined ? row.highlight : base.highlight,
   stock: typeof row?.stock === "number" ? row.stock : base.stock,
-  description: row?.description || base.description,
+  description: row?.description ?? base.description,
   specs: row?.specs?.length ? row.specs : base.specs,
 });
 
@@ -46,10 +52,10 @@ const rowToProduct = (row: ProductRow): Product => {
     category: (row.category as Product["category"]) || "Adhesivas",
     image: row.image || defaultProducts[0]?.image || "",
     price: typeof row.price === "number" ? row.price : 0,
+    oldPrice: row.oldPrice ?? undefined,
+    badge: row.badge ?? undefined,
+    highlight: row.highlight ?? false,
     stock: typeof row.stock === "number" ? row.stock : 0,
-    oldPrice: undefined,
-    badge: undefined,
-    highlight: false,
     description: row.description || "",
     specs: row.specs?.length ? row.specs : [],
   };
@@ -89,7 +95,7 @@ export const ProductsProvider = ({ children }: { children: ReactNode }) => {
     setLoading(true);
     const { data, error } = await supabase
       .from<ProductRow>("products")
-      .select("id,name,category,price,image,stock,description,specs")
+      .select("id,name,category,price,oldPrice,badge,highlight,image,stock,description,specs")
       .order("created_at", { ascending: false });
 
     if (error) {

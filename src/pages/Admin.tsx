@@ -41,6 +41,9 @@ type ProductRow = {
   name: string;
   category: string;
   price: number;
+  oldPrice?: number | null;
+  badge?: string | null;
+  highlight?: boolean | null;
   image: string | null;
   stock: number | null;
   description: string | null;
@@ -76,6 +79,9 @@ type ProductForm = {
   name: string;
   category: string;
   price: string;
+  oldPrice: string;
+  badge: string;
+  highlight: boolean;
   stock: string;
   description: string;
   specsText: string;
@@ -93,6 +99,9 @@ const toProductRow = (product: Product): ProductRow => ({
   name: product.name,
   category: product.category,
   price: product.price,
+  oldPrice: product.oldPrice ?? null,
+  badge: product.badge ?? null,
+  highlight: product.highlight ?? false,
   image: product.image,
   stock: null,
   description: product.description,
@@ -103,6 +112,9 @@ const emptyProductForm = (): ProductForm => ({
   name: "",
   category: "Adhesivas",
   price: "0",
+  oldPrice: "",
+  badge: "",
+  highlight: false,
   stock: "0",
   description: "",
   specsText: "",
@@ -305,6 +317,9 @@ function ProductsAdmin() {
       name: product.name,
       category: product.category,
       price: String(product.price ?? 0),
+      oldPrice: product.oldPrice !== undefined && product.oldPrice !== null ? String(product.oldPrice) : "",
+      badge: product.badge || "",
+      highlight: product.highlight ?? false,
       stock: String(product.stock ?? 0),
       description: product.description || "",
       specsText: (product.specs || []).join(", "),
@@ -339,6 +354,9 @@ function ProductsAdmin() {
       name: form.name.trim(),
       category: form.category.trim(),
       price: Math.max(0, Number(form.price) || 0),
+      oldPrice: form.oldPrice.trim() ? Number(form.oldPrice) : null,
+      badge: form.badge.trim() ? form.badge.trim() : null,
+      highlight: Boolean(form.highlight),
       stock: Math.max(0, Number(form.stock) || 0),
       description: form.description.trim(),
       specs: parseSpecs(form.specsText),
@@ -377,6 +395,9 @@ function ProductsAdmin() {
         name,
         category: "Adhesivas",
         price: 0,
+        oldPrice: null,
+        badge: null,
+        highlight: false,
         stock: 0,
         description: "",
         image: null,
@@ -492,7 +513,18 @@ function ProductsAdmin() {
                     <Field label="Nombre" value={form.name} onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
                     <Field label="Categoría" value={form.category} onChange={(value) => setForm((current) => ({ ...current, category: value }))} />
                     <Field label="Precio / costo" type="number" value={form.price} onChange={(value) => setForm((current) => ({ ...current, price: value }))} />
+                    <Field label="Precio anterior" type="number" value={form.oldPrice} onChange={(value) => setForm((current) => ({ ...current, oldPrice: value }))} />
                     <Field label="Stock" type="number" value={form.stock} onChange={(value) => setForm((current) => ({ ...current, stock: value }))} />
+                    <Field label="Etiqueta" value={form.badge} onChange={(value) => setForm((current) => ({ ...current, badge: value }))} placeholder="Ej. -35%" />
+                    <label className="block">
+                      <span className="text-sm font-medium text-secondary block mb-1.5">Destacado</span>
+                      <input
+                        type="checkbox"
+                        checked={form.highlight}
+                        onChange={(event) => setForm((current) => ({ ...current, highlight: event.target.checked }))}
+                        className="h-4 w-4 rounded border border-border text-primary focus:ring-primary"
+                      />
+                    </label>
                     <div className="md:col-span-2">
                       <Field
                         label="Imagen URL"

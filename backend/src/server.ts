@@ -76,6 +76,13 @@ const wrap = (value: unknown): unknown => {
   return value;
 };
 
+const parseDecimal = (value: unknown): Prisma.Decimal | null | undefined => {
+  if (value === null) return null;
+  const normalized = String(value ?? "").trim();
+  if (normalized === "") return undefined;
+  return new Prisma.Decimal(normalized);
+};
+
 const serializeUser = (user: User | null) =>
   user
     ? {
@@ -467,7 +474,10 @@ app.post("/api/data/:table", async (req, res) => {
         update: {
           name: String(row.name ?? ""),
           category: String(row.category ?? ""),
-          price: new Prisma.Decimal(Number(row.price ?? 0)),
+          price: parseDecimal(row.price) ?? new Prisma.Decimal(0),
+          oldPrice: parseDecimal(row.oldPrice),
+          badge: row.badge ? String(row.badge) : null,
+          highlight: row.highlight !== undefined ? Boolean(row.highlight) : undefined,
           stock: Number(row.stock ?? 0),
           image: row.image ? String(row.image) : null,
           description: row.description ? String(row.description) : null,
@@ -477,7 +487,10 @@ app.post("/api/data/:table", async (req, res) => {
           id,
           name: String(row.name ?? ""),
           category: String(row.category ?? ""),
-          price: new Prisma.Decimal(Number(row.price ?? 0)),
+          price: parseDecimal(row.price) ?? new Prisma.Decimal(0),
+          oldPrice: parseDecimal(row.oldPrice),
+          badge: row.badge ? String(row.badge) : null,
+          highlight: row.highlight !== undefined ? Boolean(row.highlight) : false,
           stock: Number(row.stock ?? 0),
           image: row.image ? String(row.image) : null,
           description: row.description ? String(row.description) : null,
@@ -569,7 +582,10 @@ app.patch("/api/data/:table", async (req, res) => {
         where: { id: String(row.id) },
         data: {
           ...payload,
-          price: payload.price !== undefined ? new Prisma.Decimal(Number(payload.price)) : undefined,
+          price: payload.price !== undefined ? parseDecimal(payload.price) : undefined,
+          oldPrice: payload.oldPrice !== undefined ? parseDecimal(payload.oldPrice) : undefined,
+          highlight: payload.highlight !== undefined ? Boolean(payload.highlight) : undefined,
+          badge: payload.badge !== undefined ? (payload.badge ? String(payload.badge) : null) : undefined,
         },
       });
       updated.push(next);
