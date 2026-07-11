@@ -8,6 +8,7 @@ import nodemailer from "nodemailer";
 import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+import { buildAbsoluteUrl } from "./lib/urls.js";
 
 dotenv.config();
 
@@ -582,8 +583,8 @@ app.patch("/api/data/:table", async (req, res) => {
         where: { id: String(row.id) },
         data: {
           ...payload,
-          price: payload.price !== undefined ? parseDecimal(payload.price) : undefined,
-          oldPrice: payload.oldPrice !== undefined ? parseDecimal(payload.oldPrice) : undefined,
+          price: payload.price !== undefined ? (parseDecimal(payload.price) ?? undefined) : undefined,
+          oldPrice: payload.oldPrice !== undefined ? (parseDecimal(payload.oldPrice) ?? undefined) : undefined,
           highlight: payload.highlight !== undefined ? Boolean(payload.highlight) : undefined,
           badge: payload.badge !== undefined ? (payload.badge ? String(payload.badge) : null) : undefined,
         },
@@ -690,7 +691,9 @@ app.post("/api/storage/upload", async (req, res) => {
 
 app.post("/api/functions/create-mp-preference", async (req, res) => {
   const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN_CLIENT ?? process.env.MERCADOPAGO_ACCESS_TOKEN;
-  if (!accessToken) return res.status(500).json({ error: "MERCADOPAGO_ACCESS_TOKEN no está configurado" });
+  if (!accessToken) {
+    return res.status(500).json({ error: "MERCADOPAGO_ACCESS_TOKEN no está configurado", details: { missing: ["MERCADOPAGO_ACCESS_TOKEN_CLIENT", "MERCADOPAGO_ACCESS_TOKEN"] } });
+  }
 
   const body = req.body as {
     orderId?: string;
@@ -706,6 +709,9 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
   const [first = "", ...rest] = (body.payer?.name || "").trim().split(" ");
   const surname = rest.join(" ") || undefined;
   const backUrls = body.backUrls ?? body.back_urls;
+
+  const requestOrigin = req.get("origin") || req.get("x-forwarded-host") || req.get("host") || "localhost";
+  const notificationUrl = buildAbsoluteUrl(req.protocol || "https", requestOrigin, "/api/functions/mp-webhook");
 
   const preference: Record<string, unknown> = {
     items: body.items.map((it) => ({
@@ -725,7 +731,7 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
       address: body.payer?.address ? { street_name: body.payer.address } : undefined,
     },
     statement_descriptor: "SHELBY",
-    notification_url: `${new URL(req.url).origin}/api/functions/mp-webhook`,
+    notification_url: notificationUrl,
   };
 
   if (body.shipping && body.shipping > 0) {
@@ -737,11 +743,16 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
     preference.auto_return = "approved";
   }
 
-  const response = await fetch("https://api.mercadopago.com/checkout/preferences", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify(preference),
-  });
+  let response: Response;
+  try {
+    response = await fetch("https://api.mercadopago.com/checkout/preferences", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(preference),
+    });
+  } catch (error) {
+    return res.status(502).json({ error: "No se pudo conectar con Mercado Pago", details: error instanceof Error ? error.message : String(error) });
+  }
 
   const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) return res.status(response.status).json({ error: String(data.message || "Error creando preferencia"), details: data });

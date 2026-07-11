@@ -11,6 +11,7 @@ import { supabase } from "@/integrations/api/client";
 import { toast } from "sonner";
 import { CreditCard, Truck, MessageCircle, Lock, ShoppingBag, Copy, CheckCircle2, Loader2, Smartphone, Building2 } from "lucide-react";
 import { trackInitiateCheckout } from "@/lib/metaPixel";
+import { getMercadoPagoErrorMessage } from "@/lib/payment";
 
 type PaymentMethod = "mercadopago" | "nequi" | "transferencia";
 
@@ -165,8 +166,8 @@ const Checkout = () => {
         window.location.href = res.init_point;
       } catch (err) {
         setLoading(false);
-        const msg = err instanceof Error ? err.message : "No pudimos iniciar el pago";
-        toast.error("Mercado Pago no disponible", { description: msg + " — usa Nequi, transferencia o WhatsApp." });
+        const msg = getMercadoPagoErrorMessage(err);
+        toast.error("Mercado Pago no disponible", { description: msg });
       }
       return;
     }
