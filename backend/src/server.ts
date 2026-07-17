@@ -54,7 +54,7 @@ const corsOriginHostnames = corsOrigins
 
 const isAllowedCorsOrigin = (origin: string) => {
   const normalizedOrigin = origin.toLowerCase();
-  if (corsOrigins.includes(origin) || isLocalhostOrigin(origin)) return true;
+  if (corsOrigins.includes(origin) || isLocalDevOrigin(origin)) return true;
 
   try {
     const parsed = new URL(origin);
