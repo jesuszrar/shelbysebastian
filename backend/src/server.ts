@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { PrismaClient, type Product, type Order, type User, type CedulaEmail, Prisma } from "@prisma/client";
+import { PrismaClient, type Product, type Order, type User, type CedulaEmail, type Coupon, Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
@@ -25,7 +25,23 @@ type StoredSession = { user: { id: string; email: string; user_metadata: Record<
 const normalizeCedula = (value: string) => value.replace(/\D/g, "").trim();
 
 const corsOrigins = process.env.CORS_ORIGIN?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
-const corsOriginPattern = /^https:\/\/[a-z0-9-]+\.(netlify\.app|vercel\.app)$/i;
+// Only allow origins explicitly configured in `CORS_ORIGIN` or local dev hosts.
+const isLocalDevOrigin = (origin: string) => {
+  try {
+    const parsed = new URL(origin);
+    const hostname = parsed.hostname.toLowerCase();
+    return (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "[::1]" ||
+      hostname.startsWith("192.168.") ||
+      hostname.startsWith("10.") ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)
+    );
+  } catch {
+    return false;
+  }
+};
 const corsOriginHostnames = corsOrigins
   .map((value) => {
     try {
@@ -38,7 +54,7 @@ const corsOriginHostnames = corsOrigins
 
 const isAllowedCorsOrigin = (origin: string) => {
   const normalizedOrigin = origin.toLowerCase();
-  if (corsOrigins.includes(origin) || corsOriginPattern.test(origin)) return true;
+  if (corsOrigins.includes(origin) || isLocalhostOrigin(origin)) return true;
 
   try {
     const parsed = new URL(origin);
@@ -96,7 +112,17 @@ const serializeUser = (user: User | null) =>
     : null;
 
 const serializeProduct = (product: Product) => wrap({ ...product, price: product.price });
-const serializeOrder = (order: Order) => wrap({ ...order, total: order.total });
+const serializeOrder = (order: Order) => wrap({ ...order, total: order.total, discountAmount: order.discountAmount, couponCode: order.couponCode });
+const serializeCoupon = (coupon: Coupon) => wrap({
+  code: coupon.code,
+  type: coupon.type,
+  value: coupon.value,
+  active: coupon.active,
+  minimumSubtotal: coupon.minimumSubtotal,
+  expiresAt: coupon.expiresAt,
+  createdAt: coupon.createdAt,
+  updatedAt: coupon.updatedAt,
+});
 const serializeCedulaEmail = (row: CedulaEmail) => row;
 
 const getMailer = () => {
@@ -171,6 +197,8 @@ const normalizeOrderCreateData = (row: Record<string, unknown>) => ({
   items: Array.isArray(row.items) ? row.items : [],
   total: new Prisma.Decimal(Number(row.total ?? 0)),
   shipping: Number(row.shipping ?? 0),
+  discountAmount: row.discountAmount !== undefined ? parseDecimal(row.discountAmount) : null,
+  couponCode: row.couponCode !== undefined ? String(row.couponCode) : row.coupon_code !== undefined ? String(row.coupon_code) : undefined,
   status: String(row.status ?? "pending"),
   paymentMethod: row.paymentMethod !== undefined ? String(row.paymentMethod) : row.payment_method !== undefined ? String(row.payment_method) : undefined,
   customerName: row.customerName !== undefined ? String(row.customerName) : row.customer_name !== undefined ? String(row.customer_name) : undefined,
@@ -187,6 +215,10 @@ const normalizeOrderUpdateData = (row: Record<string, unknown>) => {
   if (row.items !== undefined) data.items = Array.isArray(row.items) ? row.items : [];
   if (row.total !== undefined) data.total = new Prisma.Decimal(Number(row.total));
   if (row.shipping !== undefined) data.shipping = Number(row.shipping);
+  if (row.discountAmount !== undefined) data.discountAmount = parseDecimal(row.discountAmount) ?? undefined;
+  if (row.discount_amount !== undefined) data.discountAmount = parseDecimal(row.discount_amount) ?? undefined;
+  if (row.couponCode !== undefined) data.couponCode = String(row.couponCode);
+  if (row.coupon_code !== undefined) data.couponCode = String(row.coupon_code);
   if (row.status !== undefined) data.status = String(row.status);
   if (row.paymentMethod !== undefined) data.paymentMethod = String(row.paymentMethod);
   if (row.payment_method !== undefined) data.paymentMethod = String(row.payment_method);
@@ -317,7 +349,15 @@ const findEmailByCedula = async (cedula: string) => {
 };
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "shelby-mysql-backend" });
+  res.json({
+    ok: true,
+    service: "shelby-mysql-backend",
+    env: {
+      hasMercadoPagoToken: Boolean(process.env.MERCADOPAGO_ACCESS_TOKEN_CLIENT ?? process.env.MERCADOPAGO_ACCESS_TOKEN),
+      hasDatabaseUrl: Boolean(process.env.DATABASE_URL),
+      hasCorsOrigin: Boolean(process.env.CORS_ORIGIN),
+    },
+  });
 });
 
 app.get("/", (_req, res) => {
@@ -435,31 +475,35 @@ app.patch("/api/auth/me", async (req, res) => {
 });
 
 app.get("/api/data/:table", async (req, res) => {
-  const { table } = req.params;
-  const filters = parseFilters(req.query.filters as string | undefined);
-  const limit = req.query.limit ? Number(req.query.limit) : undefined;
-  const ascending = req.query.ascending !== "false";
-  const orderBy = req.query.orderBy as string | undefined;
-  const single = req.query.single === "true";
-  const maybeSingle = req.query.maybeSingle === "true";
+  try {
+    const { table } = req.params;
+    const filters = parseFilters(req.query.filters as string | undefined);
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const ascending = req.query.ascending !== "false";
+    const orderBy = req.query.orderBy as string | undefined;
+    const single = req.query.single === "true";
+    const maybeSingle = req.query.maybeSingle === "true";
 
-  let rows: Array<Record<string, unknown>> = [];
-  if (table === "products") rows = (await prisma.product.findMany()).map((row) => serializeProduct(row) as Record<string, unknown>);
-  else if (table === "orders") rows = (await prisma.order.findMany()).map((row) => serializeOrder(row) as Record<string, unknown>);
-  else if (table === "profiles") rows = (await prisma.user.findMany()).map((row) => serializeUser(row) as Record<string, unknown>);
-  else if (table === "cedula_emails") rows = (await prisma.cedulaEmail.findMany()).map((row) => serializeCedulaEmail(row) as Record<string, unknown>);
-  else return res.status(404).json({ error: "Tabla no soportada" });
+    let rows: Array<Record<string, unknown>> = [];
+    if (table === "products") rows = (await prisma.product.findMany()).map((row) => serializeProduct(row) as Record<string, unknown>);
+    else if (table === "orders") rows = (await prisma.order.findMany()).map((row) => serializeOrder(row) as Record<string, unknown>);
+    else if (table === "profiles") rows = (await prisma.user.findMany()).map((row) => serializeUser(row) as Record<string, unknown>);
+    else if (table === "cedula_emails") rows = (await prisma.cedulaEmail.findMany()).map((row) => serializeCedulaEmail(row) as Record<string, unknown>);    else if (table === "coupons") rows = (await prisma.coupon.findMany()).map((row) => serializeCoupon(row) as Record<string, unknown>);    else return res.status(404).json({ error: "Tabla no soportada" });
 
-  const filtered = applyFilters(rows, filters);
-  const ordered = orderBy ? [...filtered].sort((a, b) => {
-    const left = String(a[orderBy] ?? "");
-    const right = String(b[orderBy] ?? "");
-    return ascending ? left.localeCompare(right) : right.localeCompare(left);
-  }) : filtered;
-  const sliced = typeof limit === "number" ? ordered.slice(0, limit) : ordered;
+    const filtered = applyFilters(rows, filters);
+    const ordered = orderBy ? [...filtered].sort((a, b) => {
+      const left = String(a[orderBy] ?? "");
+      const right = String(b[orderBy] ?? "");
+      return ascending ? left.localeCompare(right) : right.localeCompare(left);
+    }) : filtered;
+    const sliced = typeof limit === "number" ? ordered.slice(0, limit) : ordered;
 
-  if (single || maybeSingle) return res.json(sliced[0] ?? null);
-  return res.json(sliced);
+    if (single || maybeSingle) return res.json(sliced[0] ?? null);
+    return res.json(sliced);
+  } catch (error) {
+    console.error("GET /api/data error", error);
+    return res.status(500).json({ error: "Error consultando datos", details: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.post("/api/data/:table", async (req, res) => {
@@ -476,7 +520,6 @@ app.post("/api/data/:table", async (req, res) => {
           name: String(row.name ?? ""),
           category: String(row.category ?? ""),
           price: parseDecimal(row.price) ?? new Prisma.Decimal(0),
-          oldPrice: parseDecimal(row.oldPrice),
           badge: row.badge ? String(row.badge) : null,
           highlight: row.highlight !== undefined ? Boolean(row.highlight) : undefined,
           stock: Number(row.stock ?? 0),
@@ -489,7 +532,6 @@ app.post("/api/data/:table", async (req, res) => {
           name: String(row.name ?? ""),
           category: String(row.category ?? ""),
           price: parseDecimal(row.price) ?? new Prisma.Decimal(0),
-          oldPrice: parseDecimal(row.oldPrice),
           badge: row.badge ? String(row.badge) : null,
           highlight: row.highlight !== undefined ? Boolean(row.highlight) : false,
           stock: Number(row.stock ?? 0),
@@ -523,6 +565,35 @@ app.post("/api/data/:table", async (req, res) => {
       saved.push(order);
     }
     return res.json(saved.map(serializeOrder));
+  }
+
+  if (table === "coupons") {
+    const rows = Array.isArray(body) ? body : [body];
+    const saved = [] as any[];
+    for (const row of rows as Array<Record<string, unknown>>) {
+      const code = String(row.code || "").trim().toUpperCase();
+      if (!code) continue;
+      const coupon = await prisma.coupon.upsert({
+        where: { code },
+        update: {
+          type: String(row.type ?? "fixed"),
+          value: parseDecimal(row.value) ?? new Prisma.Decimal(0),
+          active: row.active !== undefined ? Boolean(row.active) : true,
+          minimumSubtotal: row.minimumSubtotal !== undefined ? parseDecimal(row.minimumSubtotal) : null,
+          expiresAt: row.expiresAt ? new Date(String(row.expiresAt)) : null,
+        },
+        create: {
+          code,
+          type: String(row.type ?? "fixed"),
+          value: parseDecimal(row.value) ?? new Prisma.Decimal(0),
+          active: row.active !== undefined ? Boolean(row.active) : true,
+          minimumSubtotal: row.minimumSubtotal !== undefined ? parseDecimal(row.minimumSubtotal) : null,
+          expiresAt: row.expiresAt ? new Date(String(row.expiresAt)) : null,
+        },
+      });
+      saved.push(coupon);
+    }
+    return res.json(saved.map(serializeCoupon));
   }
 
   if (table === "profiles") {
@@ -584,7 +655,6 @@ app.patch("/api/data/:table", async (req, res) => {
         data: {
           ...payload,
           price: payload.price !== undefined ? (parseDecimal(payload.price) ?? undefined) : undefined,
-          oldPrice: payload.oldPrice !== undefined ? (parseDecimal(payload.oldPrice) ?? undefined) : undefined,
           highlight: payload.highlight !== undefined ? Boolean(payload.highlight) : undefined,
           badge: payload.badge !== undefined ? (payload.badge ? String(payload.badge) : null) : undefined,
         },
@@ -615,6 +685,26 @@ app.patch("/api/data/:table", async (req, res) => {
       updated.push(next);
     }
     return res.json(updated.map(serializeOrder));
+  }
+
+  if (table === "coupons") {
+    const rows = await prisma.coupon.findMany();
+    const matched = applyFilters(rows.map(serializeCoupon) as Record<string, unknown>[], filters);
+    const updated = [] as any[];
+    for (const row of matched) {
+      const next = await prisma.coupon.update({
+        where: { code: String(row.code) },
+        data: {
+          type: row.type !== undefined ? String(row.type) : undefined,
+          value: row.value !== undefined ? parseDecimal(row.value) ?? undefined : undefined,
+          active: row.active !== undefined ? Boolean(row.active) : undefined,
+          minimumSubtotal: row.minimumSubtotal !== undefined ? parseDecimal(row.minimumSubtotal) : undefined,
+          expiresAt: row.expiresAt !== undefined ? (row.expiresAt ? new Date(String(row.expiresAt)) : null) : undefined,
+        },
+      });
+      updated.push(next);
+    }
+    return res.json(updated.map(serializeCoupon));
   }
 
   if (table === "profiles") {
@@ -661,6 +751,13 @@ app.delete("/api/data/:table", async (req, res) => {
     return res.json({ deleted: matched.length });
   }
 
+  if (table === "coupons") {
+    const rows = await prisma.coupon.findMany();
+    const matched = applyFilters(rows.map(serializeCoupon) as Record<string, unknown>[], filters);
+    for (const row of matched) await prisma.coupon.delete({ where: { code: String(row.code) } });
+    return res.json({ deleted: matched.length });
+  }
+
   if (table === "profiles") {
     const rows = await prisma.user.findMany();
     const matched = applyFilters(rows.map(serializeUser) as Record<string, unknown>[], filters);
@@ -691,6 +788,7 @@ app.post("/api/storage/upload", async (req, res) => {
 
 app.post("/api/functions/create-mp-preference", async (req, res) => {
   const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN_CLIENT ?? process.env.MERCADOPAGO_ACCESS_TOKEN;
+  console.log("create-mp-preference start", { hasToken: Boolean(accessToken), tokenLength: accessToken?.length ?? 0, host: req.get("host"), origin: req.get("origin"), forwardedHost: req.get("x-forwarded-host"), forwardedProto: req.get("x-forwarded-proto") });
   if (!accessToken) {
     return res.status(500).json({ error: "MERCADOPAGO_ACCESS_TOKEN no está configurado", details: { missing: ["MERCADOPAGO_ACCESS_TOKEN_CLIENT", "MERCADOPAGO_ACCESS_TOKEN"] } });
   }
@@ -701,6 +799,8 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
     payer?: { name?: string; email?: string; phone?: string; address?: string; city?: string };
     shipping?: number;
     total?: number;
+    discountAmount?: number;
+    couponCode?: string;
     backUrls?: { success?: string; failure?: string; pending?: string };
     back_urls?: { success?: string; failure?: string; pending?: string };
   };
@@ -710,18 +810,37 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
   const surname = rest.join(" ") || undefined;
   const backUrls = body.backUrls ?? body.back_urls;
 
-  const requestOrigin = req.get("origin") || req.get("x-forwarded-host") || req.get("host") || "localhost";
-  const notificationUrl = buildAbsoluteUrl(req.protocol || "https", requestOrigin, "/api/functions/mp-webhook");
+  const forwardedProto = req.get("x-forwarded-proto") || req.protocol || "https";
+  const forwardedHost = req.get("x-forwarded-host") || req.get("host") || "localhost";
+  const notificationUrl = buildAbsoluteUrl(forwardedProto, forwardedHost, "/api/functions/mp-webhook");
+
+  const discountAmount = Math.max(0, Math.round(Number(body.discountAmount || 0)));
+  const items = body.items.map((it) => ({
+    id: it.id,
+    title: String(it.title).slice(0, 250),
+    quantity: Math.max(1, Math.floor(Number(it.quantity) || 1)),
+    unit_price: Math.round(Number(it.unit_price) || 0),
+    currency_id: "COP",
+    picture_url: it.picture_url,
+  }));
+
+  if (body.shipping && body.shipping > 0) {
+    items.push({ id: "shipping", title: "Envío", quantity: 1, unit_price: Math.round(body.shipping), currency_id: "COP", picture_url: undefined });
+  }
+
+  if (discountAmount > 0) {
+    items.push({
+      id: "discount",
+      title: body.couponCode ? `Descuento ${String(body.couponCode).toUpperCase()}` : "Descuento",
+      quantity: 1,
+      unit_price: -discountAmount,
+      currency_id: "COP",
+      picture_url: undefined,
+    });
+  }
 
   const preference: Record<string, unknown> = {
-    items: body.items.map((it) => ({
-      id: it.id,
-      title: String(it.title).slice(0, 250),
-      quantity: Math.max(1, Math.floor(Number(it.quantity) || 1)),
-      unit_price: Math.round(Number(it.unit_price) || 0),
-      currency_id: "COP",
-      picture_url: it.picture_url,
-    })),
+    items,
     external_reference: body.orderId,
     payer: {
       name: first || undefined,
@@ -733,10 +852,6 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
     statement_descriptor: "SHELBY",
     notification_url: notificationUrl,
   };
-
-  if (body.shipping && body.shipping > 0) {
-    (preference.items as Array<Record<string, unknown>>).push({ id: "shipping", title: "Envío", quantity: 1, unit_price: Math.round(body.shipping), currency_id: "COP" });
-  }
 
   if (backUrls?.success && backUrls?.failure && backUrls?.pending) {
     preference.back_urls = backUrls;
@@ -751,10 +866,12 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
       body: JSON.stringify(preference),
     });
   } catch (error) {
+    console.error("Mercado Pago fetch error", error);
     return res.status(502).json({ error: "No se pudo conectar con Mercado Pago", details: error instanceof Error ? error.message : String(error) });
   }
 
   const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  console.log("Mercado Pago response", { status: response.status, ok: response.ok, data });
   if (!response.ok) return res.status(response.status).json({ error: String(data.message || "Error creando preferencia"), details: data });
   return res.json({ id: data.id, init_point: data.init_point, sandbox_init_point: data.sandbox_init_point });
 });

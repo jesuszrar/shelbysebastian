@@ -1,6 +1,6 @@
 # Shelby Checkout
 
-Guia rapida para dejar el proyecto funcionando en produccion con Railway + Render + Netlify.
+Guia rapida para dejar el proyecto funcionando en produccion con Railway + Render + Hostinger.
 
 ## 1) Backend en Render
 
@@ -27,7 +27,7 @@ mysql://USUARIO:PASSWORD@HOST:PUERTO/NOMBRE_DB
 
 Valor recomendado para CORS_ORIGIN:
 
-https://shelbyimportsebastian.netlify.app
+https://your-frontend-domain.com
 
 JWT_SECRET debe ser una cadena larga y unica.
 
@@ -44,17 +44,14 @@ Eso crea las tablas del esquema Prisma:
 - Order
 - CedulaEmail
 
-## 4) Frontend en Netlify
+## 4) Frontend en Hostinger
 
-En Netlify, variable de entorno:
+Hostinger sirve sitios estáticos. Build del frontend debe generarse con la variable de entorno correcta y luego subir la carpeta `dist` al panel de Hostinger (o mediante FTP).
 
-- VITE_API_URL = URL publica del backend en Render
-
-Ejemplo:
-
-VITE_API_URL=https://shelby-backend.onrender.com
-
-Despues, redeploy del sitio.
+- Localmente: exporta la variable `VITE_API_URL` apuntando a tu backend en Render y ejecuta `npm run build`.
+	- Ejemplo (Windows PowerShell): `setx VITE_API_URL "https://shelby-backend.onrender.com"` y luego `npm run build`.
+- Sube la carpeta `dist` resultante a Hostinger.
+- Asegúrate de incluir `public/.htaccess` para reglas SPA (ya agregado en el repo).
 
 ## 5) Verificacion final
 

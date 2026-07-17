@@ -45,9 +45,15 @@ const Checkout = () => {
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
+  const [couponCode, setCouponCode] = useState("");
+  const [couponMessage, setCouponMessage] = useState<string | null>(null);
+  const [discountAmount, setDiscountAmount] = useState(0);
+  const [couponLoading, setCouponLoading] = useState(false);
   const [step, setStep] = useState<"form" | "manual">("form");
 
   const orderId = useMemo(() => `SHB-${Date.now().toString(36).toUpperCase().slice(-6)}`, []);
+
+  const checkoutTotal = Math.max(subtotal + shipping - discountAmount, 0);
 
   useEffect(() => {
     trackInitiateCheckout({
@@ -76,8 +82,10 @@ const Checkout = () => {
           unit_price: it.product.price,
           lineTotal: it.product.price * it.quantity,
         })),
-        total,
+        total: checkoutTotal,
         shipping,
+        discountAmount: discountAmount || null,
+        couponCode: couponCode.trim().toUpperCase() || null,
         status,
         paymentMethod,
         customerName: data.name,
@@ -93,6 +101,58 @@ const Checkout = () => {
 
     if (error) {
       throw error;
+    }
+  };
+
+  const handleApplyCoupon = async () => {
+    const code = couponCode.trim().toUpperCase();
+    if (!code) {
+      setCouponMessage("Ingresa un código de cupón.");
+      return;
+    }
+
+    setCouponLoading(true);
+    setCouponMessage(null);
+
+    try {
+      const result = await supabase.from("coupons").select("code,type,value,minimumSubtotal,expiresAt,active").eq("code", code).single();
+      if (result.error || !result.data) {
+        setCouponMessage("Cupón inválido o no encontrado.");
+        setDiscountAmount(0);
+        return;
+      }
+
+      const coupon = result.data as { code: string; type: string; value: number; minimumSubtotal?: number | null; expiresAt?: string | null; active: boolean };
+      if (!coupon.active) {
+        setCouponMessage("Este cupón ya no está activo.");
+        setDiscountAmount(0);
+        return;
+      }
+
+      if (coupon.expiresAt && new Date(coupon.expiresAt).getTime() < Date.now()) {
+        setCouponMessage("El cupón ha expirado.");
+        setDiscountAmount(0);
+        return;
+      }
+
+      if (coupon.minimumSubtotal && subtotal < coupon.minimumSubtotal) {
+        setCouponMessage(`Este cupón requiere un subtotal mínimo de ${formatCOP(coupon.minimumSubtotal)}.`);
+        setDiscountAmount(0);
+        return;
+      }
+
+      const discount = coupon.type === "percent"
+        ? Math.round((subtotal + shipping) * (coupon.value / 100))
+        : Number(coupon.value || 0);
+
+      setDiscountAmount(Math.min(discount, subtotal + shipping));
+      setCouponMessage(`Cupón aplicado: ${coupon.type === "percent" ? `${coupon.value}%` : formatCOP(coupon.value)} de descuento.`);
+    } catch (err) {
+      console.error(err);
+      setCouponMessage("Error al validar el cupón.");
+      setDiscountAmount(0);
+    } finally {
+      setCouponLoading(false);
     }
   };
 
@@ -130,7 +190,9 @@ const Checkout = () => {
     return encodeURIComponent(
       `¡Hola Shelby! Pedido *${orderId}*\n\n*Cliente:* ${data.name}\n*Correo:* ${data.email}\n*Teléfono:* ${data.phone}\n*Ciudad:* ${data.city}\n*Dirección:* ${data.address}\n*Pago:* ${paymentLabel}\n` +
       (data.notes ? `*Notas:* ${data.notes}\n` : "") +
-      `\n*Productos:*\n${productLines}\n\n*Subtotal:* ${formatCOP(subtotal)}\n*Envío:* ${shipping === 0 ? "Gratis" : formatCOP(shipping)}\n*Total:* ${formatCOP(total)}`
+      (couponCode ? `*Cupón:* ${couponCode.trim().toUpperCase()}\n` : "") +
+      (discountAmount ? `*Descuento:* ${formatCOP(discountAmount)}\n` : "") +
+      `\n*Productos:*\n${productLines}\n\n*Subtotal:* ${formatCOP(subtotal)}\n*Envío:* ${shipping === 0 ? "Gratis" : formatCOP(shipping)}\n*Total:* ${formatCOP(checkoutTotal)}`
     );
   };
 
@@ -148,15 +210,20 @@ const Checkout = () => {
             orderId,
             payer: { name: data.name, email: data.email, phone: data.phone, address: data.address, city: data.city },
             items: detailedItems.map((it) => ({
-              id: it.product.id, title: it.product.name, quantity: it.quantity, unit_price: it.product.price,
+              id: it.product.id,
+              title: it.product.name,
+              quantity: it.quantity,
+              unit_price: it.product.price,
               picture_url: typeof window !== "undefined" ? new URL(it.product.image, window.location.origin).href : it.product.image,
             })),
             shipping,
-            total,
+            total: checkoutTotal,
+            discountAmount,
+            couponCode: couponCode.trim().toUpperCase() || undefined,
             backUrls: {
-              success: `${window.location.origin}/order-success?order=${orderId}&total=${total}&method=Mercado%20Pago&status=paid`,
-              failure: `${window.location.origin}/order-success?order=${orderId}&total=${total}&method=Mercado%20Pago&status=failed`,
-              pending: `${window.location.origin}/order-success?order=${orderId}&total=${total}&method=Mercado%20Pago&status=pending`,
+              success: `${window.location.origin}/order-success?order=${orderId}&total=${checkoutTotal}&method=Mercado%20Pago&status=paid`,
+              failure: `${window.location.origin}/order-success?order=${orderId}&total=${checkoutTotal}&method=Mercado%20Pago&status=failed`,
+              pending: `${window.location.origin}/order-success?order=${orderId}&total=${checkoutTotal}&method=Mercado%20Pago&status=pending`,
             },
           },
         });
@@ -189,7 +256,7 @@ const Checkout = () => {
       const paymentLabel = PAYMENT_DETAILS[data.payment].label;
       const message = buildWhatsAppMessage(data, paymentLabel);
       await new Promise((r) => setTimeout(r, 500));
-      const finalTotal = total;
+      const finalTotal = checkoutTotal;
       await saveOrder("paid", data.payment, data);
       clear();
       toast.success("¡Pago reportado!", { description: "Validaremos tu transferencia en minutos." });
@@ -255,7 +322,7 @@ const Checkout = () => {
           </div>
           <form onSubmit={handleSubmit} className="grid lg:grid-cols-3 gap-8">
             <div className="lg:col-span-2 space-y-6">
-              <Section icon={Truck} title="Datos de envío">
+                      <Section icon={Truck} title="Datos de envío">
                 <div className="grid sm:grid-cols-2 gap-4">
                   <Input label="Nombre completo" value={form.name} onChange={update("name")} error={errors.name} autoComplete="name" />
                   <Input label="Correo electrónico" value={form.email} onChange={update("email")} error={errors.email} type="email" autoComplete="email" placeholder="cliente@correo.com" />
@@ -266,6 +333,21 @@ const Checkout = () => {
                 <div className="mt-4">
                   <label className="text-sm font-medium text-secondary block mb-1.5">Notas (opcional)</label>
                   <textarea value={form.notes} onChange={update("notes")} rows={3} className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth resize-none" placeholder="Referencias del lugar..." />
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] items-end">
+                  <label className="text-sm font-medium text-secondary block">Código de cupón</label>
+                  <div className="flex gap-2">
+                    <input
+                      value={couponCode}
+                      onChange={(event) => setCouponCode(event.target.value)}
+                      className="w-full rounded-2xl border border-border bg-background px-4 py-3 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                      placeholder="EJEMPLO10"
+                    />
+                    <Button type="button" disabled={couponLoading} onClick={handleApplyCoupon} className="h-12 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft">
+                      {couponLoading ? "Validando..." : "Aplicar"}
+                    </Button>
+                  </div>
+                  {couponMessage && <p className="sm:col-span-2 text-sm text-secondary/90">{couponMessage}</p>}
                 </div>
                 <p className="text-xs text-muted-foreground mt-3">
                   💡 Envío a Bogotá $15.000 · Otras ciudades $15.000 · Gratis desde $460.000
@@ -296,7 +378,8 @@ const Checkout = () => {
               <div className="mt-5 space-y-2 text-sm border-t border-border pt-4">
                 <div className="flex justify-between"><span>Subtotal</span><span>{formatCOP(subtotal)}</span></div>
                 <div className="flex justify-between"><span>Envío</span><span>{shipping === 0 ? <span className="text-brand-green font-semibold">Gratis</span> : formatCOP(shipping)}</span></div>
-                <div className="flex justify-between items-baseline pt-2 border-t border-border"><span className="font-semibold text-secondary">Total</span><span className="font-display text-2xl text-primary">{formatCOP(total)}</span></div>
+                <div className="flex justify-between"><span>Descuento</span><span>{discountAmount > 0 ? `-${formatCOP(discountAmount)}` : "-"}</span></div>
+                <div className="flex justify-between items-baseline pt-2 border-t border-border"><span className="font-semibold text-secondary">Total final</span><span className="font-display text-2xl text-primary">{formatCOP(checkoutTotal)}</span></div>
               </div>
               <Button type="submit" disabled={loading} size="lg" className="w-full mt-6 h-12 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft">
                 {loading ? <><Loader2 className="h-5 w-5 animate-spin" /> Procesando...</> : form.payment === "mercadopago" ? <><CreditCard className="h-5 w-5" /> Pagar ahora</> : <><CheckCircle2 className="h-5 w-5" /> Continuar al pago</>}

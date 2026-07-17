@@ -1,0 +1,8 @@
+app = "shelby-backend"
+
+[build]
+  # Use local Dockerfile
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3000"

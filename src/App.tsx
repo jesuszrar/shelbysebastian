@@ -13,9 +13,11 @@ import ProductDetail from "./pages/ProductDetail";
 import Cart from "./pages/Cart";
 import Login from "./pages/Login";
 import Checkout from "./pages/Checkout";
+import Profile from "./pages/Profile";
 import OrderSuccess from "./pages/OrderSuccess";
 import NotFound from "./pages/NotFound";
 import Admin from "./pages/Admin";
+import { ProtectedRoute } from "@/components/ProtectedRoute";
 import ProtectedAdminRoute from "@/components/ProtectedAdminRoute";
 import { trackPageView } from "@/lib/metaPixel";
 
@@ -50,6 +52,7 @@ const App = () => (
                 <Route path="/login" element={<Login />} />
                 {/* Checkout no requiere autenticación; permite comprar como invitado */}
                 <Route path="/checkout" element={<Checkout />} />
+                <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
                 <Route path="/admin" element={<ProtectedAdminRoute><Admin /></ProtectedAdminRoute>} />
                 <Route path="/order-success" element={<OrderSuccess />} />
                 <Route path="*" element={<NotFound />} />

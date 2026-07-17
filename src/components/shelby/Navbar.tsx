@@ -64,6 +64,9 @@ export const Navbar = () => {
           {user ? (
             <>
               <span className="hidden md:inline text-sm text-primary/80 max-w-[140px] truncate">Hola, {user.name.split(" ")[0]}</span>
+              <Button asChild variant="ghost" size="sm" className="hidden md:inline-flex text-primary">
+                <Link to="/profile">Mi cuenta</Link>
+              </Button>
               {isAdmin && (
                 <Button asChild variant="ghost" size="sm" className="hidden md:inline-flex gap-2 text-primary">
                   <Link to="/admin"><ShieldCheck className="h-4 w-4" /> Admin</Link>
@@ -118,13 +121,16 @@ export const Navbar = () => {
                 {!user ? (
                   <Link to="/login" onClick={() => setOpen(false)} className="py-3 text-primary font-medium border-b border-border/50">Iniciar sesión</Link>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={async () => { await logout(); setOpen(false); }}
-                    className="py-3 text-primary font-medium text-left border-b border-border/50"
-                  >
-                    Cerrar sesión
-                  </button>
+                  <>
+                    <Link to="/profile" onClick={() => setOpen(false)} className="py-3 text-primary font-medium border-b border-border/50">Mi cuenta</Link>
+                    <button
+                      type="button"
+                      onClick={async () => { await logout(); setOpen(false); }}
+                      className="py-3 text-primary font-medium text-left border-b border-border/50"
+                    >
+                      Cerrar sesión
+                    </button>
+                  </>
                 )}
                 {user && isAdmin && (
                   <Link to="/admin" onClick={() => setOpen(false)} className="py-3 text-primary font-medium border-b border-border/50 inline-flex items-center gap-2">
