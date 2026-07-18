@@ -361,6 +361,10 @@ app.get("/health", (_req, res) => {
   });
 });
 
+app.post("/api/test-payment-route", (_req, res) => {
+  res.json({ ok: true });
+});
+
 app.get("/", (_req, res) => {
   res.json({ ok: true, message: "Shelby MySQL backend is running" });
 });
@@ -841,10 +845,11 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
     back_urls?: { success?: string; failure?: string; pending?: string };
   };
 
-  if (!body.orderId || !body.items?.length) {
-    console.error("create-mp-preference missing payload", { body });
-    return res.status(400).json({ error: "items y orderId son requeridos", details: { body } });
-  }
+  try {
+    if (!body.orderId || !body.items?.length) {
+      console.error("create-mp-preference missing payload", { body });
+      return res.status(400).json({ error: "items y orderId son requeridos", details: { body } });
+    }
 
   const [first = "", ...rest] = (body.payer?.name || "").trim().split(" ");
   const surname = rest.join(" ") || undefined;
@@ -995,6 +1000,36 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
   }
 
   return res.json({ id: data.id, init_point: data.init_point, sandbox_init_point: data.sandbox_init_point });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    const orderId = body?.orderId ? String(body.orderId) : undefined;
+    const itemCount = Array.isArray(body?.items) ? body.items.length : 0;
+
+    console.error("create-mp-preference exception", {
+      error: errorMessage,
+      stack: errorStack,
+      orderId,
+      itemCount,
+    });
+
+    return res.status(500).json({
+      error: errorMessage,
+      stack: errorStack,
+      orderId,
+      itemCount,
+    });
+  }
+});
+
+app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error ? error.stack : undefined;
+  console.error("Unhandled Express error", { message, stack });
+  if (res.headersSent) {
+    return next(error);
+  }
+  return res.status(500).json({ error: message, stack });
 });
 
 app.listen(port, async () => {
