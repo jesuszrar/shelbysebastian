@@ -12,10 +12,11 @@ import { buildAbsoluteUrl } from "./lib/urls.js";
 
 dotenv.config();
 
+const env = process.env as Record<string, string | undefined>;
 const prisma = new PrismaClient();
 const app = express();
-const port = Number(process.env.PORT || 3001);
-const jwtSecret = process.env.JWT_SECRET || "change-me";
+const port = Number(env.PORT ?? "3001");
+const jwtSecret = env.JWT_SECRET ?? "change-me";
 const uploadsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "uploads");
 const revenueStatuses = new Set(["paid", "approved", "completed"]);
 
@@ -24,7 +25,7 @@ type StoredSession = { user: { id: string; email: string; user_metadata: Record<
 
 const normalizeCedula = (value: string) => value.replace(/\D/g, "").trim();
 
-const corsOrigins = process.env.CORS_ORIGIN?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
+const corsOrigins = env.CORS_ORIGIN?.split(",").map((value) => String(value).trim()).filter(Boolean) ?? [];
 // Only allow origins explicitly configured in `CORS_ORIGIN` or local dev hosts.
 const isLocalDevOrigin = (origin: string) => {
   try {
@@ -47,7 +48,7 @@ const corsOriginHostnames = corsOrigins
     try {
       return new URL(value).hostname.toLowerCase();
     } catch {
-      return value.replace(/^https?:\/\//i, "").toLowerCase();
+      return String(value).replace(/^https?:\/\//i, "").toLowerCase();
     }
   })
   .filter(Boolean);
@@ -126,15 +127,15 @@ const serializeCoupon = (coupon: Coupon) => wrap({
 const serializeCedulaEmail = (row: CedulaEmail) => row;
 
 const getMailer = () => {
-  const host = process.env.SMTP_HOST;
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
+  const host = env.SMTP_HOST;
+  const user = env.SMTP_USER;
+  const pass = env.SMTP_PASS;
   if (!host || !user || !pass) return null;
 
   return nodemailer.createTransport({
     host,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: String(process.env.SMTP_SECURE || "false") === "true",
+    port: Number(env.SMTP_PORT ?? "587"),
+    secure: String(env.SMTP_SECURE ?? "false") === "true",
     auth: { user, pass },
   });
 };
@@ -182,11 +183,11 @@ const sendInvoiceEmail = async (order: Order) => {
     return;
   }
 
-  const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const fromEmail = env.SMTP_FROM ?? env.SMTP_USER;
   if (!fromEmail) return;
 
   await mailer.sendMail({
-    from: `"${process.env.SMTP_FROM_NAME || "Shelby Importaciones"}" <${fromEmail}>`,
+    from: `"${env.SMTP_FROM_NAME ?? "Shelby Importaciones"}" <${fromEmail}>`,
     to: customerEmail,
     subject: `Factura Shelby - Pedido ${order.id}`,
     text: buildInvoiceText(order),
@@ -353,9 +354,9 @@ app.get("/health", (_req, res) => {
     ok: true,
     service: "shelby-mysql-backend",
     env: {
-      hasMercadoPagoToken: Boolean(process.env.MERCADOPAGO_ACCESS_TOKEN_CLIENT ?? process.env.MERCADOPAGO_ACCESS_TOKEN),
-      hasDatabaseUrl: Boolean(process.env.DATABASE_URL),
-      hasCorsOrigin: Boolean(process.env.CORS_ORIGIN),
+      hasMercadoPagoToken: Boolean(env.MERCADOPAGO_ACCESS_TOKEN_CLIENT ?? env.MERCADOPAGO_ACCESS_TOKEN),
+      hasDatabaseUrl: Boolean(env.DATABASE_URL),
+      hasCorsOrigin: Boolean(env.CORS_ORIGIN),
     },
   });
 });
@@ -569,7 +570,7 @@ app.post("/api/data/:table", async (req, res) => {
 
   if (table === "coupons") {
     const rows = Array.isArray(body) ? body : [body];
-    const saved = [] as any[];
+    const saved: Coupon[] = [];
     for (const row of rows as Array<Record<string, unknown>>) {
       const code = String(row.code || "").trim().toUpperCase();
       if (!code) continue;
@@ -690,7 +691,7 @@ app.patch("/api/data/:table", async (req, res) => {
   if (table === "coupons") {
     const rows = await prisma.coupon.findMany();
     const matched = applyFilters(rows.map(serializeCoupon) as Record<string, unknown>[], filters);
-    const updated = [] as any[];
+    const updated: Coupon[] = [];
     for (const row of matched) {
       const next = await prisma.coupon.update({
         where: { code: String(row.code) },
@@ -787,10 +788,45 @@ app.post("/api/storage/upload", async (req, res) => {
 });
 
 app.post("/api/functions/create-mp-preference", async (req, res) => {
-  const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN_CLIENT ?? process.env.MERCADOPAGO_ACCESS_TOKEN;
-  console.log("create-mp-preference start", { hasToken: Boolean(accessToken), tokenLength: accessToken?.length ?? 0, host: req.get("host"), origin: req.get("origin"), forwardedHost: req.get("x-forwarded-host"), forwardedProto: req.get("x-forwarded-proto") });
+  const rawTokenClient = env.MERCADOPAGO_ACCESS_TOKEN_CLIENT;
+  const rawTokenDefault = env.MERCADOPAGO_ACCESS_TOKEN;
+  const normalizeEnvVar = (value?: string) => {
+    if (typeof value !== "string") return undefined;
+    const trimmed = value.trim();
+    const match = trimmed.match(/^(["'])(.*)\1$/);
+    return match ? match[2] : trimmed;
+  };
+
+  const tokenClient = normalizeEnvVar(rawTokenClient);
+  const tokenDefault = normalizeEnvVar(rawTokenDefault);
+  const accessToken = tokenClient || tokenDefault;
+  const accessTokenSource = tokenClient ? "MERCADOPAGO_ACCESS_TOKEN_CLIENT" : tokenDefault ? "MERCADOPAGO_ACCESS_TOKEN" : undefined;
+  const tokenDiagnostics = {
+    rawClient: rawTokenClient === undefined ? undefined : String(rawTokenClient),
+    rawDefault: rawTokenDefault === undefined ? undefined : String(rawTokenDefault),
+    tokenClientDefined: rawTokenClient !== undefined,
+    tokenDefaultDefined: rawTokenDefault !== undefined,
+    tokenClientEmpty: tokenClient === "",
+    tokenDefaultEmpty: tokenDefault === "",
+    accessTokenSource,
+    tokenLength: accessToken?.length ?? 0,
+  };
+  console.log("create-mp-preference start", {
+    ...tokenDiagnostics,
+    host: req.get("host"),
+    origin: req.get("origin"),
+    forwardedHost: req.get("x-forwarded-host"),
+    forwardedProto: req.get("x-forwarded-proto"),
+  });
+
   if (!accessToken) {
-    return res.status(500).json({ error: "MERCADOPAGO_ACCESS_TOKEN no está configurado", details: { missing: ["MERCADOPAGO_ACCESS_TOKEN_CLIENT", "MERCADOPAGO_ACCESS_TOKEN"] } });
+    return res.status(500).json({
+      error: "MERCADOPAGO_ACCESS_TOKEN no está configurado",
+      details: {
+        missing: ["MERCADOPAGO_ACCESS_TOKEN_CLIENT", "MERCADOPAGO_ACCESS_TOKEN"],
+        tokenDiagnostics,
+      },
+    });
   }
 
   const body = req.body as {
@@ -805,7 +841,11 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
     back_urls?: { success?: string; failure?: string; pending?: string };
   };
 
-  if (!body.orderId || !body.items?.length) return res.status(400).json({ error: "items y orderId son requeridos" });
+  if (!body.orderId || !body.items?.length) {
+    console.error("create-mp-preference missing payload", { body });
+    return res.status(400).json({ error: "items y orderId son requeridos", details: { body } });
+  }
+
   const [first = "", ...rest] = (body.payer?.name || "").trim().split(" ");
   const surname = rest.join(" ") || undefined;
   const backUrls = body.backUrls ?? body.back_urls;
@@ -814,18 +854,29 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
   const forwardedHost = req.get("x-forwarded-host") || req.get("host") || "localhost";
   const notificationUrl = buildAbsoluteUrl(forwardedProto, forwardedHost, "/api/functions/mp-webhook");
 
-  const discountAmount = Math.max(0, Math.round(Number(body.discountAmount || 0)));
-  const items = body.items.map((it) => ({
-    id: it.id,
-    title: String(it.title).slice(0, 250),
-    quantity: Math.max(1, Math.floor(Number(it.quantity) || 1)),
-    unit_price: Math.round(Number(it.unit_price) || 0),
-    currency_id: "COP",
-    picture_url: it.picture_url,
-  }));
+  const normalizeItem = (it: unknown) => {
+    const item = it as Record<string, unknown>;
+    return {
+      id: String(item.id ?? ""),
+      title: String(item.title ?? "").slice(0, 250),
+      quantity: Math.max(1, Math.floor(Number(item.quantity ?? 0) || 1)),
+      unit_price: Math.round(Number(item.unit_price ?? 0) || 0),
+      currency_id: "COP",
+      picture_url: item.picture_url ?? undefined,
+    };
+  };
 
+  const items = body.items.map(normalizeItem);
+
+  const invalidItems = items.filter((item) => !item.id || !item.title || item.quantity <= 0 || item.unit_price < 0);
+  if (invalidItems.length) {
+    console.error("create-mp-preference invalid items", { invalidItems, items, body });
+    return res.status(400).json({ error: "items inválidos", details: { invalidItems, items } });
+  }
+
+  const discountAmount = Math.max(0, Math.round(Number(body.discountAmount || 0)));
   if (body.shipping && body.shipping > 0) {
-    items.push({ id: "shipping", title: "Envío", quantity: 1, unit_price: Math.round(body.shipping), currency_id: "COP", picture_url: undefined });
+    items.push({ id: "shipping", title: "Envío", quantity: 1, unit_price: Math.round(Number(body.shipping) || 0), currency_id: "COP", picture_url: undefined });
   }
 
   if (discountAmount > 0) {
@@ -841,38 +892,108 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
 
   const preference: Record<string, unknown> = {
     items,
-    external_reference: body.orderId,
+    external_reference: String(body.orderId),
     payer: {
       name: first || undefined,
       surname,
-      email: body.payer?.email,
-      phone: body.payer?.phone ? { number: body.payer.phone } : undefined,
-      address: body.payer?.address ? { street_name: body.payer.address } : undefined,
+      email: body.payer?.email ? String(body.payer.email) : undefined,
+      phone: body.payer?.phone ? { number: String(body.payer.phone) } : undefined,
+      address: body.payer?.address ? { street_name: String(body.payer.address) } : undefined,
     },
     statement_descriptor: "SHELBY",
     notification_url: notificationUrl,
   };
 
   if (backUrls?.success && backUrls?.failure && backUrls?.pending) {
-    preference.back_urls = backUrls;
+    preference.back_urls = {
+      success: String(backUrls.success),
+      failure: String(backUrls.failure),
+      pending: String(backUrls.pending),
+    };
     preference.auto_return = "approved";
   }
 
+  console.log("create-mp-preference payload", {
+    accessTokenSource,
+    orderId: body.orderId,
+    items,
+    discountAmount,
+    couponCode: body.couponCode,
+    backUrls: preference.back_urls,
+    notification_url: notificationUrl,
+    payer: preference.payer,
+    external_reference: preference.external_reference,
+  });
+
   let response: Response;
+  const errorBody: unknown = null;
   try {
     response = await fetch("https://api.mercadopago.com/checkout/preferences", {
       method: "POST",
-      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(preference),
     });
   } catch (error) {
-    console.error("Mercado Pago fetch error", error);
-    return res.status(502).json({ error: "No se pudo conectar con Mercado Pago", details: error instanceof Error ? error.message : String(error) });
+    console.error("Mercado Pago fetch error", {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      preference,
+      tokenDiagnostics,
+    });
+    return res.status(502).json({
+      error: "No se pudo conectar con Mercado Pago",
+      details: {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      },
+    });
   }
 
-  const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  console.log("Mercado Pago response", { status: response.status, ok: response.ok, data });
-  if (!response.ok) return res.status(response.status).json({ error: String(data.message || "Error creando preferencia"), details: data });
+  let data: Record<string, unknown> = {};
+  try {
+    data = (await response.json()) as Record<string, unknown>;
+  } catch (error) {
+    console.error("Mercado Pago parse error", {
+      status: response.status,
+      statusText: response.statusText,
+      body: String(await response.text()),
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    return res.status(502).json({
+      error: "No se pudo leer la respuesta de Mercado Pago",
+      details: { status: response.status, statusText: response.statusText },
+    });
+  }
+
+  console.log("Mercado Pago response", {
+    status: response.status,
+    ok: response.ok,
+    data,
+    preference,
+    notificationUrl,
+    backUrls: preference.back_urls,
+    accessTokenSource,
+  });
+
+  if (!response.ok) {
+    return res.status(response.status).json({
+      error: String(data.message || data.error || "Error creando preferencia"),
+      details: data,
+    });
+  }
+
+  if (!data || typeof data.init_point !== "string") {
+    console.error("Mercado Pago missing init_point", { data, responseStatus: response.status });
+    return res.status(502).json({
+      error: "Mercado Pago no devolvió init_point",
+      details: data,
+    });
+  }
+
   return res.json({ id: data.id, init_point: data.init_point, sandbox_init_point: data.sandbox_init_point });
 });
 
