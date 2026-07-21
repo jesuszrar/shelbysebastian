@@ -6,7 +6,7 @@ Open a regular Command Prompt (CMD) in the project root and run:
 
 ```cmd
 cd C:\Users\jesus\OneDrive\Documentos\Proyectos jesu\lovabox-checkout-main
-set VITE_API_URL=https://tu-backend-en-render.com
+set VITE_API_URL=https://shelby-backend.onrender.com
 npm ci
 npm run build
 ```
@@ -17,7 +17,7 @@ Open PowerShell in the project root and run:
 
 ```powershell
 # for current session only
-$env:VITE_API_URL = "https://tu-backend-en-render.com"
+$env:VITE_API_URL = "https://shelby-backend.onrender.com"
 npm ci
 npm run build
 ```

@@ -63,7 +63,7 @@ export const Navbar = () => {
         <div className="flex items-center gap-1 sm:gap-2 shrink-0">
           {user ? (
             <>
-              <span className="hidden md:inline text-sm text-primary/80 max-w-[140px] truncate">Hola, {user.name.split(" ")[0]}</span>
+              <span className="hidden md:inline text-sm text-primary/80 max-w-[140px] truncate">Hola, {user.name?.split(" ")[0] || "Cliente"}</span>
               <Button asChild variant="ghost" size="sm" className="hidden md:inline-flex text-primary">
                 <Link to="/profile">Mi cuenta</Link>
               </Button>

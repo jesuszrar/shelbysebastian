@@ -26,6 +26,15 @@ type StoredSession = { user: { id: string; email: string; user_metadata: Record<
 const normalizeCedula = (value: string) => value.replace(/\D/g, "").trim();
 
 const corsOrigins = env.CORS_ORIGIN?.split(",").map((value) => String(value).trim()).filter(Boolean) ?? [];
+const defaultCorsOrigins = [
+  "https://shelbyimport.com",
+  "https://www.shelbyimport.com",
+  "http://localhost:8080",
+  "http://127.0.0.1:8080",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+];
+const allowedCorsOrigins = Array.from(new Set([...defaultCorsOrigins, ...corsOrigins]));
 // Only allow origins explicitly configured in `CORS_ORIGIN` or local dev hosts.
 const isLocalDevOrigin = (origin: string) => {
   try {
@@ -43,7 +52,7 @@ const isLocalDevOrigin = (origin: string) => {
     return false;
   }
 };
-const corsOriginHostnames = corsOrigins
+const corsOriginHostnames = allowedCorsOrigins
   .map((value) => {
     try {
       return new URL(value).hostname.toLowerCase();
@@ -55,7 +64,7 @@ const corsOriginHostnames = corsOrigins
 
 const isAllowedCorsOrigin = (origin: string) => {
   const normalizedOrigin = origin.toLowerCase();
-  if (corsOrigins.includes(origin) || isLocalDevOrigin(origin)) return true;
+  if (allowedCorsOrigins.includes(origin) || isLocalDevOrigin(origin)) return true;
 
   try {
     const parsed = new URL(origin);
@@ -82,7 +91,54 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json({ limit: "15mb" }));
+app.use((req: express.Request, _res: express.Response, next: express.NextFunction) => {
+  if (req.method === "POST" && (req.url ?? "").includes("/api/functions/create-mp-preference")) {
+    console.log("create-mp-preference request metadata", {
+      method: req.method,
+      url: req.url,
+      contentType: req.get("content-type"),
+      contentLength: req.get("content-length"),
+    });
+  }
+  return next();
+});
+app.use(express.json({
+  limit: "15mb",
+  verify: (req: express.Request, _res: express.Response, buf: Buffer) => {
+    if (req.method === "POST" && (req.url ?? "").includes("/api/functions/create-mp-preference")) {
+      const preview = buf.toString("utf8").slice(0, 200);
+      console.log("create-mp-preference raw body", {
+        method: req.method,
+        url: req.url,
+        contentType: req.get("content-type"),
+        contentLength: req.get("content-length"),
+        bodyPreview: preview,
+      });
+    }
+  },
+}));
+app.use("/api/functions/create-mp-preference", (error: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (error instanceof SyntaxError && "body" in error) {
+    console.error("create-mp-preference invalid json", {
+      message: error.message,
+      contentType: req.get("content-type"),
+      host: req.get("host"),
+      origin: req.get("origin"),
+      tokenConfigured: Boolean(env.MERCADOPAGO_ACCESS_TOKEN_CLIENT || env.MERCADOPAGO_ACCESS_TOKEN),
+      step: "json_body_parse",
+    });
+
+    return res.status(400).json({
+      error: "invalid_json",
+      message: "El cuerpo de la petición no es un JSON válido",
+      step: "json_body_parse",
+      tokenConfigured: Boolean(env.MERCADOPAGO_ACCESS_TOKEN_CLIENT || env.MERCADOPAGO_ACCESS_TOKEN),
+      itemsCount: 0,
+    });
+  }
+
+  return next(error);
+});
 app.use("/uploads", express.static(uploadsDir));
 
 const wrap = (value: unknown): unknown => {
@@ -141,6 +197,43 @@ const getMailer = () => {
 };
 
 const moneyFormatter = new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 });
+
+const buildMpDiagnostic = (payload: {
+  error: string;
+  message: string;
+  step: string;
+  mercadoPagoStatus: number | null;
+  mercadoPagoResponse: unknown;
+  tokenConfigured: boolean;
+  itemsCount: number;
+  validationErrors?: unknown;
+  tokenLength?: number;
+  tokenSource?: string;
+}) => ({
+  error: payload.error,
+  message: payload.message,
+  step: payload.step,
+  mercadoPagoStatus: payload.mercadoPagoStatus,
+  mercadoPagoResponse: payload.mercadoPagoResponse,
+  tokenConfigured: payload.tokenConfigured,
+  tokenLength: payload.tokenLength,
+  tokenSource: payload.tokenSource,
+  itemsCount: payload.itemsCount,
+  ...(payload.validationErrors !== undefined ? { validationErrors: payload.validationErrors } : {}),
+});
+
+const sanitizeForLogs = (value: unknown): unknown => {
+  if (typeof value === "string") {
+    return value.length > 160 ? `${value.slice(0, 160)}…` : value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 5).map(sanitizeForLogs);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, sanitizeForLogs(nested)]));
+  }
+  return value;
+};
 
 const buildInvoiceText = (order: Order) => {
   const items = Array.isArray(order.items) ? (order.items as Array<Record<string, unknown>>) : [];
@@ -806,8 +899,6 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
   const accessToken = tokenClient || tokenDefault;
   const accessTokenSource = tokenClient ? "MERCADOPAGO_ACCESS_TOKEN_CLIENT" : tokenDefault ? "MERCADOPAGO_ACCESS_TOKEN" : undefined;
   const tokenDiagnostics = {
-    rawClient: rawTokenClient === undefined ? undefined : String(rawTokenClient),
-    rawDefault: rawTokenDefault === undefined ? undefined : String(rawTokenDefault),
     tokenClientDefined: rawTokenClient !== undefined,
     tokenDefaultDefined: rawTokenDefault !== undefined,
     tokenClientEmpty: tokenClient === "",
@@ -815,8 +906,53 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
     accessTokenSource,
     tokenLength: accessToken?.length ?? 0,
   };
+
+  const payload = (req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {}) as Record<string, unknown>;
+  const orderId = typeof payload.orderId === "string" ? payload.orderId.trim() : undefined;
+  const rawItems = Array.isArray(payload.items) ? payload.items : [];
+  const payer = payload.payer && typeof payload.payer === "object" ? (payload.payer as Record<string, unknown>) : {};
+  const shipping = Number(payload.shipping ?? 0);
+  const total = Number(payload.total ?? 0);
+  const discountAmount = Number(payload.discountAmount ?? 0);
+  const couponCode = typeof payload.couponCode === "string" ? payload.couponCode.trim().toUpperCase() : undefined;
+  const normalizePhone = (value: unknown) => {
+    if (typeof value === "number") return String(value);
+    if (typeof value === "string") return value.replace(/\D/g, "").trim();
+    return "";
+  };
+  const normalizeEmail = (value: unknown) => {
+    if (typeof value !== "string") return undefined;
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  };
+  const normalizeAddress = (value: unknown) => {
+    if (typeof value !== "string") return undefined;
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  };
+  const backUrlsSource = payload.backUrls && typeof payload.backUrls === "object" ? (payload.backUrls as Record<string, unknown>) : undefined;
+  const legacyBackUrlsSource = payload.back_urls && typeof payload.back_urls === "object" ? (payload.back_urls as Record<string, unknown>) : undefined;
+  const backUrls = backUrlsSource ?? legacyBackUrlsSource;
+  const receivedSummary = {
+    orderId,
+    itemCount: rawItems.length,
+    payer: {
+      nameProvided: typeof payer.name === "string" && Boolean(String(payer.name).trim()),
+      emailProvided: typeof payer.email === "string" && Boolean(String(payer.email).trim()),
+      phoneProvided: typeof payer.phone === "string" && Boolean(String(payer.phone).trim()),
+      addressProvided: typeof payer.address === "string" && Boolean(String(payer.address).trim()),
+      cityProvided: typeof payer.city === "string" && Boolean(String(payer.city).trim()),
+    },
+    shipping,
+    total,
+    discountAmount,
+    couponCode,
+    hasBackUrls: Boolean(backUrls),
+  };
+
   console.log("create-mp-preference start", {
     ...tokenDiagnostics,
+    ...receivedSummary,
     host: req.get("host"),
     origin: req.get("origin"),
     forwardedHost: req.get("x-forwarded-host"),
@@ -824,201 +960,277 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
   });
 
   if (!accessToken) {
-    return res.status(500).json({
-      error: "MERCADOPAGO_ACCESS_TOKEN no está configurado",
-      details: {
+    return res.status(500).json(buildMpDiagnostic({
+      error: "mercadopago_token_missing",
+      message: "MERCADOPAGO_ACCESS_TOKEN no está configurado",
+      step: "token_validation",
+      mercadoPagoStatus: null,
+      mercadoPagoResponse: null,
+      tokenConfigured: false,
+      itemsCount: rawItems.length,
+      validationErrors: {
         missing: ["MERCADOPAGO_ACCESS_TOKEN_CLIENT", "MERCADOPAGO_ACCESS_TOKEN"],
         tokenDiagnostics,
       },
-    });
+    }));
   }
 
-  const body = req.body as {
-    orderId?: string;
-    items?: Array<{ id: string; title: string; quantity: number; unit_price: number; picture_url?: string }>;
-    payer?: { name?: string; email?: string; phone?: string; address?: string; city?: string };
-    shipping?: number;
-    total?: number;
-    discountAmount?: number;
-    couponCode?: string;
-    backUrls?: { success?: string; failure?: string; pending?: string };
-    back_urls?: { success?: string; failure?: string; pending?: string };
-  };
-
   try {
-    if (!body.orderId || !body.items?.length) {
-      console.error("create-mp-preference missing payload", { body });
-      return res.status(400).json({ error: "items y orderId son requeridos", details: { body } });
+    const validationErrors: string[] = [];
+    if (!orderId) validationErrors.push("orderId requerido");
+    if (!rawItems.length) validationErrors.push("items requerido");
+    if (!Number.isFinite(total) || total < 0) validationErrors.push("total inválido");
+    if (!Number.isFinite(shipping) || shipping < 0) validationErrors.push("shipping inválido");
+    if (!Number.isFinite(discountAmount) || discountAmount < 0) validationErrors.push("discountAmount inválido");
+    const cleanedEmail = normalizeEmail(payer.email);
+    const cleanedPhone = normalizePhone(payer.phone);
+    if (cleanedEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cleanedEmail)) validationErrors.push("payer.email inválido");
+    if (cleanedPhone && cleanedPhone.length < 7) validationErrors.push("payer.phone inválido");
+
+    if (backUrls) {
+      const requiredBackUrlKeys = ["success", "failure", "pending"] as const;
+      const missingBackUrls = requiredBackUrlKeys.filter((key) => typeof backUrls[key] !== "string" || !String(backUrls[key]).trim());
+      if (missingBackUrls.length) validationErrors.push(`backUrls faltantes: ${missingBackUrls.join(", ")}`);
+      for (const key of requiredBackUrlKeys) {
+        const value = typeof backUrls[key] === "string" ? String(backUrls[key]).trim() : "";
+        if (value && !/^https?:\/\//i.test(value)) validationErrors.push(`backUrls.${key} no es una URL válida`);
+      }
     }
 
-  const [first = "", ...rest] = (body.payer?.name || "").trim().split(" ");
-  const surname = rest.join(" ") || undefined;
-  const backUrls = body.backUrls ?? body.back_urls;
+    if (validationErrors.length) {
+      console.error("create-mp-preference validation failed", {
+        validationErrors,
+        receivedSummary,
+      });
+      return res.status(400).json(buildMpDiagnostic({
+        error: "payload_invalid",
+        message: "El payload recibido no cumple las validaciones mínimas",
+        step: "payload_validation",
+        mercadoPagoStatus: null,
+        mercadoPagoResponse: null,
+        tokenConfigured: true,
+        itemsCount: rawItems.length,
+        validationErrors,
+      }));
+    }
 
-  const forwardedProto = req.get("x-forwarded-proto") || req.protocol || "https";
-  const forwardedHost = req.get("x-forwarded-host") || req.get("host") || "localhost";
-  const notificationUrl = buildAbsoluteUrl(forwardedProto, forwardedHost, "/api/functions/mp-webhook");
+    const [first = "", ...rest] = (typeof payer.name === "string" ? payer.name : "").trim().split(" ");
+    const surname = rest.join(" ") || undefined;
 
-  const normalizeItem = (it: unknown) => {
-    const item = it as Record<string, unknown>;
-    return {
-      id: String(item.id ?? ""),
-      title: String(item.title ?? "").slice(0, 250),
-      quantity: Math.max(1, Math.floor(Number(item.quantity ?? 0) || 1)),
-      unit_price: Math.round(Number(item.unit_price ?? 0) || 0),
-      currency_id: "COP",
-      picture_url: item.picture_url ?? undefined,
+    const forwardedProto = req.get("x-forwarded-proto") || req.protocol || "https";
+    const forwardedHost = req.get("x-forwarded-host") || req.get("host") || "localhost";
+    const notificationUrl = buildAbsoluteUrl(forwardedProto, forwardedHost, "/api/functions/mp-webhook");
+
+    const normalizeItem = (it: unknown) => {
+      const item = it as Record<string, unknown>;
+      return {
+        id: String(item.id ?? ""),
+        title: String(item.title ?? "").slice(0, 250),
+        quantity: Math.max(1, Math.floor(Number(item.quantity ?? 0) || 1)),
+        unit_price: Math.round(Number(item.unit_price ?? 0) || 0),
+        currency_id: "COP",
+        picture_url: item.picture_url ?? undefined,
+      };
     };
-  };
 
-  const items = body.items.map(normalizeItem);
+    const items = rawItems.map(normalizeItem);
+    const invalidItems = items.filter((item) => !item.id || !item.title || item.quantity <= 0 || item.unit_price < 0);
+    if (invalidItems.length) {
+      console.error("create-mp-preference invalid items", { invalidItems, items, receivedSummary });
+      return res.status(400).json(buildMpDiagnostic({
+        error: "items_invalid",
+        message: "Los items no cumplen con el formato esperado",
+        step: "item_validation",
+        mercadoPagoStatus: null,
+        mercadoPagoResponse: null,
+        tokenConfigured: true,
+        itemsCount: items.length,
+        validationErrors: invalidItems,
+      }));
+    }
 
-  const invalidItems = items.filter((item) => !item.id || !item.title || item.quantity <= 0 || item.unit_price < 0);
-  if (invalidItems.length) {
-    console.error("create-mp-preference invalid items", { invalidItems, items, body });
-    return res.status(400).json({ error: "items inválidos", details: { invalidItems, items } });
-  }
+    const discountAmountNormalized = Math.max(0, Math.round(Number(discountAmount || 0)));
+    if (shipping > 0) {
+      items.push({ id: "shipping", title: "Envío", quantity: 1, unit_price: Math.round(Number(shipping) || 0), currency_id: "COP", picture_url: undefined });
+    }
 
-  const discountAmount = Math.max(0, Math.round(Number(body.discountAmount || 0)));
-  if (body.shipping && body.shipping > 0) {
-    items.push({ id: "shipping", title: "Envío", quantity: 1, unit_price: Math.round(Number(body.shipping) || 0), currency_id: "COP", picture_url: undefined });
-  }
+    if (discountAmountNormalized > 0) {
+      items.push({
+        id: "discount",
+        title: couponCode ? `Descuento ${String(couponCode).toUpperCase()}` : "Descuento",
+        quantity: 1,
+        unit_price: -discountAmountNormalized,
+        currency_id: "COP",
+        picture_url: undefined,
+      });
+    }
 
-  if (discountAmount > 0) {
-    items.push({
-      id: "discount",
-      title: body.couponCode ? `Descuento ${String(body.couponCode).toUpperCase()}` : "Descuento",
-      quantity: 1,
-      unit_price: -discountAmount,
-      currency_id: "COP",
-      picture_url: undefined,
-    });
-  }
-
-  const preference: Record<string, unknown> = {
-    items,
-    external_reference: String(body.orderId),
-    payer: {
-      name: first || undefined,
-      surname,
-      email: body.payer?.email ? String(body.payer.email) : undefined,
-      phone: body.payer?.phone ? { number: String(body.payer.phone) } : undefined,
-      address: body.payer?.address ? { street_name: String(body.payer.address) } : undefined,
-    },
-    statement_descriptor: "SHELBY",
-    notification_url: notificationUrl,
-  };
-
-  if (backUrls?.success && backUrls?.failure && backUrls?.pending) {
-    preference.back_urls = {
-      success: String(backUrls.success),
-      failure: String(backUrls.failure),
-      pending: String(backUrls.pending),
-    };
-    preference.auto_return = "approved";
-  }
-
-  console.log("create-mp-preference payload", {
-    accessTokenSource,
-    orderId: body.orderId,
-    items,
-    discountAmount,
-    couponCode: body.couponCode,
-    backUrls: preference.back_urls,
-    notification_url: notificationUrl,
-    payer: preference.payer,
-    external_reference: preference.external_reference,
-  });
-
-  let response: Response;
-  const errorBody: unknown = null;
-  try {
-    response = await fetch("https://api.mercadopago.com/checkout/preferences", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
+    const preference: Record<string, unknown> = {
+      items,
+      external_reference: String(orderId),
+      payer: {
+        name: first || undefined,
+        surname,
+        email: cleanedEmail,
+        phone: cleanedPhone ? { number: cleanedPhone } : undefined,
+        address: normalizeAddress(payer.address) ? { street_name: normalizeAddress(payer.address) as string } : undefined,
       },
-      body: JSON.stringify(preference),
+      statement_descriptor: "SHELBY",
+      notification_url: notificationUrl,
+    };
+
+    if (backUrls) {
+      const backUrlsData = {
+        success: String(backUrls.success ?? ""),
+        failure: String(backUrls.failure ?? ""),
+        pending: String(backUrls.pending ?? ""),
+      };
+      if (backUrlsData.success && backUrlsData.failure && backUrlsData.pending) {
+        preference.back_urls = backUrlsData;
+        preference.auto_return = "approved";
+      }
+    }
+
+    console.log("create-mp-preference payload", {
+      accessTokenSource,
+      orderId,
+      items: items.map((item) => ({ id: item.id, title: item.title, quantity: item.quantity, unit_price: item.unit_price })),
+      shipping,
+      total,
+      discountAmount: discountAmountNormalized,
+      couponCode,
+      backUrls: preference.back_urls,
+      notification_url: notificationUrl,
+      payer: {
+        name: typeof preference.payer === "object" && preference.payer ? Boolean((preference.payer as Record<string, unknown>).name) : false,
+        surname: typeof preference.payer === "object" && preference.payer ? Boolean((preference.payer as Record<string, unknown>).surname) : false,
+        email: typeof preference.payer === "object" && preference.payer ? Boolean((preference.payer as Record<string, unknown>).email) : false,
+        phone: typeof preference.payer === "object" && preference.payer ? Boolean((preference.payer as Record<string, unknown>).phone) : false,
+        address: typeof preference.payer === "object" && preference.payer ? Boolean((preference.payer as Record<string, unknown>).address) : false,
+      },
+      external_reference: preference.external_reference,
+      tokenConfigured: Boolean(accessToken),
+      tokenSource: accessTokenSource,
     });
-  } catch (error) {
-    console.error("Mercado Pago fetch error", {
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      preference,
-      tokenDiagnostics,
-    });
-    return res.status(502).json({
-      error: "No se pudo conectar con Mercado Pago",
-      details: {
-        message: error instanceof Error ? error.message : String(error),
+
+    let response: Response;
+    try {
+      response = await fetch("https://api.mercadopago.com/checkout/preferences", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(preference),
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error("Mercado Pago fetch error", {
+        error: errorMessage,
         stack: error instanceof Error ? error.stack : undefined,
-      },
-    });
-  }
+        preference: sanitizeForLogs(preference),
+        tokenDiagnostics,
+      });
+      return res.status(502).json(buildMpDiagnostic({
+        error: "mercadopago_request_failed",
+        message: "No se pudo conectar con Mercado Pago",
+        step: "mercadopago_request",
+        mercadoPagoStatus: null,
+        mercadoPagoResponse: null,
+        tokenConfigured: Boolean(accessToken),
+        itemsCount: items.length,
+      }));
+    }
 
-  let data: Record<string, unknown> = {};
-  try {
-    data = (await response.json()) as Record<string, unknown>;
-  } catch (error) {
-    console.error("Mercado Pago parse error", {
+    const rawResponseBody = await response.text();
+    let parsedResponseBody: unknown = null;
+    try {
+      parsedResponseBody = rawResponseBody ? JSON.parse(rawResponseBody) : null;
+    } catch {
+      parsedResponseBody = rawResponseBody;
+    }
+
+    console.log("Mercado Pago response", {
       status: response.status,
-      statusText: response.statusText,
-      body: String(await response.text()),
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
+      ok: response.ok,
+      body: sanitizeForLogs(parsedResponseBody),
+      preference: sanitizeForLogs(preference),
+      notificationUrl,
+      backUrls: preference.back_urls,
+      accessTokenSource,
+      tokenConfigured: Boolean(accessToken),
     });
-    return res.status(502).json({
-      error: "No se pudo leer la respuesta de Mercado Pago",
-      details: { status: response.status, statusText: response.statusText },
+
+    if (!response.ok) {
+      return res.status(response.status).json(buildMpDiagnostic({
+        error: "mercadopago_rejected",
+        message: "Mercado Pago rechazó la preferencia",
+        step: "mercadopago_response",
+        mercadoPagoStatus: response.status,
+        mercadoPagoResponse: parsedResponseBody,
+        tokenConfigured: Boolean(accessToken),
+        itemsCount: items.length,
+      }));
+    }
+
+    if (!parsedResponseBody || typeof parsedResponseBody !== "object") {
+      console.error("Mercado Pago missing init_point", { parsedResponseBody, responseStatus: response.status });
+      return res.status(502).json(buildMpDiagnostic({
+        error: "mercadopago_invalid_response",
+        message: "Mercado Pago no devolvió una respuesta válida",
+        step: "mercadopago_response",
+        mercadoPagoStatus: response.status,
+        mercadoPagoResponse: parsedResponseBody,
+        tokenConfigured: Boolean(accessToken),
+        itemsCount: items.length,
+      }));
+    }
+
+    const mpPayload = parsedResponseBody as Record<string, unknown>;
+    if (typeof mpPayload.init_point !== "string") {
+      console.error("Mercado Pago missing init_point", { mpPayload, responseStatus: response.status });
+      return res.status(502).json(buildMpDiagnostic({
+        error: "mercadopago_missing_init_point",
+        message: "Mercado Pago no devolvió init_point",
+        step: "mercadopago_response",
+        mercadoPagoStatus: response.status,
+        mercadoPagoResponse: mpPayload,
+        tokenConfigured: Boolean(accessToken),
+        itemsCount: items.length,
+      }));
+    }
+
+    return res.json({
+      id: mpPayload.id,
+      init_point: mpPayload.init_point,
+      sandbox_init_point: mpPayload.sandbox_init_point,
+      error: null,
+      message: "Preferencia creada",
+      step: "mercadopago_success",
+      mercadoPagoStatus: response.status,
+      mercadoPagoResponse: mpPayload,
+      tokenConfigured: Boolean(accessToken),
+      itemsCount: items.length,
     });
-  }
-
-  console.log("Mercado Pago response", {
-    status: response.status,
-    ok: response.ok,
-    data,
-    preference,
-    notificationUrl,
-    backUrls: preference.back_urls,
-    accessTokenSource,
-  });
-
-  if (!response.ok) {
-    return res.status(response.status).json({
-      error: String(data.message || data.error || "Error creando preferencia"),
-      details: data,
-    });
-  }
-
-  if (!data || typeof data.init_point !== "string") {
-    console.error("Mercado Pago missing init_point", { data, responseStatus: response.status });
-    return res.status(502).json({
-      error: "Mercado Pago no devolvió init_point",
-      details: data,
-    });
-  }
-
-  return res.json({ id: data.id, init_point: data.init_point, sandbox_init_point: data.sandbox_init_point });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    const orderId = body?.orderId ? String(body.orderId) : undefined;
-    const itemCount = Array.isArray(body?.items) ? body.items.length : 0;
-
     console.error("create-mp-preference exception", {
       error: errorMessage,
-      stack: errorStack,
+      stack: error instanceof Error ? error.stack : undefined,
       orderId,
-      itemCount,
+      itemsCount: rawItems.length,
+      tokenConfigured: Boolean(accessToken),
     });
 
-    return res.status(500).json({
-      error: errorMessage,
-      stack: errorStack,
-      orderId,
-      itemCount,
-    });
+    return res.status(500).json(buildMpDiagnostic({
+      error: "endpoint_exception",
+      message: errorMessage,
+      step: "endpoint_exception",
+      mercadoPagoStatus: null,
+      mercadoPagoResponse: null,
+      tokenConfigured: Boolean(accessToken),
+      itemsCount: rawItems.length,
+    }));
   }
 });
 

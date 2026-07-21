@@ -4,13 +4,14 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "prebuild": "npm install --include=dev",
     "build": "prisma generate && tsc -p tsconfig.json",
     "start": "node dist/server.js",
+    "start:prod": "node dist/server.js",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate": "prisma migrate deploy",
     "prisma:studio": "prisma studio"
   },
+  "packageManager": "yarn@1.22.22",
   "dependencies": {
     "@prisma/client": "^6.15.0",
     "bcryptjs": "^3.0.2",

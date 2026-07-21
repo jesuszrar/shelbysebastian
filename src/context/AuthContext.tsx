@@ -112,15 +112,48 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setSession(s);
       setUser(toUser(s?.user));
     });
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      if (data.session?.user) {
-        setUser(toUser(data.session.user));
-      } else {
-        setUser(null);
+
+    const restoreSession = async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        setSession(data.session);
+        if (data.session?.user) {
+          setUser(toUser(data.session.user));
+        } else {
+          const storedSession = window.localStorage.getItem("shelby:session");
+          if (storedSession) {
+            try {
+              const parsed = JSON.parse(storedSession) as { user?: SbUser | null };
+              if (parsed.user) {
+                setUser(toUser(parsed.user));
+              } else {
+                setUser(null);
+              }
+            } catch {
+              setUser(null);
+            }
+          } else {
+            setUser(null);
+          }
+        }
+      } catch {
+        const storedSession = window.localStorage.getItem("shelby:session");
+        if (storedSession) {
+          try {
+            const parsed = JSON.parse(storedSession) as { user?: SbUser | null };
+            setUser(parsed.user ? toUser(parsed.user) : null);
+          } catch {
+            setUser(null);
+          }
+        } else {
+          setUser(null);
+        }
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
-    });
+    };
+
+    void restoreSession();
     return () => sub.subscription.unsubscribe();
   }, []);
 

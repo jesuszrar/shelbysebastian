@@ -3,7 +3,28 @@ import type { Session, User as SbUser } from "@supabase/supabase-js";
 type ApiError = { message: string; code?: string };
 type ApiResult<T> = Promise<{ data: T | null; error: ApiError | null }>;
 
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? import.meta.env.VITE_BACKEND_URL ?? "";
+const resolveApiBaseUrl = () => {
+  const configuredUrl = import.meta.env.VITE_API_URL ?? import.meta.env.VITE_BACKEND_URL ?? "";
+  const fallbackFromEnv = import.meta.env.VITE_FALLBACK_API ?? "";
+  const knownPlaceholder = "tu-backend-en-render.com";
+
+  let resolved = "";
+  if (configuredUrl.trim()) {
+    resolved = configuredUrl.trim().replace(/\/$/, "");
+  } else if (typeof window !== "undefined" && window.location?.origin) {
+    resolved = window.location.origin;
+  }
+
+  // If the resolved URL contains the known placeholder, prefer an explicit fallback.
+  if (resolved.includes(knownPlaceholder)) {
+    if (fallbackFromEnv.trim()) return fallbackFromEnv.trim().replace(/\/$/, "");
+    return "https://shelby-backend.onrender.com";
+  }
+
+  return resolved;
+};
+
+const API_BASE_URL = resolveApiBaseUrl();
 const SESSION_KEY = "shelby:session";
 const AUTH_LISTENERS = new Set<(event: string, session: Session | null) => void>();
 
@@ -56,7 +77,11 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}${path}`, {
+    const baseUrl = API_BASE_URL || "";
+    const targetPath = path.startsWith("/") ? path : `/${path}`;
+    const url = baseUrl ? `${baseUrl}${targetPath}` : targetPath;
+
+    const response = await fetch(url, {
       headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
       ...init,
     });
@@ -194,4 +219,4 @@ const apiClient = {
   },
 };
 
-export { apiClient as supabase };
+export { apiClient as supabase, resolveApiBaseUrl };

@@ -23,7 +23,11 @@ Deno.serve(async (req) => {
     // Prefer a client-provided token name if available, fall back to the default
     const accessToken = Deno.env.get("MERCADOPAGO_ACCESS_TOKEN_CLIENT") ?? Deno.env.get("MERCADOPAGO_ACCESS_TOKEN");
     if (!accessToken) {
-      return new Response(JSON.stringify({ error: "Mercado Pago no está configurado. Agrega MERCADOPAGO_ACCESS_TOKEN." }), {
+      return new Response(JSON.stringify({
+        error: "mercadopago_token_missing",
+        message: "Mercado Pago no está configurado. Agrega MERCADOPAGO_ACCESS_TOKEN_CLIENT o MERCADOPAGO_ACCESS_TOKEN en Supabase / Render.",
+        step: "token_validation",
+      }), {
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }

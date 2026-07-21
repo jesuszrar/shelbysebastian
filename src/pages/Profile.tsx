@@ -18,16 +18,25 @@ const Profile = () => {
   const [couponLoading, setCouponLoading] = useState(false);
 
   useEffect(() => {
-    if (!user) return;
-    const load = async () => {
-      const result = await supabase.from("orders").select("id,total,shipping,status,paymentMethod,customerCity,customerAddress,createdAt,created_at,couponCode,discountAmount").eq("userId", user.id);
-      if (result.error) {
-        console.error(result.error);
-        toast.error("No pudimos cargar tu historial.");
-      } else {
-        setOrders((result.data as Array<Record<string, unknown>>) || []);
-      }
+    if (!user) {
       setLoading(false);
+      return;
+    }
+    const load = async () => {
+      try {
+        const result = await supabase.from("orders").select("id,total,shipping,status,paymentMethod,customerCity,customerAddress,createdAt,created_at,couponCode,discountAmount").eq("userId", user.id);
+        if (result.error) {
+          console.error(result.error);
+          setOrders([]);
+        } else {
+          setOrders((result.data as Array<Record<string, unknown>>) || []);
+        }
+      } catch (error) {
+        console.error(error);
+        setOrders([]);
+      } finally {
+        setLoading(false);
+      }
     };
     void load();
   }, [user]);

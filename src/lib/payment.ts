@@ -1,13 +1,14 @@
 export const getMercadoPagoErrorMessage = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error ?? "");
+  const normalized = message.toLowerCase();
 
   if (!message) return "No pudimos iniciar el pago.";
 
-  if (message.includes("MERCADOPAGO_ACCESS_TOKEN") || message.includes("Mercado Pago no está configurado")) {
-    return "Mercado Pago no está configurado en este momento. Puedes completar tu pedido por WhatsApp o elegir otro método de pago.";
+  if (normalized.includes("mercadopago") && (normalized.includes("token") || normalized.includes("configur"))) {
+    return "Mercado Pago no está configurado en este momento. Añade el token de acceso en Supabase o Render para habilitar el checkout.";
   }
 
-  if (message.includes("Failed to fetch") || message.includes("fetch")) {
+  if (normalized.includes("failed to fetch") || normalized.includes("fetch")) {
     return "No pudimos contactar con Mercado Pago en este momento. Puedes continuar por WhatsApp.";
   }
 

@@ -25,4 +25,4 @@ This folder is the new backend for the app after moving away from Supabase.
 & "C:\Program Files\nodejs\npm.cmd" run dev
 ```
 
-4. Set `VITE_API_URL` in the frontend `.env` to the backend URL, for example `http://localhost:3001`.
+4. Set `VITE_API_URL` in the frontend `.env` to the backend URL, for example `https://shelby-backend.onrender.com`.
