@@ -4,9 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "npx -p prisma@6.15.0 prisma generate && tsc -p tsconfig.json",
-    "start": "npx -p prisma@6.15.0 prisma migrate deploy && node dist/server.js",
-    "start:prod": "npx -p prisma@6.15.0 prisma migrate deploy && node dist/server.js",
+    "build": "prisma generate && tsc -p tsconfig.json",
+    "start": "prisma migrate deploy && node dist/server.js",
+    "start:prod": "prisma migrate deploy && node dist/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:studio": "prisma studio"
