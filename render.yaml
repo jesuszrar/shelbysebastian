@@ -4,7 +4,7 @@ services:
     env: node
     plan: free
     rootDir: backend
-    buildCommand: npm install --include=dev && npm run build
+    buildCommand: npm install --include=dev --no-audit --no-fund && ./node_modules/.bin/prisma generate && ./node_modules/.bin/tsc -p tsconfig.json
     startCommand: npm run start
     healthCheckPath: /health
     envVars:

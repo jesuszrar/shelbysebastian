@@ -4,17 +4,16 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "prisma generate && tsc -p tsconfig.json",
-    "start": "prisma migrate deploy && node dist/server.js",
-    "start:prod": "prisma migrate deploy && node dist/server.js",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate deploy",
-    "prisma:studio": "prisma studio"
+    "build": "npm install --include=dev --no-audit --no-fund && ./node_modules/.bin/prisma generate && ./node_modules/.bin/tsc -p tsconfig.json",
+    "start": "./node_modules/.bin/prisma migrate deploy && node dist/server.js",
+    "start:prod": "./node_modules/.bin/prisma migrate deploy && node dist/server.js",
+    "prisma:generate": "./node_modules/.bin/prisma generate",
+    "prisma:migrate": "./node_modules/.bin/prisma migrate deploy",
+    "prisma:studio": "./node_modules/.bin/prisma studio"
   },
-  "packageManager": "yarn@1.22.22",
+  "packageManager": "npm@10.13.0",
   "dependencies": {
     "@prisma/client": "6.15.0",
-    "prisma": "6.15.0",
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
@@ -22,6 +21,7 @@
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.14.3",
     "nodemailer": "^9.0.3",
+    "prisma": "6.15.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
