@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { PrismaClient, type Product, type Order, type User, type Coupon, type CouponAudit, type CedulaEmail, Prisma } from "@prisma/client";
+import { PrismaClient, type Product, type Order, type User, type Coupon, type CedulaEmail, Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
@@ -114,7 +114,7 @@ const serializeUser = (user: User | null) =>
 const serializeProduct = (product: Product) => wrap({ ...product, price: product.price });
 const serializeOrder = (order: Order) => wrap({ ...order, total: order.total });
 const serializeCoupon = (coupon: Coupon) => wrap({ ...coupon, value: coupon.value, minimumSubtotal: coupon.minimumSubtotal });
-const serializeCouponAudit = (row: CouponAudit) => wrap(row);
+const serializeCouponAudit = (row: Record<string, unknown>) => wrap(row);
 const serializeCedulaEmail = (row: CedulaEmail) => row;
 
 const getMailer = () => {
@@ -472,7 +472,7 @@ app.get("/api/data/:table", async (req, res) => {
   else if (table === "orders") rows = (await prisma.order.findMany()).map((row) => serializeOrder(row) as Record<string, unknown>);
   else if (table === "profiles") rows = (await prisma.user.findMany()).map((row) => serializeUser(row) as Record<string, unknown>);
   else if (table === "coupons") rows = (await prisma.coupon.findMany()).map((row) => serializeCoupon(row) as Record<string, unknown>);
-  else if (table === "coupon_audit") rows = (await prisma.couponAudit.findMany()).map((row) => serializeCouponAudit(row) as Record<string, unknown>);
+  else if (table === "coupon_audit") rows = [];
   else if (table === "cedula_emails") rows = (await prisma.cedulaEmail.findMany()).map((row) => serializeCedulaEmail(row) as Record<string, unknown>);
   else return res.status(404).json({ error: "Tabla no soportada" });
 
@@ -831,13 +831,12 @@ app.post("/api/functions/check-mp-methods", async (_req, res) => {
 });
 
 app.post("/api/functions/create-mp-preference", async (req, res) => {
-  // Prefer the server access token for creating preferences; client token may be insufficient.
-  const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN ?? process.env.MERCADOPAGO_ACCESS_TOKEN_CLIENT;
-  if (!accessToken) return res.status(500).json({ error: "mercadopago_token_missing", message: "MERCADOPAGO_ACCESS_TOKEN (server) o MERCADOPAGO_ACCESS_TOKEN_CLIENT (client) no está configurado" });
+  const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+  if (!accessToken) return res.status(500).json({ error: "mercadopago_token_missing", message: "MERCADOPAGO_ACCESS_TOKEN no está configurado" });
 
   const body = req.body as {
     orderId?: string;
-    items?: Array<{ id: string; title: string; quantity: number; unit_price: number; picture_url?: string }>;
+    items?: Array<{ id: string; title: string; quantity?: number; unit_price?: number; picture_url?: string }>;
     payer?: { name?: string; email?: string; phone?: string; address?: string; city?: string };
     shipping?: number;
     total?: number;
@@ -851,7 +850,13 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
   const preference = buildMercadoPagoPreferencePayload(body as never, "");
 
   if (body.shipping && body.shipping > 0) {
-    (preference.items as Array<Record<string, unknown>>).push({ id: "shipping", title: "Envío", quantity: 1, unit_price: Math.round(body.shipping), currency_id: "COP" });
+    (preference.items as Array<Record<string, unknown>>).push({
+      id: "shipping",
+      title: "Envío",
+      quantity: 1,
+      unit_price: Math.round(body.shipping),
+      currency_id: "COP",
+    });
   }
 
   if (body.preferredPayment) {
@@ -883,15 +888,17 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
   } catch {
     data = { raw: text };
   }
-  const tokenSource = process.env.MERCADOPAGO_ACCESS_TOKEN ? "server" : process.env.MERCADOPAGO_ACCESS_TOKEN_CLIENT ? "client" : "none";
-  console.error("Mercado Pago preference creation failed", { status: response.status, body: data, payload: preference, tokenConfigured: Boolean(accessToken), tokenSource });
+
   if (!response.ok) {
+    const tokenSource = process.env.MERCADOPAGO_ACCESS_TOKEN ? "server" : "none";
+    console.error("Mercado Pago preference creation failed", { status: response.status, body: data, payload: preference, tokenConfigured: Boolean(accessToken), tokenSource });
     return res.status(response.status).json({
       error: String((data as Record<string, unknown>).message || "Error creando preferencia"),
       details: data,
       fallback: "No pudimos iniciar el pago. Puedes completar tu pedido por WhatsApp.",
     });
   }
+
   return res.json({ id: data.id, init_point: data.init_point, sandbox_init_point: data.sandbox_init_point });
 });
 
