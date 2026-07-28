@@ -51,14 +51,13 @@ const recordCouponAudit = async (data: {
 }) => {
   if (!data.couponCode) return;
   try {
-    await prisma.couponAudit.create({
-      data: {
-        couponCode: data.couponCode,
-        action: data.action,
-        performedByUserId: data.performedByUserId ?? null,
-        performedByEmail: data.performedByEmail ?? null,
-        details: data.details ? (data.details as Prisma.InputJsonValue) : undefined,
-      },
+    // Coupon audit logging is intentionally disabled for this deployment because the
+    // Prisma schema currently does not include a CouponAudit model.
+    console.debug("Coupon audit skipped", {
+      couponCode: data.couponCode,
+      action: data.action,
+      performedByUserId: data.performedByUserId ?? null,
+      performedByEmail: data.performedByEmail ?? null,
     });
   } catch (error) {
     console.error("Failed to record coupon audit", error);
