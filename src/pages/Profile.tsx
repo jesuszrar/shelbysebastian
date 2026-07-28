@@ -9,6 +9,19 @@ import { supabase } from "@/integrations/api/client";
 import { formatCOP } from "@/data/products";
 import { toast } from "sonner";
 
+const parseTimestamp = (value?: string | null) => {
+  if (!value || typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const date = new Date(trimmed);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const formatOrderDate = (value?: string | null) => {
+  const date = parseTimestamp(value);
+  return date ? date.toLocaleDateString("es-CO") : "-";
+};
+
 const Profile = () => {
   const { user, logout } = useAuth();
   const [orders, setOrders] = useState<Array<Record<string, unknown>>>([]);
@@ -41,9 +54,24 @@ const Profile = () => {
     void load();
   }, [user]);
 
+  const parseTimestamp = (value?: string | null) => {
+    if (!value || typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const date = new Date(trimmed);
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+
   const recentOrders = useMemo(() => {
     return [...orders]
-      .sort((a, b) => new Date(String(b.createdAt || b.created_at || "")).getTime() - new Date(String(a.createdAt || a.created_at || "")).getTime())
+      .sort((a, b) => {
+        const aDate = parseTimestamp(String(a.createdAt || a.created_at || ""));
+        const bDate = parseTimestamp(String(b.createdAt || b.created_at || ""));
+        if (!aDate && !bDate) return 0;
+        if (!aDate) return 1;
+        if (!bDate) return -1;
+        return bDate.getTime() - aDate.getTime();
+      })
       .slice(0, 10);
   }, [orders]);
 
@@ -62,8 +90,14 @@ const Profile = () => {
         const coupon = result.data as Record<string, unknown>;
         if (!coupon.active) {
           setCouponResult({ message: "Este cupón ya no está activo." });
-        } else if (coupon.expiresAt && new Date(String(coupon.expiresAt)).getTime() < Date.now()) {
-          setCouponResult({ message: "El cupón ha expirado." });
+        } else if (coupon.expiresAt) {
+          const expiresAtDate = parseTimestamp(String(coupon.expiresAt));
+          if (!expiresAtDate || expiresAtDate.getTime() < Date.now()) {
+            setCouponResult({ message: "El cupón ha expirado." });
+            setCouponLoading(false);
+            return;
+          }
+          setCouponResult({ message: "Cupón válido", discount: String(coupon.type) === "percent" ? `${coupon.value}%` : `-${formatCOP(Number(coupon.value))}` });
         } else {
           setCouponResult({ message: "Cupón válido", discount: String(coupon.type) === "percent" ? `${coupon.value}%` : `-${formatCOP(Number(coupon.value))}` });
         }
@@ -130,7 +164,7 @@ const Profile = () => {
                         <div className="grid gap-2 sm:grid-cols-3 text-sm text-muted-foreground">
                           <div><span className="block text-secondary font-semibold">{String(order.status)}</span>Estado</div>
                           <div><span className="block text-secondary font-semibold">{formatCOP(Number(order.total || 0))}</span>Total</div>
-                          <div><span className="block text-secondary font-semibold">{new Date(String(order.createdAt || order.created_at || "")).toLocaleDateString("es-CO")}</span>Fecha</div>
+                          <div><span className="block text-secondary font-semibold">{formatOrderDate(order.createdAt || order.created_at)}</span>Fecha</div>
                         </div>
                       </div>
                       <div className="mt-4 grid gap-3 sm:grid-cols-2 text-sm text-muted-foreground">

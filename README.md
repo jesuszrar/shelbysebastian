@@ -9,7 +9,7 @@ Render debe leer el blueprint de [render.yaml](render.yaml).
 Configuracion esperada del servicio web:
 
 - Root Directory: backend
-- Build Command: npm install && npx prisma generate && npx prisma migrate deploy && npm run build
+- Build Command: npm ci --include=dev && npm run build
 - Start Command: npm run start
 - Health Check Path: /health
 

@@ -14,3 +14,14 @@ export const getMercadoPagoErrorMessage = (error: unknown) => {
 
   return "No pudimos iniciar el pago. Puedes completar tu pedido por WhatsApp.";
 };
+
+export const getPaymentRedirectUrl = (paymentMethod: string | null | undefined) => {
+  switch (paymentMethod) {
+    case "nequi":
+      return "https://www.nequi.com.co/";
+    case "daviplata":
+      return "https://www.daviplata.com/";
+    default:
+      return null;
+  }
+};

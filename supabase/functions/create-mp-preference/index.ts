@@ -14,18 +14,19 @@ interface Body {
   total: number;
   backUrls?: BackUrls;
   back_urls?: BackUrls;
+  preferredPayment?: string;
 }
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
-    // Prefer a client-provided token name if available, fall back to the default
-    const accessToken = Deno.env.get("MERCADOPAGO_ACCESS_TOKEN_CLIENT") ?? Deno.env.get("MERCADOPAGO_ACCESS_TOKEN");
+    // Require a server-side Mercado Pago access token for preference creation.
+    const accessToken = Deno.env.get("MERCADOPAGO_ACCESS_TOKEN");
     if (!accessToken) {
       return new Response(JSON.stringify({
         error: "mercadopago_token_missing",
-        message: "Mercado Pago no está configurado. Agrega MERCADOPAGO_ACCESS_TOKEN_CLIENT o MERCADOPAGO_ACCESS_TOKEN en Supabase / Render.",
+        message: "Mercado Pago no está configurado. Agrega MERCADOPAGO_ACCESS_TOKEN en Supabase / Render.",
         step: "token_validation",
       }), {
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -49,41 +50,10 @@ Deno.serve(async (req) => {
     }));
 
     if (body.shipping > 0) {
-      items.push({ id: "shipping", title: "Envío", quantity: 1, unit_price: Math.round(body.shipping), currency_id: "COP", picture_url: undefined });
+      items.push({ id: "shipping", title: "Envío", quantity: 1, unit_price: Math.round(body.shipping), currency_id: "COP" });
     }
 
-    const [first = "", ...rest] = (body.payer?.name || "").trim().split(" ");
-    const surname = rest.join(" ") || undefined;
-
-    // CRÍTICO: normalizar backUrls (camelCase del frontend) -> back_urls (snake_case que MP exige)
-    const backUrls = body.backUrls ?? body.back_urls;
-
-    const preference: Record<string, unknown> = {
-      items,
-      external_reference: body.orderId,
-      payer: {
-        name: first || undefined,
-        surname,
-        email: body.payer?.email,
-        phone: body.payer?.phone ? { number: body.payer.phone } : undefined,
-        address: body.payer?.address ? { street_name: body.payer.address } : undefined,
-      },
-      statement_descriptor: "SHELBY",
-      notification_url: `${new URL(req.url).origin}/functions/v1/mp-webhook`,
-    };
-
-    // CRÍTICO: solo agregar auto_return si las 3 back_urls están presentes,
-    // de lo contrario MP responde 400 "auto_return invalid. back_url.success must be defined"
-    if (backUrls?.success && backUrls?.failure && backUrls?.pending) {
-      preference.back_urls = {
-        success: backUrls.success,
-        failure: backUrls.failure,
-        pending: backUrls.pending,
-      };
-      preference.auto_return = "approved";
-    } else {
-      console.warn("Incomplete back_urls; auto_return omitted", backUrls);
-    }
+    const preference: Record<string, unknown> = { items };
 
     const mpRes = await fetch("https://api.mercadopago.com/checkout/preferences", {
       method: "POST",

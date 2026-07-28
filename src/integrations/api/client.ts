@@ -6,19 +6,38 @@ type ApiResult<T> = Promise<{ data: T | null; error: ApiError | null }>;
 const resolveApiBaseUrl = () => {
   const configuredUrl = import.meta.env.VITE_API_URL ?? import.meta.env.VITE_BACKEND_URL ?? "";
   const fallbackFromEnv = import.meta.env.VITE_FALLBACK_API ?? "";
-  const knownPlaceholder = "tu-backend-en-render.com";
+  const preferredBackends = [
+    "https://shelbysebastian-1.onrender.com",
+    "https://shelby-backend.onrender.com",
+  ];
+  const placeholderBackend = "tu-backend-en-render.com";
 
-  let resolved = "";
-  if (configuredUrl.trim()) {
-    resolved = configuredUrl.trim().replace(/\/$/, "");
-  } else if (typeof window !== "undefined" && window.location?.origin) {
+  const normalize = (value: string) => {
+    const normalized = value.trim().replace(/\/$/, "");
+    if (!normalized) return "";
+    if (normalized.includes(placeholderBackend)) return "";
+    return normalized;
+  };
+
+  const pickPreferredBackend = (candidates: string[]) => {
+    for (const candidate of candidates) {
+      const normalized = normalize(candidate);
+      if (normalized) return normalized;
+    }
+    return "";
+  };
+
+  let resolved = normalize(configuredUrl);
+  if (!resolved && typeof window !== "undefined" && window.location?.origin) {
     resolved = window.location.origin;
   }
 
-  // If the resolved URL contains the known placeholder, prefer an explicit fallback.
-  if (resolved.includes(knownPlaceholder)) {
-    if (fallbackFromEnv.trim()) return fallbackFromEnv.trim().replace(/\/$/, "");
-    return "https://shelby-backend.onrender.com";
+  if (!resolved || resolved === window.location.origin) {
+    return normalize(fallbackFromEnv) || pickPreferredBackend(preferredBackends);
+  }
+
+  if (resolved.includes("render.com") || resolved.includes("onrender.com")) {
+    return resolved;
   }
 
   return resolved;
@@ -77,13 +96,19 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
   }
 
   try {
+    const storedSession = readSession();
     const baseUrl = API_BASE_URL || "";
     const targetPath = path.startsWith("/") ? path : `/${path}`;
     const url = baseUrl ? `${baseUrl}${targetPath}` : targetPath;
+    const headers: Record<string, string> = { "Content-Type": "application/json", ...(init?.headers as Record<string, string> | undefined) };
+
+    if (storedSession?.access_token && !headers.Authorization) {
+      headers.Authorization = `Bearer ${storedSession.access_token}`;
+    }
 
     const response = await fetch(url, {
-      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
       ...init,
+      headers,
     });
     const data = (await response.json().catch(() => null)) as T | null;
     if (!response.ok) {

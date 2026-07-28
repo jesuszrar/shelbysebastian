@@ -1,0 +1,20 @@
+Connecting...
+Connected
+Removing remote contents under public_html
+Deleted public_html/index.html
+Deleted public_html/.htaccess
+Removed dir public_html/assets
+Deleted public_html/robots.txt
+Deleted public_html/favicon.ico
+Deleted public_html/_headers
+Deleted public_html/_redirects
+Deleted public_html/placeholder.svg
+Uploading local dist to public_html
+Uploaded public_html/.htaccess
+Uploaded public_html/favicon.ico
+Uploaded public_html/index.html
+Uploaded public_html/placeholder.svg
+Uploaded public_html/robots.txt
+Uploaded public_html/_headers
+Uploaded public_html/_redirects
+Done

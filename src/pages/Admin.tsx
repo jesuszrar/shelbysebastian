@@ -19,14 +19,18 @@ import {
 import {
   AlertTriangle,
   BarChart3,
+  Clock3,
+  ClipboardCopy,
   ImagePlus,
   Package,
   Plus,
   RefreshCcw,
+  Repeat,
   Search,
   ShieldCheck,
   ShoppingCart,
   Sparkles,
+  Tag,
   Trash2,
   Upload,
   Users,
@@ -73,6 +77,27 @@ type UserRow = {
   email: string;
   cedula?: string;
   is_admin?: boolean;
+};
+
+type CouponRow = {
+  code: string;
+  type: "fixed" | "percent";
+  value: number;
+  active: boolean;
+  minimumSubtotal?: number | null;
+  expiresAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+type CouponAuditRow = {
+  id: string;
+  couponCode: string;
+  action: string;
+  performedByUserId?: string | null;
+  performedByEmail?: string | null;
+  details?: Record<string, unknown> | null;
+  createdAt?: string;
 };
 
 type ProductForm = {
@@ -129,11 +154,23 @@ const parseSpecs = (specsText: string) =>
 
 const isRevenueStatus = (status: string) => ADMIN_EMAIL_STATUSES.has(status.toLowerCase());
 
-const monthLabel = (dateString: string) =>
-  new Intl.DateTimeFormat("es-CO", {
-    month: "short",
-    year: "2-digit",
-  }).format(new Date(dateString));
+const parseDateValue = (value?: string | null) => {
+  if (!value || typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const date = new Date(trimmed);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const monthLabel = (dateString?: string | null) => {
+  const date = parseDateValue(dateString);
+  return date
+    ? new Intl.DateTimeFormat("es-CO", {
+        month: "short",
+        year: "2-digit",
+      }).format(date)
+    : "";
+};
 
 const downloadTextFile = (filename: string, content: string, mimeType: string) => {
   const blob = new Blob([content], { type: mimeType });
@@ -156,7 +193,7 @@ const buildCsv = (headers: string[], rows: Array<Array<string | number | null | 
   [headers.map(escapeCsvValue).join(","), ...rows.map((row) => row.map(escapeCsvValue).join(","))].join("\n");
 
 const Admin = () => {
-  const [tab, setTab] = useState<"overview" | "products" | "orders" | "users">("overview");
+  const [tab, setTab] = useState<"overview" | "products" | "orders" | "users" | "marketing">("overview");
 
   return (
     <div className="min-h-screen bg-background">
@@ -166,9 +203,9 @@ const Admin = () => {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <span className="text-primary text-xs uppercase tracking-[0.3em] font-semibold">Panel de control</span>
-              <h1 className="font-display text-3xl sm:text-4xl text-secondary mt-2">Administra catálogo, ventas y usuarios</h1>
+              <h1 className="font-display text-3xl sm:text-4xl text-secondary mt-2">Administra catálogo, ventas, cupones y usuarios</h1>
               <p className="text-muted-foreground mt-2 max-w-2xl">
-                Desde aquí puedes cambiar imágenes, precios, stock, descripciones, revisar ingresos, manejar pedidos y otorgar acceso admin a otros usuarios.
+                Desde aquí puedes cambiar imágenes, precios, stock, descripciones, revisar ingresos, gestionar cupones y otorgar acceso admin a otros usuarios.
               </p>
             </div>
             <div className="flex items-center gap-2 text-xs text-muted-foreground bg-card border border-border rounded-full px-4 py-2 w-fit">
@@ -183,12 +220,14 @@ const Admin = () => {
             <TabButton active={tab === "products"} onClick={() => setTab("products")} icon={Package} label="Productos" />
             <TabButton active={tab === "orders"} onClick={() => setTab("orders")} icon={ShoppingCart} label="Ventas" />
             <TabButton active={tab === "users"} onClick={() => setTab("users")} icon={Users} label="Usuarios" />
+            <TabButton active={tab === "marketing"} onClick={() => setTab("marketing")} icon={Tag} label="Marketing" />
           </div>
 
           {tab === "overview" && <OverviewPanel />}
           {tab === "products" && <ProductsAdmin />}
           {tab === "orders" && <OrdersAdmin />}
           {tab === "users" && <UsersAdmin />}
+          {tab === "marketing" && <CouponsAdmin />}
         </div>
       </main>
       <Footer />
@@ -235,7 +274,8 @@ function OverviewPanel({ compact = false }: { compact?: boolean }) {
     orders
       .filter((order) => isRevenueStatus(order.status))
       .forEach((order) => {
-        const month = monthLabel(order.created_at);
+        const month = monthLabel(order.created_at || order.createdAt);
+        if (!month) return;
         const current = grouped.get(month) || { month, income: 0, orders: 0 };
         current.income += Number(order.total || 0);
         current.orders += 1;
@@ -591,6 +631,357 @@ function ProductsAdmin() {
     </section>
   );
 }
+
+function CouponsAdmin() {
+  const [tab, setTab] = useState<"coupons" | "history">("coupons");
+  const [rows, setRows] = useState<CouponRow[]>([]);
+  const [auditRows, setAuditRows] = useState<CouponAuditRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [form, setForm] = useState<CouponRow>({
+    code: "",
+    type: "fixed",
+    value: 0,
+    active: true,
+    minimumSubtotal: null,
+    expiresAt: "",
+    createdAt: undefined,
+    updatedAt: undefined,
+  });
+
+  const loadCoupons = async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from<CouponRow>("coupons")
+      .select("code,type,value,active,minimumSubtotal,expiresAt,createdAt,updatedAt")
+      .order("createdAt", { ascending: false });
+    if (error) console.error(error);
+    setRows((data as CouponRow[]) || []);
+    setLoading(false);
+  };
+
+  const loadAudit = async () => {
+    const { data, error } = await supabase
+      .from<CouponAuditRow>("coupon_audit")
+      .select("id,couponCode,action,performedByEmail,details,createdAt")
+      .order("createdAt", { ascending: false });
+    if (error) console.error(error);
+    setAuditRows((data as CouponAuditRow[]) || []);
+  };
+
+  const refreshAll = async () => {
+    await Promise.all([loadCoupons(), loadAudit()]);
+  };
+
+  useEffect(() => {
+    void refreshAll();
+  }, []);
+
+  const resetForm = () => {
+    setEditing(null);
+    setForm({
+      code: "",
+      type: "fixed",
+      value: 0,
+      active: true,
+      minimumSubtotal: null,
+      expiresAt: "",
+      createdAt: undefined,
+      updatedAt: undefined,
+    });
+  };
+
+  const startEdit = (coupon: CouponRow) => {
+    setEditing(coupon.code);
+    setForm({
+      ...coupon,
+      expiresAt: coupon.expiresAt ? coupon.expiresAt.slice(0, 10) : "",
+    });
+  };
+
+  const saveCoupon = async () => {
+    const code = form.code.trim().toUpperCase();
+    if (!code) {
+      toast.error("Ingresa un código de cupón");
+      return;
+    }
+
+    setSavingId(code);
+    try {
+      const payload: Record<string, unknown> = {
+        code,
+        type: form.type,
+        value: form.value,
+        active: Boolean(form.active),
+        expiresAt: form.expiresAt ? new Date(form.expiresAt).toISOString() : null,
+      };
+      payload.minimumSubtotal = form.minimumSubtotal === null || form.minimumSubtotal === undefined ? null : form.minimumSubtotal;
+
+      const response = editing
+        ? await supabase.from("coupons").update(payload).eq("code", editing)
+        : await supabase.from("coupons").insert(payload);
+
+      if (response.error) {
+        console.error(response.error);
+        toast.error(response.error.message || "No se pudo guardar el cupón");
+        return;
+      }
+
+      toast.success(editing ? "Cupón actualizado" : "Cupón creado");
+      resetForm();
+      await refreshAll();
+      setTab("coupons");
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const toggleActive = async (coupon: CouponRow) => {
+    setSavingId(coupon.code);
+    const { error } = await supabase.from("coupons").update({ active: !coupon.active }).eq("code", coupon.code);
+    if (error) {
+      console.error(error);
+      toast.error("No se pudo actualizar el estado");
+    } else {
+      toast.success(`Cupón ${coupon.active ? "desactivado" : "activado"}`);
+      await refreshAll();
+    }
+    setSavingId(null);
+  };
+
+  const duplicateCoupon = async (coupon: CouponRow) => {
+    const newCode = prompt("Código nuevo para el cupón duplicado", `${coupon.code}_COPIA`);
+    if (!newCode) return;
+    const code = newCode.trim().toUpperCase();
+    if (!code) return;
+
+    setSavingId(coupon.code);
+    const { error } = await supabase.from("coupons").insert([
+      {
+        code,
+        type: coupon.type,
+        value: coupon.value,
+        active: coupon.active,
+        minimumSubtotal: coupon.minimumSubtotal,
+        expiresAt: coupon.expiresAt || null,
+      },
+    ]);
+    if (error) {
+      console.error(error);
+      toast.error("No se pudo duplicar el cupón");
+    } else {
+      toast.success("Cupón duplicado");
+      await refreshAll();
+    }
+    setSavingId(null);
+  };
+
+  const deleteCoupon = async (code: string) => {
+    if (!confirm(`Eliminar cupón ${code}?`)) return;
+    setSavingId(code);
+    const { error } = await supabase.from("coupons").delete().eq("code", code);
+    if (error) {
+      console.error(error);
+      toast.error("No se pudo eliminar el cupón");
+    } else {
+      toast.success("Cupón eliminado");
+      await refreshAll();
+    }
+    setSavingId(null);
+  };
+
+  const activeCount = rows.filter((coupon) => coupon.active).length;
+  const expiredCount = rows.filter((coupon) => coupon.expiresAt && new Date(coupon.expiresAt).getTime() < Date.now()).length;
+
+  return (
+    <section className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="font-display text-2xl text-secondary">Marketing</h2>
+          <p className="text-sm text-muted-foreground">Gestiona cupones, controla activaciones y revisa el historial de cambios.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={refreshAll} className="gap-2">
+            <RefreshCcw className="h-4 w-4" /> Refrescar
+          </Button>
+          <Button type="button" onClick={() => { resetForm(); setTab("coupons"); }} variant="secondary" className="gap-2">
+            <Plus className="h-4 w-4" /> Nuevo cupón
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard icon={Tag} label="Cupones" value={String(rows.length)} help="Total creados" />
+        <StatCard icon={ShieldCheck} label="Activos" value={String(activeCount)} help="Cupones disponibles" />
+        <StatCard icon={AlertTriangle} label="Expirados" value={String(expiredCount)} help="Cupones vencidos" />
+        <StatCard icon={Clock3} label="Historial" value={String(auditRows.length)} help="Cambios registrados" />
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <TabButton active={tab === "coupons"} onClick={() => setTab("coupons")} icon={Tag} label="Cupones" />
+        <TabButton active={tab === "history"} onClick={() => setTab("history")} icon={Clock3} label="Historial" />
+      </div>
+
+      {tab === "coupons" && (
+        <div className="bg-card border border-border rounded-3xl p-6 shadow-soft space-y-6">
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Código" value={form.code} onChange={(value) => setForm((current) => ({ ...current, code: value }))} placeholder="EJEMPLO10" />
+                <label className="block">
+                  <span className="text-sm font-medium text-secondary block mb-1.5">Tipo</span>
+                  <select
+                    value={form.type}
+                    onChange={(event) => setForm((current) => ({ ...current, type: event.target.value as "fixed" | "percent" }))}
+                    className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth"
+                  >
+                    <option value="fixed">Monto fijo</option>
+                    <option value="percent">Porcentaje</option>
+                  </select>
+                </label>
+                <Field label="Valor" type="number" value={String(form.value)} onChange={(value) => setForm((current) => ({ ...current, value: Number(value) || 0 }))} placeholder="10000 o 10" />
+                <Field label="Subtotal mínimo" type="number" value={form.minimumSubtotal === null ? "" : String(form.minimumSubtotal)} onChange={(value) => setForm((current) => ({ ...current, minimumSubtotal: value ? Number(value) : null }))} placeholder="Opcional" />
+                <label className="block">
+                  <span className="text-sm font-medium text-secondary block mb-1.5">Expira el</span>
+                  <input
+                    type="date"
+                    value={form.expiresAt || ""}
+                    onChange={(event) => setForm((current) => ({ ...current, expiresAt: event.target.value }))}
+                    className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth"
+                  />
+                </label>
+                <label className="flex items-center gap-3 mt-2 sm:mt-0">
+                  <input
+                    type="checkbox"
+                    checked={form.active}
+                    onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))}
+                    className="h-4 w-4 rounded border border-border text-primary focus:ring-primary"
+                  />
+                  <span className="text-sm text-secondary">Activo</span>
+                </label>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={saveCoupon} disabled={savingId !== null} variant="secondary" className="gap-2">
+                  <Sparkles className="h-4 w-4" /> {editing ? "Guardar cupón" : "Crear cupón"}
+                </Button>
+                <Button variant="outline" onClick={resetForm}>Cancelar</Button>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-border bg-muted/10 p-4 text-sm text-muted-foreground">
+              <p className="font-semibold text-secondary mb-2">Guía rápida</p>
+              <ul className="space-y-2 list-disc pl-5">
+                <li>Usa códigos en mayúsculas sin espacios.</li>
+                <li>Los porcentajes se aplican sobre subtotal + envío.</li>
+                <li>Deja el subtotal mínimo vacío si no hay restricción.</li>
+                <li>Conservar el cupón activo para que esté disponible en checkout.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {loading ? (
+              <div className="text-sm text-muted-foreground">Cargando cupones...</div>
+            ) : rows.length === 0 ? (
+              <div className="text-sm text-secondary/80">Aún no hay cupones creados.</div>
+            ) : (
+              rows.map((coupon) => (
+                <div key={coupon.code} className="rounded-3xl border border-border p-4 grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center">
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-secondary">{coupon.code}</span>
+                      <span className={`text-xs font-semibold px-2 py-1 rounded-full ${coupon.active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
+                        {coupon.active ? "Activo" : "Inactivo"}
+                      </span>
+                      {coupon.expiresAt && new Date(coupon.expiresAt).getTime() < Date.now() ? (
+                        <span className="text-xs font-semibold px-2 py-1 rounded-full bg-amber-100 text-amber-700">Vencido</span>
+                      ) : null}
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      {coupon.type === "percent" ? `${coupon.value}% de descuento` : `Descuento de ${formatCOP(coupon.value)}`} · {coupon.minimumSubtotal ? `mínimo ${formatCOP(coupon.minimumSubtotal)}` : "sin mínimo"}
+                    </div>
+                    <div className="text-sm text-muted-foreground">Expira: {coupon.expiresAt ? new Date(coupon.expiresAt).toLocaleDateString("es-CO") : "Nunca"}</div>
+                    <div className="text-sm text-muted-foreground">Creado: {coupon.createdAt ? new Date(coupon.createdAt).toLocaleDateString("es-CO") : "-"}</div>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <Button type="button" variant="outline" onClick={() => startEdit(coupon)} className="gap-2">
+                      <Repeat className="h-4 w-4" /> Editar
+                    </Button>
+                    <Button type="button" variant="outline" onClick={() => duplicateCoupon(coupon)} className="gap-2">
+                      <ClipboardCopy className="h-4 w-4" /> Duplicar
+                    </Button>
+                    <Button type="button" variant="secondary" onClick={() => toggleActive(coupon)} disabled={savingId === coupon.code} className="gap-2">
+                      {coupon.active ? "Desactivar" : "Activar"}
+                    </Button>
+                    <Button type="button" variant="destructive" onClick={() => deleteCoupon(coupon.code)} disabled={savingId === coupon.code} className="gap-2">
+                      <Trash2 className="h-4 w-4" /> Eliminar
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === "history" && (
+        <div className="bg-card border border-border rounded-3xl p-6 shadow-soft">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h3 className="font-display text-xl text-secondary">Historial de cupones</h3>
+              <p className="text-sm text-muted-foreground">Registro de creación, actualización y eliminación de cupones.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => downloadTextFile(`cupones-historial-${new Date().toISOString().slice(0, 10)}.csv`, buildCsv(["ID", "Cupón", "Acción", "Usuario", "Detalles", "Fecha"], auditRows.map((item) => [item.id, item.couponCode, item.action, item.performedByEmail || "-", item.details ? JSON.stringify(item.details) : "", item.createdAt || ""])), "text/csv;charset=utf-8;")}
+                className="gap-2"
+              >
+                CSV historial
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => downloadTextFile(`cupones-historial-${new Date().toISOString().slice(0, 10)}.xls`, `
+                <html><head><meta charset="utf-8" /></head><body><table border="1"><thead><tr><th>ID</th><th>Cupón</th><th>Acción</th><th>Usuario</th><th>Detalles</th><th>Fecha</th></tr></thead><tbody>${auditRows
+                  .map((item) => `<tr><td>${item.id}</td><td>${item.couponCode}</td><td>${item.action}</td><td>${item.performedByEmail || ""}</td><td>${item.details ? JSON.stringify(item.details) : ""}</td><td>${item.createdAt || ""}</td></tr>`)
+                  .join("")}</tbody></table></body></html>`, "application/vnd.ms-excel;charset=utf-8;")}
+                className="gap-2"
+              >
+                Excel historial
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {auditRows.length === 0 ? (
+              <div className="text-sm text-secondary/80">No hay registros de actividad.</div>
+            ) : (
+              auditRows.map((entry) => (
+                <div key={entry.id} className="rounded-3xl border border-border p-4 bg-background">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="text-sm font-semibold text-secondary">{entry.couponCode}</div>
+                      <div className="text-xs text-muted-foreground">{entry.action} · {entry.performedByEmail || "Sistema"}</div>
+                    </div>
+                    <div className="text-xs text-muted-foreground">{entry.createdAt ? new Date(entry.createdAt).toLocaleString("es-CO") : "-"}</div>
+                  </div>
+                  {entry.details ? (
+                    <pre className="mt-3 overflow-auto rounded-2xl border border-border bg-muted/80 p-3 text-xs text-muted-foreground">{JSON.stringify(entry.details, null, 2)}</pre>
+                  ) : null}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function OrdersAdmin() {
   const [rows, setRows] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(false);

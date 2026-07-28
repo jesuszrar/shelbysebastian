@@ -13,7 +13,7 @@ import { CreditCard, Truck, MessageCircle, Lock, ShoppingBag, Copy, CheckCircle2
 import { trackInitiateCheckout } from "@/lib/metaPixel";
 import { getMercadoPagoErrorMessage } from "@/lib/payment";
 
-type PaymentMethod = "mercadopago" | "nequi" | "transferencia";
+type PaymentMethod = "mercadopago" | "nequi" | "daviplata" | "transferencia";
 
 const checkoutSchema = z.object({
   name: z.string().trim().min(2, "Nombre requerido").max(80),
@@ -22,11 +22,10 @@ const checkoutSchema = z.object({
   city: z.string().trim().min(2, "Ciudad requerida").max(60),
   address: z.string().trim().min(5, "Dirección requerida").max(200),
   notes: z.string().max(500).optional(),
-  payment: z.enum(["mercadopago", "nequi", "transferencia"]),
+  payment: z.enum(["mercadopago", "nequi", "daviplata", "transferencia"]),
 });
 
 const PAYMENT_DETAILS = {
-  nequi: { label: "Nequi / Daviplata", holder: "Shelby Importaciones", account: "322 842 6561", bank: "Nequi · Daviplata" },
   transferencia: { label: "Transferencia bancaria", holder: "Shelby Importaciones SAS", account: "1234-5678-9012", bank: "Bancolombia · Cuenta de Ahorros" },
 } as const;
 
@@ -50,6 +49,7 @@ const Checkout = () => {
   const [discountAmount, setDiscountAmount] = useState(0);
   const [couponLoading, setCouponLoading] = useState(false);
   const [step, setStep] = useState<"form" | "manual">("form");
+  const [availableMpMethods, setAvailableMpMethods] = useState<string[]>([]);
 
   const orderId = useMemo(() => `SHB-${Date.now().toString(36).toUpperCase().slice(-6)}`, []);
 
@@ -64,6 +64,22 @@ const Checkout = () => {
       value: total,
     });
   }, [detailedItems, total]);
+
+  // Check which Mercado Pago methods are enabled for this account
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await supabase.functions.invoke("check-mp-methods");
+        if (res.error) throw res.error;
+        const methods = (res.data?.methods || []).map((m: any) => String(m.id).toLowerCase());
+        if (mounted) setAvailableMpMethods(methods);
+      } catch (err) {
+        console.warn('Could not check MP payment methods', err);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   const update = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const v = e.target.value;
@@ -196,56 +212,65 @@ const Checkout = () => {
     );
   };
 
+  const submitCheckout = async (data: z.infer<typeof checkoutSchema> & { payment: PaymentMethod }) => {
+    setLoading(true);
+    try {
+      if (data.payment === "transferencia") {
+        await saveOrder("pending", data.payment, data);
+        setStep("manual");
+        return;
+      }
+
+      await saveOrder("pending", data.payment, data);
+      const { data: res, error } = await supabase.functions.invoke("create-mp-preference", {
+        body: {
+          orderId,
+          payer: { name: data.name, email: data.email, phone: data.phone, address: data.address, city: data.city },
+          items: detailedItems.map((it) => ({
+            id: it.product.id,
+            title: it.product.name,
+            quantity: it.quantity,
+            unit_price: it.product.price,
+            picture_url: typeof window !== "undefined" ? new URL(it.product.image, window.location.origin).href : it.product.image,
+          })),
+          shipping,
+          total: checkoutTotal,
+          discountAmount,
+          couponCode: couponCode.trim().toUpperCase() || undefined,
+          preferredPayment: data.payment === "mercadopago" ? undefined : data.payment,
+          backUrls: {
+            success: `${window.location.origin}/order-success?order=${orderId}&total=${checkoutTotal}&method=${encodeURIComponent(data.payment)}&status=paid`,
+            failure: `${window.location.origin}/order-success?order=${orderId}&total=${checkoutTotal}&method=${encodeURIComponent(data.payment)}&status=failed`,
+            pending: `${window.location.origin}/order-success?order=${orderId}&total=${checkoutTotal}&method=${encodeURIComponent(data.payment)}&status=pending`,
+          },
+        },
+      });
+      if (error) throw error;
+      if (!res?.init_point) throw new Error("No recibimos un enlace de pago de Mercado Pago.");
+      clear();
+      window.location.href = res.init_point;
+    } catch (err) {
+      setLoading(false);
+      const msg = getMercadoPagoErrorMessage(err);
+      if (data.payment !== "mercadopago" && ((err as any)?.status === 422 || (err as any)?.code === "payment_method_not_available")) {
+        toast.error("Medio de pago no disponible", { description: String((err as any)?.message || msg) });
+      } else {
+        toast.error("No se pudo iniciar el pago", { description: String(msg) });
+      }
+    }
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const data = validate();
     if (!data) return;
+    await submitCheckout({ ...data, payment: form.payment });
+  };
 
-    if (data.payment === "mercadopago") {
-      setLoading(true);
-      try {
-        await saveOrder("pending", data.payment, data);
-        const { data: res, error } = await supabase.functions.invoke("create-mp-preference", {
-          body: {
-            orderId,
-            payer: { name: data.name, email: data.email, phone: data.phone, address: data.address, city: data.city },
-            items: detailedItems.map((it) => ({
-              id: it.product.id,
-              title: it.product.name,
-              quantity: it.quantity,
-              unit_price: it.product.price,
-              picture_url: typeof window !== "undefined" ? new URL(it.product.image, window.location.origin).href : it.product.image,
-            })),
-            shipping,
-            total: checkoutTotal,
-            discountAmount,
-            couponCode: couponCode.trim().toUpperCase() || undefined,
-            backUrls: {
-              success: `${window.location.origin}/order-success?order=${orderId}&total=${checkoutTotal}&method=Mercado%20Pago&status=paid`,
-              failure: `${window.location.origin}/order-success?order=${orderId}&total=${checkoutTotal}&method=Mercado%20Pago&status=failed`,
-              pending: `${window.location.origin}/order-success?order=${orderId}&total=${checkoutTotal}&method=Mercado%20Pago&status=pending`,
-            },
-          },
-        });
-        if (error) throw error;
-        if (!res?.init_point) throw new Error("No recibimos un enlace de pago de Mercado Pago.");
-        clear();
-        window.location.href = res.init_point;
-      } catch (err) {
-        setLoading(false);
-        const msg = getMercadoPagoErrorMessage(err);
-        toast.error("Mercado Pago no disponible", { description: msg });
-      }
-      return;
-    }
-
-    try {
-      await saveOrder("pending", data.payment, data);
-      setStep("manual");
-    } catch (error) {
-      console.error(error);
-      toast.error("No se pudo guardar el pedido", { description: "Revisa tu conexión e intenta otra vez." });
-    }
+  const handleSubmitPayment = async (payment: PaymentMethod) => {
+    const data = validate();
+    if (!data) return;
+    await submitCheckout({ ...data, payment });
   };
 
   const handleManualConfirm = async () => {
@@ -278,7 +303,7 @@ const Checkout = () => {
     window.open(`https://wa.me/573228426561?text=${buildWhatsAppMessage(data, paymentLabel)}`, "_blank");
   };
 
-  if (step === "manual" && form.payment !== "mercadopago") {
+  if (step === "manual" && form.payment === "transferencia") {
     const details = PAYMENT_DETAILS[form.payment];
     return (
       <div className="min-h-screen bg-background flex flex-col">
@@ -353,10 +378,20 @@ const Checkout = () => {
                   💡 Envío a Bogotá $15.000 · Otras ciudades $15.000 · Gratis desde $460.000
                 </p>
               </Section>
+              {availableMpMethods.length > 0 && (
+                <div className="mt-2 text-xs text-destructive">
+                  {!availableMpMethods.includes("nequi") && <div>Nequi no está habilitado en tu cuenta de Mercado Pago.</div>}
+                  {!availableMpMethods.includes("daviplata") && <div>Daviplata no está habilitado en tu cuenta de Mercado Pago.</div>}
+                </div>
+              )}
               <Section icon={CreditCard} title="Método de pago">
+                <p className="text-sm text-muted-foreground mb-4">
+                  Nequi y Daviplata se pagan automáticamente mediante Mercado Pago. No requieren transferencia manual.
+                </p>
                 <div className="grid gap-3">
                   <PaymentOption value="mercadopago" selected={form.payment} onSelect={(v) => setForm((f) => ({ ...f, payment: v }))} icon={CreditCard} title="Mercado Pago" description="Tarjeta crédito, débito o PSE — pago directo y seguro" badge="Recomendado" />
-                  <PaymentOption value="nequi" selected={form.payment} onSelect={(v) => setForm((f) => ({ ...f, payment: v }))} icon={Smartphone} title="Nequi / Daviplata" description="Te mostramos el número para enviar el pago" />
+                  <PaymentOption value="nequi" selected={form.payment} onSelect={(v) => setForm((f) => ({ ...f, payment: v }))} icon={Smartphone} title="Nequi" description="Pago automático vía Mercado Pago. Te redirige a Nequi." disabled={availableMpMethods.length>0 && !availableMpMethods.includes('nequi')} />
+                  <PaymentOption value="daviplata" selected={form.payment} onSelect={(v) => setForm((f) => ({ ...f, payment: v }))} icon={Smartphone} title="Daviplata" description="Pago automático vía Mercado Pago. Te redirige a Daviplata." disabled={availableMpMethods.length>0 && !availableMpMethods.includes('daviplata')} />
                   <PaymentOption value="transferencia" selected={form.payment} onSelect={(v) => setForm((f) => ({ ...f, payment: v }))} icon={Building2} title="Transferencia bancaria" description="Bancolombia y otros bancos — confirmación manual" />
                 </div>
               </Section>
@@ -381,8 +416,45 @@ const Checkout = () => {
                 <div className="flex justify-between"><span>Descuento</span><span>{discountAmount > 0 ? `-${formatCOP(discountAmount)}` : "-"}</span></div>
                 <div className="flex justify-between items-baseline pt-2 border-t border-border"><span className="font-semibold text-secondary">Total final</span><span className="font-display text-2xl text-primary">{formatCOP(checkoutTotal)}</span></div>
               </div>
-              <Button type="submit" disabled={loading} size="lg" className="w-full mt-6 h-12 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft">
-                {loading ? <><Loader2 className="h-5 w-5 animate-spin" /> Procesando...</> : form.payment === "mercadopago" ? <><CreditCard className="h-5 w-5" /> Pagar ahora</> : <><CheckCircle2 className="h-5 w-5" /> Continuar al pago</>}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Button
+                  type="button"
+                  onClick={() => void handleSubmitPayment("nequi")}
+                  disabled={loading || (availableMpMethods.length > 0 && !availableMpMethods.includes("nequi"))}
+                  size="lg"
+                  className="w-full h-12 bg-secondary text-secondary-foreground hover:bg-secondary/90 shadow-soft"
+                >
+                  {loading && form.payment === "nequi" ? <><Loader2 className="h-5 w-5 animate-spin" /> Procesando...</> : <><Smartphone className="h-5 w-5" /> Pagar con Nequi</>}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void handleSubmitPayment("daviplata")}
+                  disabled={loading || (availableMpMethods.length > 0 && !availableMpMethods.includes("daviplata"))}
+                  size="lg"
+                  className="w-full h-12 bg-secondary text-secondary-foreground hover:bg-secondary/90 shadow-soft"
+                >
+                  {loading && form.payment === "daviplata" ? <><Loader2 className="h-5 w-5 animate-spin" /> Procesando...</> : <><Smartphone className="h-5 w-5" /> Pagar con Daviplata</>}
+                </Button>
+              </div>
+              <Button
+                type="submit"
+                disabled={
+                  loading || (form.payment !== "mercadopago" && availableMpMethods.length > 0 && !availableMpMethods.includes(form.payment))
+                }
+                size="lg"
+                className="w-full mt-4 h-12 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft"
+              >
+                {loading ? (
+                  <><Loader2 className="h-5 w-5 animate-spin" /> Procesando...</>
+                ) : form.payment === "mercadopago" ? (
+                  <><CreditCard className="h-5 w-5" /> Pagar ahora</>
+                ) : form.payment === "nequi" ? (
+                  <><Smartphone className="h-5 w-5" /> Pagar con Nequi</>
+                ) : form.payment === "daviplata" ? (
+                  <><Smartphone className="h-5 w-5" /> Pagar con Daviplata</>
+                ) : (
+                  <><CheckCircle2 className="h-5 w-5" /> Continuar al pago</>
+                )}
               </Button>
               <div className="my-4 flex items-center gap-3 text-xs text-muted-foreground"><span className="flex-1 border-t border-border" />o también<span className="flex-1 border-t border-border" /></div>
               <Button type="button" variant="outline" onClick={handleWhatsAppFallback} className="w-full h-11 border-whatsapp text-whatsapp hover:bg-whatsapp hover:text-white">
@@ -420,14 +492,14 @@ function Input({ label, error, ...props }: React.InputHTMLAttributes<HTMLInputEl
   );
 }
 
-function PaymentOption({ value, selected, onSelect, icon: Icon, title, description, badge }: {
+function PaymentOption({ value, selected, onSelect, icon: Icon, title, description, badge, disabled }: {
   value: PaymentMethod; selected: PaymentMethod; onSelect: (v: PaymentMethod) => void;
-  icon: React.ComponentType<{ className?: string }>; title: string; description: string; badge?: string;
+  icon: React.ComponentType<{ className?: string }>; title: string; description: string; badge?: string; disabled?: boolean;
 }) {
   const active = selected === value;
   return (
-    <label className={`relative cursor-pointer flex items-start gap-4 border rounded-xl p-4 transition-smooth ${active ? "border-primary/50 bg-card shadow-soft ring-1 ring-primary/10" : "border-border hover:border-primary/40 bg-background"}`}>
-      <input type="radio" name="payment" value={value} checked={active} onChange={() => onSelect(value)} className="sr-only" />
+    <label className={`relative ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'} flex items-start gap-4 border rounded-xl p-4 transition-smooth ${active ? "border-primary/50 bg-card shadow-soft ring-1 ring-primary/10" : "border-border hover:border-primary/40 bg-background"}`}>
+      <input type="radio" name="payment" value={value} checked={active} onChange={() => { if (!disabled) onSelect(value); }} className="sr-only" disabled={disabled} />
       <div className={`h-10 w-10 rounded-lg flex items-center justify-center flex-shrink-0 transition-smooth ${active ? "bg-primary shadow-soft" : "bg-muted"}`}>
         <Icon className={`h-5 w-5 ${active ? "text-primary-foreground" : "text-muted-foreground"}`} />
       </div>

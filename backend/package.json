@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "npm install --include=dev --no-audit --no-fund && npm exec -- prisma generate && npm exec -- tsc -p tsconfig.json",
+    "build": "npm exec -- prisma generate && npm exec -- tsc -p tsconfig.json",
     "start": "npm exec -- prisma migrate deploy && node dist/server.js",
     "start:prod": "npm exec -- prisma migrate deploy && node dist/server.js",
     "prisma:generate": "npm exec -- prisma generate",
@@ -12,6 +12,9 @@
     "prisma:studio": "npm exec -- prisma studio"
   },
   "packageManager": "npm@10.13.0",
+  "engines": {
+    "node": "20.x"
+  },
   "dependencies": {
     "@prisma/client": "6.15.0",
     "bcryptjs": "^3.0.2",

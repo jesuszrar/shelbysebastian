@@ -1,0 +1,20 @@
+connected, cwd: /home/u970251027
+uploaded /home/u970251027/public_html/.htaccess
+uploaded /home/u970251027/public_html/assets/bateria-Ce3CDqQu.jpg
+uploaded /home/u970251027/public_html/assets/hero-warehouse-LyuwHcCU.jpg
+uploaded /home/u970251027/public_html/assets/index-DtA7dWKL.css
+uploaded /home/u970251027/public_html/assets/index-DzCKIFAa.js
+uploaded /home/u970251027/public_html/assets/lector-BLezMMFS.jpg
+uploaded /home/u970251027/public_html/assets/logo-C1KuUPxF.png
+uploaded /home/u970251027/public_html/assets/mp58-BNAFb-WS.jpg
+uploaded /home/u970251027/public_html/assets/niimbot-b1-DShuD5i1.jpg
+uploaded /home/u970251027/public_html/assets/niimbot-d110-ChWlxox_.jpg
+uploaded /home/u970251027/public_html/assets/pt210-B26y1hXO.jpg
+uploaded /home/u970251027/public_html/assets/rollo-bl5chyHI.jpg
+uploaded /home/u970251027/public_html/favicon.ico
+uploaded /home/u970251027/public_html/index.html
+uploaded /home/u970251027/public_html/placeholder.svg
+uploaded /home/u970251027/public_html/robots.txt
+uploaded /home/u970251027/public_html/_headers
+uploaded /home/u970251027/public_html/_redirects
+upload finished

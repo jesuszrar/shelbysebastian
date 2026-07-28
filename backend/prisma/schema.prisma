@@ -41,8 +41,6 @@ model Order {
   items           Json
   total           Decimal  @db.Decimal(12, 2)
   shipping        Int      @default(0)
-  discountAmount  Decimal? @db.Decimal(12, 2)
-  couponCode      String?
   status          String   @default("pending")
   paymentMethod   String?
   customerName    String?
@@ -51,12 +49,13 @@ model Order {
   customerCity    String?
   customerAddress String?
   notes           String?  @db.Text
+  discountAmount  Decimal? @db.Decimal(12, 2)
+  couponCode      String?
   invoiceSentAt   DateTime?
   userId          String?
   createdAt       DateTime @default(now())
 
   user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  coupon    Coupon?  @relation(fields: [couponCode], references: [code])
 
   @@index([userId])
   @@index([status])
@@ -73,8 +72,18 @@ model Coupon {
   expiresAt      DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+}
 
-  orders         Order[]
+model CouponAudit {
+  id               String   @id @default(cuid())
+  couponCode       String
+  action           String
+  performedByUserId String?
+  performedByEmail String?
+  details          Json?
+  createdAt        DateTime @default(now())
+
+  @@index([couponCode])
 }
 
 model CedulaEmail {

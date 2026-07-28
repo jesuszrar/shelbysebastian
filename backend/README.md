@@ -19,7 +19,7 @@ This folder is the new backend for the app after moving away from Supabase.
 3. Run these commands from PowerShell inside `backend/`:
 
 ```powershell
-& "C:\Program Files\nodejs\npm.cmd" install
+& "C:\Program Files\nodejs\npm.cmd" ci --include=dev
 & "C:\Program Files\nodejs\npx.cmd" prisma generate
 & "C:\Program Files\nodejs\npx.cmd" prisma migrate dev --name init
 & "C:\Program Files\nodejs\npm.cmd" run dev

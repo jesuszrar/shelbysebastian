@@ -1,0 +1,8 @@
+
+> build
+> npm install --include=dev --no-audit --no-fund && ./node_modules/.bin/prisma generate && ./node_modules/.bin/tsc -p tsconfig.json
+
+
+up to date in 3s
+"." no se reconoce como un comando interno o externo,
+programa o archivo por lotes ejecutable.

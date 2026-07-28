@@ -1,0 +1,11 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Evita reescribir si la ruta ya apunta a un archivo o carpeta existente
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+
+  # Redirige todas las rutas SPA a index.html
+  RewriteRule . /index.html [L]
+</IfModule>

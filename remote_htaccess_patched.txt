@@ -1,0 +1,16 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Evita reescribir si la ruta ya apunta a un archivo o carpeta existente
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+
+  # Redirige todas las rutas SPA a index.html
+  RewriteRule . /index.html [L]
+</IfModule>
+
+# Redirect legacy bundle to current bundle
+RewriteEngine On
+RewriteRule ^assets/index-8gnvK8Sm.js$ /assets/index-DzCKIFAa.js [L]
+RewriteRule ^assets/index-BiW200sW.css$ /assets/index-DtA7dWKL.css [L]

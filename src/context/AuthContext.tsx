@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { supabase } from "@/integrations/api/client";
 import type { Session, User as SbUser } from "@supabase/supabase-js";
+import { ADMIN_CEDULA, isAdminUser } from "./authUtils";
 
 export type User = { id: string; name: string; email: string; cedula?: string };
 
@@ -20,7 +21,6 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 const ACTIVE_CEDULA_STORAGE_KEY = "shelby_active_cedula";
 const CEDULA_EMAIL_STORAGE_KEY = "shelby_cedula_email_map";
-const ADMIN_CEDULA = "1108758522";
 
 const normalizeCedula = (cedula: string) => cedula.replace(/\D/g, "").trim();
 
@@ -87,7 +87,7 @@ const toUser = (u: SbUser | null | undefined): User | null =>
 
 const syncSupabaseProfile = async (sessionUser: SbUser, cedula: string, name?: string) => {
   const userName = name ?? (sessionUser.user_metadata?.name as string) ?? sessionUser.email?.split("@")[0] ?? "Cliente";
-  const isAdmin = cedula === ADMIN_CEDULA || Boolean((sessionUser.user_metadata as { is_admin?: boolean } | undefined)?.is_admin);
+  const isAdmin = isAdminUser({ cedula } as { cedula?: string | null }, { user: sessionUser } as { user?: { user_metadata?: { is_admin?: boolean } | null } | null }, cedula);
 
   const { error } = await supabase.rpc("sync_profile", {
     user_id: sessionUser.id,
@@ -304,7 +304,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, isAuthenticated: !!user, loading, login, register, verifyRegistrationCode, logout, isAdmin: !!user?.cedula && (user.cedula === ADMIN_CEDULA || Boolean((session?.user?.user_metadata as any)?.is_admin)) }}>
+    <AuthContext.Provider value={{ user, session, isAuthenticated: !!user, loading, login, register, verifyRegistrationCode, logout, isAdmin: isAdminUser(user, session, getActiveCedula()) }}>
       {children}
     </AuthContext.Provider>
   );
