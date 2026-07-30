@@ -11,6 +11,7 @@ import { fileURLToPath } from "url";
 import { resolvePreferredPaymentMethod } from "./lib/mercadopago.js";
 import { isAllowedCorsOrigin } from "./lib/cors.js";
 import { buildMercadoPagoPreferencePayload } from "./lib/mercadopagoPreference.js";
+import { wrap } from "./lib/serialize.js";
 
 dotenv.config();
 
@@ -84,15 +85,6 @@ app.use(
 app.use(express.json({ limit: "15mb" }));
 app.use("/uploads", express.static(uploadsDir));
 
-const wrap = (value: unknown): unknown => {
-  if (value instanceof Prisma.Decimal) return Number(value);
-  if (Array.isArray(value)) return value.map(wrap);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, wrap(nested)]));
-  }
-  return value;
-};
-
 const parseDecimal = (value: unknown): Prisma.Decimal | null | undefined => {
   if (value === null) return null;
   const normalized = String(value ?? "").trim();
@@ -115,7 +107,7 @@ const serializeProduct = (product: Product) => wrap({ ...product, price: product
 const serializeOrder = (order: Order) => wrap({ ...order, total: order.total });
 const serializeCoupon = (coupon: Coupon) => wrap({ ...coupon, value: coupon.value, minimumSubtotal: coupon.minimumSubtotal });
 const serializeCouponAudit = (row: Record<string, unknown>) => wrap(row);
-const serializeCedulaEmail = (row: CedulaEmail) => row;
+const serializeCedulaEmail = (row: CedulaEmail) => wrap(row) as CedulaEmail;
 
 const getMailer = () => {
   const host = process.env.SMTP_HOST;
@@ -251,9 +243,14 @@ const issueSession = (user: User): StoredSession => {
 };
 
 const getAuthorizationHeader = (req: express.Request): string | undefined => {
-  const authHeader = req.headers.authorization ?? req.headers["x-access-token"];
-  if (Array.isArray(authHeader)) return authHeader[0];
-  return typeof authHeader === "string" ? authHeader : undefined;
+  const directHeader = req.headers.authorization;
+  const accessTokenHeader = req.headers["x-access-token"];
+
+  if (Array.isArray(directHeader)) return directHeader[0];
+  if (Array.isArray(accessTokenHeader)) return accessTokenHeader[0];
+  if (typeof directHeader === "string") return directHeader;
+  if (typeof accessTokenHeader === "string") return accessTokenHeader;
+  return undefined;
 };
 
 const readAuth = (authorization?: string) => {
@@ -272,10 +269,14 @@ const readAuth = (authorization?: string) => {
       sub: decoded?.sub ?? null,
       email: decoded?.email ?? null,
       isAdmin: decoded?.isAdmin ?? null,
+      tokenLength: token.length,
     });
     return decoded;
   } catch (error) {
-    console.log("[auth] readAuth invalid token", { error: error instanceof Error ? error.message : String(error) });
+    console.log("[auth] readAuth invalid token", {
+      error: error instanceof Error ? error.message : String(error),
+      tokenLength: token.length,
+    });
     return null;
   }
 };
@@ -284,14 +285,16 @@ const requireAuth = (req: express.Request, res: express.Response) => {
   const authHeader = getAuthorizationHeader(req);
   const auth = readAuth(authHeader);
   if (!auth) {
+    const reason = !authHeader ? "missing-header" : authHeader.startsWith("Bearer ") ? "invalid-token" : "invalid-header-format";
     console.log("[auth] requireAuth failed", {
       method: req.method,
       path: req.path,
       authorizationHeader: Boolean(authHeader),
       authorizationHeaderLength: authHeader?.length ?? 0,
       receivedHeaderType: authHeader?.startsWith("Bearer ") ? "bearer" : authHeader ? "raw" : "missing",
+      reason,
     });
-    res.status(401).json({ error: "No autorizado" });
+    res.status(401).json({ error: "No autorizado", reason });
     return null;
   }
   console.log("[auth] requireAuth success", { sub: auth.sub, email: auth.email, isAdmin: auth.isAdmin });

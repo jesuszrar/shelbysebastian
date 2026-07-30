@@ -692,11 +692,18 @@ function CouponsAdmin() {
     });
   };
 
+  const formatExpiresAtForInput = (value: string | Date | null | undefined) => {
+    if (!value) return "";
+    if (value instanceof Date) return value.toISOString().slice(0, 10);
+    if (typeof value === "string") return value.slice(0, 10);
+    return "";
+  };
+
   const startEdit = (coupon: CouponRow) => {
     setEditing(coupon.code);
     setForm({
       ...coupon,
-      expiresAt: coupon.expiresAt ? coupon.expiresAt.slice(0, 10) : "",
+      expiresAt: formatExpiresAtForInput(coupon.expiresAt ?? null),
     });
   };
 
