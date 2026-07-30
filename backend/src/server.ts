@@ -11,6 +11,7 @@ import { fileURLToPath } from "url";
 import { resolvePreferredPaymentMethod } from "./lib/mercadopago.js";
 import { isAllowedCorsOrigin } from "./lib/cors.js";
 import { buildMercadoPagoPreferencePayload } from "./lib/mercadopagoPreference.js";
+import { isAdminUserRecord } from "./lib/auth.js";
 import { wrap } from "./lib/serialize.js";
 
 dotenv.config();
@@ -305,16 +306,18 @@ const requireAdmin = async (req: express.Request, res: express.Response) => {
   const auth = requireAuth(req, res);
   if (!auth) return null;
   const user = await prisma.user.findUnique({ where: { id: auth.sub } });
+  const isAdminByRecord = isAdminUserRecord(user);
   console.log("[auth] requireAdmin user", {
     userId: user?.id ?? null,
     userEmail: user?.email ?? null,
     userIsAdmin: user?.isAdmin ?? null,
     authIsAdmin: auth.isAdmin,
+    isAdminByRecord,
     authSub: auth.sub,
     authEmail: auth.email,
   });
-  if (user?.isAdmin) {
-    return user;
+  if (isAdminByRecord) {
+    return user ?? ({ id: auth.sub, name: auth.name, email: auth.email, cedula: auth.cedula, password: "", isAdmin: true } as User);
   }
 
   if (user && auth.isAdmin) {
