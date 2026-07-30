@@ -131,38 +131,25 @@ const Checkout = () => {
     setCouponMessage(null);
 
     try {
-      const result = await supabase.from("coupons").select("code,type,value,minimumSubtotal,expiresAt,active").eq("code", code).single();
-      if (result.error || !result.data) {
+      const { data, error } = await supabase.functions.invoke("redeem-coupon", {
+        body: { code, subtotal, shipping },
+      });
+
+      if (error || !data) {
+        setCouponMessage(error?.message || "Cupón inválido o no encontrado.");
+        setDiscountAmount(0);
+        return;
+      }
+
+      const coupon = data as { ok?: boolean; coupon?: { code: string; type: string; value: number; minimumSubtotal?: number | null; expiresAt?: string | null }; discount?: number };
+      if (!coupon.ok || !coupon.coupon) {
         setCouponMessage("Cupón inválido o no encontrado.");
         setDiscountAmount(0);
         return;
       }
 
-      const coupon = result.data as { code: string; type: string; value: number; minimumSubtotal?: number | null; expiresAt?: string | null; active: boolean };
-      if (!coupon.active) {
-        setCouponMessage("Este cupón ya no está activo.");
-        setDiscountAmount(0);
-        return;
-      }
-
-      if (coupon.expiresAt && new Date(coupon.expiresAt).getTime() < Date.now()) {
-        setCouponMessage("El cupón ha expirado.");
-        setDiscountAmount(0);
-        return;
-      }
-
-      if (coupon.minimumSubtotal && subtotal < coupon.minimumSubtotal) {
-        setCouponMessage(`Este cupón requiere un subtotal mínimo de ${formatCOP(coupon.minimumSubtotal)}.`);
-        setDiscountAmount(0);
-        return;
-      }
-
-      const discount = coupon.type === "percent"
-        ? Math.round((subtotal + shipping) * (coupon.value / 100))
-        : Number(coupon.value || 0);
-
-      setDiscountAmount(Math.min(discount, subtotal + shipping));
-      setCouponMessage(`Cupón aplicado: ${coupon.type === "percent" ? `${coupon.value}%` : formatCOP(coupon.value)} de descuento.`);
+      setDiscountAmount(Math.max(0, coupon.discount ?? 0));
+      setCouponMessage(`Cupón aplicado: ${coupon.coupon.type === "percent" ? `${coupon.coupon.value}%` : formatCOP(coupon.coupon.value)} de descuento.`);
     } catch (err) {
       console.error(err);
       setCouponMessage("Error al validar el cupón.");

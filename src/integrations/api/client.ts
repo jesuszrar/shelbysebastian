@@ -78,6 +78,20 @@ const emitAuthChange = (event: string, session: Session | null) => {
   AUTH_LISTENERS.forEach((listener) => listener(event, session));
 };
 
+export const buildRequestHeaders = (headersInit: HeadersInit | undefined, accessToken?: string) => {
+  const headers = new Headers(headersInit);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  if (accessToken && !headers.has("Authorization") && !headers.has("authorization")) {
+    headers.set("Authorization", `Bearer ${accessToken}`);
+    headers.set("X-Access-Token", accessToken);
+  }
+
+  return headers;
+};
+
 const toSession = (stored: StoredSession): Session | null => {
   if (!stored) return null;
   return {
@@ -95,15 +109,33 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
     return { data: null, error: { message: "VITE_API_URL o VITE_BACKEND_URL no está configurado." } };
   }
 
+  const requiresAuth = path.startsWith("/api/data/") || path.startsWith("/api/rpc/") || path.startsWith("/api/auth/me") || path.startsWith("/api/functions/redeem-coupon") || path.startsWith("/api/functions/create-mp-preference") || path.startsWith("/api/functions/check-mp-methods") || path.startsWith("/api/functions/mp-webhook");
+  const isAdminMutation = path.includes("/api/data/coupons") || path.includes("/api/data/profiles");
+
   try {
     const storedSession = readSession();
     const baseUrl = API_BASE_URL || "";
     const targetPath = path.startsWith("/") ? path : `/${path}`;
     const url = baseUrl ? `${baseUrl}${targetPath}` : targetPath;
-    const headers: Record<string, string> = { "Content-Type": "application/json", ...(init?.headers as Record<string, string> | undefined) };
+    const headers = buildRequestHeaders(init?.headers, storedSession?.access_token);
 
-    if (storedSession?.access_token && !headers.Authorization) {
-      headers.Authorization = `Bearer ${storedSession.access_token}`;
+    const hasToken = Boolean(storedSession?.access_token);
+    const tokenLength = storedSession?.access_token?.length ?? 0;
+    console.info("[auth] outgoing request", {
+      path,
+      hasToken,
+      tokenLength,
+      hasAuthorizationHeader: headers.has("Authorization") || headers.has("authorization"),
+      hasXAccessTokenHeader: headers.has("X-Access-Token") || headers.has("x-access-token"),
+      requiresAuth,
+      isAdminMutation,
+    });
+
+    if ((requiresAuth || isAdminMutation) && !storedSession?.access_token) {
+      return {
+        data: null,
+        error: { message: "No hay sesión activa. Inicia sesión nuevamente para continuar.", code: "401" },
+      };
     }
 
     const response = await fetch(url, {

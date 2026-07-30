@@ -83,23 +83,17 @@ const Profile = () => {
     }
     setCouponLoading(true);
     try {
-      const result = await supabase.from("coupons").select("code,type,value,minimumSubtotal,expiresAt,active").eq("code", code).single();
-      if (result.error || !result.data) {
-        setCouponResult({ message: "Cupón inválido o no encontrado." });
+      const { data, error } = await supabase.functions.invoke("redeem-coupon", {
+        body: { code, subtotal: 0, shipping: 0 },
+      });
+      if (error || !data) {
+        setCouponResult({ message: error?.message || "Cupón inválido o no encontrado." });
       } else {
-        const coupon = result.data as Record<string, unknown>;
-        if (!coupon.active) {
-          setCouponResult({ message: "Este cupón ya no está activo." });
-        } else if (coupon.expiresAt) {
-          const expiresAtDate = parseTimestamp(String(coupon.expiresAt));
-          if (!expiresAtDate || expiresAtDate.getTime() < Date.now()) {
-            setCouponResult({ message: "El cupón ha expirado." });
-            setCouponLoading(false);
-            return;
-          }
-          setCouponResult({ message: "Cupón válido", discount: String(coupon.type) === "percent" ? `${coupon.value}%` : `-${formatCOP(Number(coupon.value))}` });
+        const coupon = data as { ok?: boolean; coupon?: { type?: string; value?: number } };
+        if (!coupon.ok || !coupon.coupon) {
+          setCouponResult({ message: "Cupón inválido o no encontrado." });
         } else {
-          setCouponResult({ message: "Cupón válido", discount: String(coupon.type) === "percent" ? `${coupon.value}%` : `-${formatCOP(Number(coupon.value))}` });
+          setCouponResult({ message: "Cupón válido", discount: String(coupon.coupon.type) === "percent" ? `${coupon.coupon.value}%` : `-${formatCOP(Number(coupon.coupon.value))}` });
         }
       }
     } catch (error) {

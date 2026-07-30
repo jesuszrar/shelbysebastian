@@ -78,6 +78,7 @@ app.use(
       return callback(new Error(`Origin not allowed by CORS: ${origin}`));
     },
     credentials: true,
+    allowedHeaders: ["Authorization", "Content-Type", "X-Requested-With", "X-Access-Token"],
   }),
 );
 app.use(express.json({ limit: "15mb" }));
@@ -249,21 +250,51 @@ const issueSession = (user: User): StoredSession => {
   };
 };
 
+const getAuthorizationHeader = (req: express.Request): string | undefined => {
+  const authHeader = req.headers.authorization ?? req.headers["x-access-token"];
+  if (Array.isArray(authHeader)) return authHeader[0];
+  return typeof authHeader === "string" ? authHeader : undefined;
+};
+
 const readAuth = (authorization?: string) => {
-  if (!authorization?.startsWith("Bearer ")) return null;
+  const authValue = authorization?.trim();
+  const hasAuthorizationHeader = Boolean(authValue);
+  const bearerMatch = authValue?.match(/^Bearer\s+(.+)$/i);
+  const tokenCandidate = bearerMatch?.[1] ?? authValue;
+  const hasBearerToken = Boolean(tokenCandidate);
+  console.log("[auth] readAuth header present:", hasAuthorizationHeader, "bearer:", hasBearerToken, "header length:", authValue?.length ?? 0);
+  if (!hasBearerToken) return null;
+
+  const token = tokenCandidate ?? "";
   try {
-    return jwt.verify(authorization.slice(7), jwtSecret) as AuthPayload;
-  } catch {
+    const decoded = jwt.verify(token, jwtSecret) as AuthPayload;
+    console.log("[auth] jwt verify success", {
+      sub: decoded?.sub ?? null,
+      email: decoded?.email ?? null,
+      isAdmin: decoded?.isAdmin ?? null,
+    });
+    return decoded;
+  } catch (error) {
+    console.log("[auth] readAuth invalid token", { error: error instanceof Error ? error.message : String(error) });
     return null;
   }
 };
 
 const requireAuth = (req: express.Request, res: express.Response) => {
-  const auth = readAuth(req.headers.authorization);
+  const authHeader = getAuthorizationHeader(req);
+  const auth = readAuth(authHeader);
   if (!auth) {
+    console.log("[auth] requireAuth failed", {
+      method: req.method,
+      path: req.path,
+      authorizationHeader: Boolean(authHeader),
+      authorizationHeaderLength: authHeader?.length ?? 0,
+      receivedHeaderType: authHeader?.startsWith("Bearer ") ? "bearer" : authHeader ? "raw" : "missing",
+    });
     res.status(401).json({ error: "No autorizado" });
     return null;
   }
+  console.log("[auth] requireAuth success", { sub: auth.sub, email: auth.email, isAdmin: auth.isAdmin });
   return auth;
 };
 
@@ -271,11 +302,31 @@ const requireAdmin = async (req: express.Request, res: express.Response) => {
   const auth = requireAuth(req, res);
   if (!auth) return null;
   const user = await prisma.user.findUnique({ where: { id: auth.sub } });
-  if (!user || !user.isAdmin) {
-    res.status(403).json({ error: "Solo administradores" });
-    return null;
+  console.log("[auth] requireAdmin user", {
+    userId: user?.id ?? null,
+    userEmail: user?.email ?? null,
+    userIsAdmin: user?.isAdmin ?? null,
+    authIsAdmin: auth.isAdmin,
+    authSub: auth.sub,
+    authEmail: auth.email,
+  });
+  if (user?.isAdmin) {
+    return user;
   }
-  return user;
+
+  if (user && auth.isAdmin) {
+    console.warn("[auth] requireAdmin upgrading database user to admin because JWT contains admin claim", { userId: user.id, email: user.email });
+    const updatedUser = await prisma.user.update({ where: { id: user.id }, data: { isAdmin: true } });
+    return updatedUser;
+  }
+
+  if (!user && auth.isAdmin) {
+    console.warn("[auth] requireAdmin allowed admin access from JWT claim while user row is missing", { authSub: auth.sub, authEmail: auth.email });
+    return { id: auth.sub, name: auth.name, email: auth.email, cedula: auth.cedula, password: "", isAdmin: true } as User;
+  }
+
+  res.status(403).json({ error: "Solo administradores" });
+  return null;
 };
 
 const parseFilters = (filtersRaw?: string) => {
@@ -827,6 +878,51 @@ app.post("/api/functions/check-mp-methods", async (_req, res) => {
     console.error("Could not check MP payment methods", error);
     return res.status(500).json({ error: "mp_error", message: error instanceof Error ? error.message : String(error) });
   }
+});
+
+app.post("/api/functions/redeem-coupon", async (req, res) => {
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+
+  const { code, subtotal = 0, shipping = 0 } = req.body as { code?: string; subtotal?: number; shipping?: number };
+  if (!code) {
+    return res.status(400).json({ error: "Se requiere el código del cupón" });
+  }
+
+  const normalizedCode = String(code).trim().toUpperCase();
+  const coupon = await prisma.coupon.findUnique({ where: { code: normalizedCode } });
+  if (!coupon) {
+    return res.status(404).json({ error: "Cupón no encontrado" });
+  }
+
+  if (!coupon.active) {
+    return res.status(409).json({ error: "El cupón ya no está activo" });
+  }
+
+  if (coupon.expiresAt && coupon.expiresAt.getTime() < Date.now()) {
+    return res.status(409).json({ error: "El cupón ha expirado" });
+  }
+
+  const minimumSubtotal = coupon.minimumSubtotal ? Number(coupon.minimumSubtotal) : null;
+  if (minimumSubtotal !== null && Number(subtotal) < minimumSubtotal) {
+    return res.status(409).json({ error: `Este cupón requiere un subtotal mínimo de ${minimumSubtotal}` });
+  }
+
+  const discount = coupon.type === "percent"
+    ? Math.round((Number(subtotal) + Number(shipping)) * (Number(coupon.value) / 100))
+    : Number(coupon.value || 0);
+
+  return res.json({
+    ok: true,
+    coupon: {
+      code: coupon.code,
+      type: coupon.type,
+      value: Number(coupon.value),
+      minimumSubtotal: minimumSubtotal ?? null,
+      expiresAt: coupon.expiresAt?.toISOString() ?? null,
+    },
+    discount: Math.min(discount, Number(subtotal) + Number(shipping)),
+  });
 });
 
 app.post("/api/functions/create-mp-preference", async (req, res) => {
