@@ -459,7 +459,10 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
     } else {
       console.error('[wompi] transaction failed', { status: response.status });
     }
-    throw new Error(`Wompi transaction failed: ${response.status}`);
+    const err: any = new Error(`Wompi transaction failed: ${response.status}`);
+    err.status = response.status;
+    err.payload = payload;
+    throw err;
   }
 
   const transaction = (payload.data as Record<string, unknown> | undefined) ?? payload;
@@ -1115,8 +1118,14 @@ app.post("/api/payments/create-wompi-payment", async (req, res) => {
       methods: created.methods,
     });
   } catch (error) {
-    console.error("Wompi payment creation failed", error);
+    console.error("Wompi payment creation failed", error && (error as any).message ? (error as any).message : error);
     const message = error instanceof Error ? error.message : String(error);
+    const maybeStatus = (error as any)?.status ?? null;
+    const maybePayload = (error as any)?.payload ?? null;
+    if (maybeStatus === 422 && maybePayload) {
+      // Return the wompi payload for debugging (non-sensitive content)
+      return res.status(422).json({ error: "wompi_error", message, wompi: maybePayload });
+    }
     return res.status(500).json({ error: "wompi_error", message });
   }
 });
