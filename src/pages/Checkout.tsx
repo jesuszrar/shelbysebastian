@@ -256,15 +256,40 @@ const Checkout = () => {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    const formValid = checkoutSchema.safeParse(form).success;
+    console.log({
+      selectedPaymentMethod: form.payment,
+      isLoading: loading,
+      formValid,
+      cartItems: detailedItems,
+      total: checkoutTotal,
+    });
+
     const data = validate();
     if (!data) return;
     await submitCheckout({ ...data, payment: form.payment });
   };
 
   const handleSubmitPayment = async (payment: PaymentMethod) => {
-    const data = validate();
-    if (!data) return;
-    await submitCheckout({ ...data, payment });
+    const formValid = checkoutSchema.safeParse({ ...form, payment }).success;
+    console.log({
+      selectedPaymentMethod: payment,
+      isLoading: loading,
+      formValid,
+      cartItems: detailedItems,
+      total: checkoutTotal,
+    });
+
+    // Validate using the selected payment (override) so errors reflect chosen method
+    setErrors({});
+    const parsed = checkoutSchema.safeParse({ ...form, payment });
+    if (!parsed.success) {
+      const fe: Record<string, string> = {};
+      parsed.error.issues.forEach((i) => { fe[i.path[0] as string] = i.message; });
+      setErrors(fe);
+      return;
+    }
+    await submitCheckout({ ...parsed.data, payment });
   };
 
   const handleManualConfirm = async () => {
