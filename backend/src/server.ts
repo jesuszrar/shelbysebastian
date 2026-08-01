@@ -1134,6 +1134,15 @@ app.get("/api/payments/wompi/methods", async (_req, res) => {
 app.post("/api/payments/create-wompi-payment", async (req, res) => {
   try {
     const created = await createWompiTransaction(req.body as WompiCreatePaymentBody);
+    console.log("[wompi] final payment response", {
+      paymentUrl: created.paymentUrl || null,
+      transactionId: created.transaction?.id ?? null,
+      transactionStatus: created.transaction?.status ?? null,
+      hasNextAction: Boolean(created.transaction?.next_action),
+      nextActionKeys: created.transaction?.next_action
+        ? Object.keys(created.transaction.next_action as Record<string, unknown>)
+        : [],
+    });
     return res.json({
       ok: true,
       paymentUrl: created.paymentUrl || null,
