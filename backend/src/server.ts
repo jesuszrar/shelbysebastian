@@ -20,7 +20,7 @@ const prisma = new PrismaClient();
 const app = express();
 const port = Number(process.env.PORT || 3001);
 const jwtSecret = String(process.env.JWT_SECRET ?? "change-me").trim();
-console.log("JWT_SECRET length:", jwtSecret?.length ?? 0);
+console.log("JWT_SECRET length:", jwtSecret.length);
 const uploadsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "uploads");
 const revenueStatuses = new Set(["paid", "approved", "completed"]);
 
@@ -234,7 +234,7 @@ const issueSession = (user: User): StoredSession => {
   };
 
   console.log("[auth] issueSession", {
-    jwtSecretLength: jwtSecret?.length ?? 0,
+    jwtSecretLength: jwtSecret.length,
     sub: user.id,
     email: user.email,
     isAdmin: user.isAdmin,
@@ -282,7 +282,8 @@ const readAuth = (authorization?: string) => {
     return decoded;
   } catch (error) {
     console.log("verify error:", error instanceof Error ? error.message : String(error));
-    console.log("[auth] readAuth invalid token", { tokenLength: token.length, jwtSecretLength: jwtSecret?.length ?? 0 });
+    console.log("token first 20:", token.substring(0, 20));
+    console.log("[auth] readAuth invalid token", { tokenLength: token.length, jwtSecretLength: jwtSecret.length });
     return null;
   }
 };
