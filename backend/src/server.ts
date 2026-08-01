@@ -413,15 +413,15 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
     ...(needsPhoneNumber ? { phone_number: customerPhoneDigits } : {}),
   };
 
+  const integritySignature = buildWompiTransactionIntegritySignature(reference, amountInCents, "COP", integrityKey);
+
   const requestBodyObj = {
     acceptance_token: merchant.acceptanceToken,
     amount_in_cents: amountInCents,
     currency: "COP",
     customer_email: customerEmail,
     reference,
-    signature: {
-      integrity: buildWompiTransactionIntegritySignature(reference, amountInCents, "COP", integrityKey),
-    },
+    signature: integritySignature,
     payment_method: paymentMethodPayload,
     redirect_url: redirectUrl || undefined,
     customer_data: {
