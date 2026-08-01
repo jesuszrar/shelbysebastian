@@ -252,6 +252,19 @@ const apiClient = {
     },
   },
   from: <T,>(table: string) => new QueryBuilder<T>(table),
+  payments: {
+    getWompiMethods: async () => request<{ methods: Array<{ id: string; name: string; available: boolean }> }>("/api/payments/wompi/methods"),
+    createWompiPayment: async (body: {
+      products: Array<{ id?: string; name?: string; quantity?: number; unit_price?: number }>;
+      total: number;
+      customerEmail: string;
+      reference: string;
+      paymentMethod: string;
+      redirectUrl: string;
+      customerName?: string;
+      customerPhone?: string;
+    }) => request<{ ok: boolean; paymentUrl: string | null; transaction: Record<string, unknown>; methods: Array<{ id: string; name: string; available: boolean }> }>("/api/payments/create-wompi-payment", { method: "POST", body: JSON.stringify(body) }),
+  },
   storage: {
     from: (_bucket: string) => ({
       upload: async (path: string, file: File, _options?: { upsert?: boolean }) => {

@@ -4,7 +4,7 @@ const items = [
   { icon: ShieldCheck, title: "Garantía de 30 días", desc: "Si tu equipo falla, lo respondemos. Sin vueltas." },
   { icon: Headphones, title: "Asesoría real, no robots", desc: "Te ayudamos por WhatsApp a elegir lo que de verdad necesitas." },
   { icon: Zap, title: "Despacho en 24 horas", desc: "Facturas hoy, recibes mañana en las principales ciudades." },
-  { icon: CreditCard, title: "Múltiples medios de pago", desc: "Nequi, Daviplata, Mercado Pago, transferencia o contraentrega." },
+  { icon: CreditCard, title: "Múltiples medios de pago", desc: "Nequi, Daviplata, Wompi, transferencia o contraentrega." },
   { icon: Package, title: "Producto original y probado", desc: "Cada equipo lo revisamos antes de empacarlo. Punto." },
 ];
 export const Benefits = () => (

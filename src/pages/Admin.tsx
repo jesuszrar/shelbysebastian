@@ -36,9 +36,9 @@ import {
   Users,
 } from "lucide-react";
 
-const ADMIN_EMAIL_STATUSES = new Set(["paid", "approved", "completed"]);
+const ADMIN_EMAIL_STATUSES = new Set(["paid", "approved", "completed", "payment_approved"]);
 const LOW_STOCK_LIMIT = 3;
-const ORDER_STATUS_OPTIONS = ["pending", "paid", "approved", "shipped", "delivered", "cancelled", "failed"] as const;
+const ORDER_STATUS_OPTIONS = ["payment_pending", "payment_approved", "payment_failed", "pending", "paid", "approved", "shipped", "delivered", "cancelled", "failed"] as const;
 
 type ProductRow = {
   id: string;

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { CheckCircle2, MessageCircle, ShoppingBag, XCircle } from "lucide-react";
 import { Navbar } from "@/components/shelby/Navbar";
@@ -8,14 +8,24 @@ import { formatCOP } from "@/data/products";
 import { supabase } from "@/integrations/api/client";
 import { trackPurchase } from "@/lib/metaPixel";
 
+type PaymentStatus = "payment_pending" | "payment_approved" | "payment_failed";
+
+const normalizeStatus = (value: string | null) => {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "payment_approved" || normalized === "approved" || normalized === "paid" || normalized === "completed") return "payment_approved" as const;
+  if (normalized === "payment_failed" || normalized === "failed" || normalized === "cancelled" || normalized === "canceled") return "payment_failed" as const;
+  return "payment_pending" as const;
+};
+
 const OrderSuccess = () => {
   const [params] = useSearchParams();
   const order = params.get("order") || undefined;
   const totalNum = Number(params.get("total"));
   const method = params.get("method") || undefined;
-  const status = (params.get("status") as "paid" | "pending" | "failed" | null) || "paid";
-  const isFailed = status === "failed";
-  const isPending = status === "pending";
+  const initialStatus = normalizeStatus(params.get("status"));
+  const [status, setStatus] = useState<PaymentStatus>(initialStatus);
+  const isFailed = status === "payment_failed";
+  const isPending = status === "payment_pending";
 
   useEffect(() => {
     if (!isFailed && !isPending) {
@@ -29,9 +39,45 @@ const OrderSuccess = () => {
   }, [isFailed, isPending, order, status, totalNum]);
 
   useEffect(() => {
-    if (!order || status !== "paid") return;
-    void supabase.from("orders").update({ status: "paid", paymentMethod: method || "mercadopago" }).eq("id", order).catch((error) => console.error(error));
-  }, [method, order, status]);
+    if (!order) return;
+
+    let cancelled = false;
+    let intervalId: number | undefined;
+
+    const refreshStatus = async () => {
+      const { data, error } = await supabase
+        .from("orders")
+        .select("status,paymentMethod,total")
+        .eq("id", order)
+        .maybeSingle();
+
+      if (error) {
+        console.error(error);
+        return;
+      }
+
+      const nextStatus = normalizeStatus((data as { status?: string | null } | null)?.status ?? null);
+      if (!cancelled) {
+        setStatus(nextStatus);
+      }
+
+      if (nextStatus !== "payment_pending" && intervalId !== undefined) {
+        window.clearInterval(intervalId);
+      }
+    };
+
+    void refreshStatus();
+    intervalId = window.setInterval(() => {
+      void refreshStatus();
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      if (intervalId !== undefined) {
+        window.clearInterval(intervalId);
+      }
+    };
+  }, [order]);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">

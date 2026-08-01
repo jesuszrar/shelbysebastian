@@ -12,6 +12,7 @@ import { resolvePreferredPaymentMethod } from "./lib/mercadopago.js";
 import { isAllowedCorsOrigin } from "./lib/cors.js";
 import { buildMercadoPagoPreferencePayload } from "./lib/mercadopagoPreference.js";
 import { isAdminUserRecord } from "./lib/auth.js";
+import { buildWompiAuthorizationHeader, extractWebhookSignature, extractWompiMerchantMethods, getWompiAcceptanceToken, getWompiConfig, mapWompiStatusToOrderStatus, normalizeWompiPaymentMethod, verifyWompiEventSignature } from "./lib/wompi.js";
 import { wrap } from "./lib/serialize.js";
 
 dotenv.config();
@@ -22,7 +23,7 @@ const port = Number(process.env.PORT || 3001);
 const jwtSecret = String(process.env.JWT_SECRET ?? "change-me").trim();
 console.log("JWT_SECRET length:", jwtSecret.length);
 const uploadsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "uploads");
-const revenueStatuses = new Set(["paid", "approved", "completed"]);
+const revenueStatuses = new Set(["paid", "approved", "completed", "payment_approved"]);
 
 type AuthPayload = { sub: string; email: string; name: string; cedula: string; isAdmin: boolean };
 type StoredSession = { user: { id: string; email: string; user_metadata: Record<string, unknown> }; access_token: string } | null;
@@ -84,7 +85,12 @@ app.use(
     allowedHeaders: ["Authorization", "Content-Type", "X-Requested-With", "X-Access-Token"],
   }),
 );
-app.use(express.json({ limit: "15mb" }));
+app.use(express.json({
+  limit: "15mb",
+  verify: (req, _res, buffer) => {
+    (req as express.Request & { rawBody?: string }).rawBody = buffer.toString("utf8");
+  },
+}));
 app.use("/uploads", express.static(uploadsDir));
 
 const parseDecimal = (value: unknown): Prisma.Decimal | null | undefined => {
@@ -323,6 +329,119 @@ const logAdminDecision = async (req: express.Request, auth: AuthPayload, user: U
     isAdminByRecord,
     rule: isAdminByRecord ? "admin-cedula-or-db-flag" : "denied",
   });
+};
+
+type WompiCreatePaymentBody = {
+  products?: Array<{ id?: string; name?: string; quantity?: number; unit_price?: number }>;
+  total?: number;
+  customerEmail?: string;
+  customer_email?: string;
+  reference?: string;
+  referencePedido?: string;
+  orderId?: string;
+  paymentMethod?: string;
+  payment_method?: string;
+  redirectUrl?: string;
+  redirect_url?: string;
+  customerName?: string;
+  customer_name?: string;
+  customerPhone?: string;
+  customer_phone?: string;
+};
+
+const readWompiPaymentMethodAvailability = async () => {
+  const { baseUrl, publicKey } = getWompiConfig();
+  if (!publicKey) {
+    throw new Error("WOMPI_PUBLIC_KEY no está configurada");
+  }
+
+  const response = await fetch(`${baseUrl}/merchants/${encodeURIComponent(publicKey)}`, {
+    headers: buildWompiAuthorizationHeader(),
+  });
+  const text = await response.text();
+  let payload: unknown = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = { raw: text };
+  }
+
+  if (!response.ok) {
+    throw new Error(`Wompi merchant lookup failed: ${response.status}`);
+  }
+
+  return {
+    payload,
+    methods: extractWompiMerchantMethods(payload),
+    acceptanceToken: getWompiAcceptanceToken(payload),
+  };
+};
+
+const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
+  const { baseUrl, publicKey } = getWompiConfig();
+  if (!publicKey) throw new Error("WOMPI_PUBLIC_KEY no está configurada");
+
+  const merchant = await readWompiPaymentMethodAvailability();
+  const amountInCents = Math.round(Number(body.total ?? 0) * 100);
+  const customerEmail = String(body.customerEmail ?? body.customer_email ?? "").trim().toLowerCase();
+  const reference = String(body.reference ?? body.referencePedido ?? body.orderId ?? "").trim();
+  const paymentMethod = normalizeWompiPaymentMethod(body.paymentMethod ?? body.payment_method) ?? "CARD";
+  const redirectUrl = String(body.redirectUrl ?? body.redirect_url ?? "").trim();
+
+  if (!merchant.acceptanceToken) {
+    throw new Error("Wompi no devolvió acceptance_token");
+  }
+
+  if (!amountInCents || !customerEmail || !reference) {
+    throw new Error("amount, customerEmail y reference son requeridos");
+  }
+
+  const response = await fetch(`${baseUrl}/transactions`, {
+    method: "POST",
+    headers: {
+      ...buildWompiAuthorizationHeader(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      acceptance_token: merchant.acceptanceToken,
+      amount_in_cents: amountInCents,
+      currency: "COP",
+      customer_email: customerEmail,
+      reference,
+      payment_method: { type: paymentMethod },
+      redirect_url: redirectUrl || undefined,
+      customer_data: {
+        full_name: String(body.customerName ?? body.customer_name ?? "").trim() || undefined,
+        phone_number: String(body.customerPhone ?? body.customer_phone ?? "").trim() || undefined,
+      },
+      metadata: {
+        products: Array.isArray(body.products) ? body.products : [],
+      },
+    }),
+  });
+
+  const text = await response.text();
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  } catch {
+    payload = { raw: text };
+  }
+
+  if (!response.ok) {
+    throw new Error(`Wompi transaction failed: ${response.status}`);
+  }
+
+  const transaction = (payload.data as Record<string, unknown> | undefined) ?? payload;
+  const paymentUrl = String(
+    (transaction.next_action as Record<string, unknown> | undefined)?.redirect_to_url
+      ?? transaction.redirect_url
+      ?? transaction.checkout_url
+      ?? transaction.payment_url
+      ?? "",
+  ).trim();
+
+  return { payload, transaction, paymentUrl, methods: merchant.methods };
 };
 
 const requireAdmin = async (req: express.Request, res: express.Response) => {
@@ -944,6 +1063,82 @@ app.post("/api/functions/redeem-coupon", async (req, res) => {
     },
     discount: Math.min(discount, Number(subtotal) + Number(shipping)),
   });
+});
+
+app.get("/api/payments/wompi/methods", async (_req, res) => {
+  try {
+    const merchant = await readWompiPaymentMethodAvailability();
+    return res.json({ methods: merchant.methods });
+  } catch (error) {
+    console.error("Could not load Wompi payment methods", error);
+    return res.status(500).json({ error: "wompi_error", message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/payments/create-wompi-payment", async (req, res) => {
+  try {
+    const created = await createWompiTransaction(req.body as WompiCreatePaymentBody);
+    return res.json({
+      ok: true,
+      paymentUrl: created.paymentUrl || null,
+      transaction: created.transaction,
+      methods: created.methods,
+    });
+  } catch (error) {
+    console.error("Wompi payment creation failed", error);
+    const message = error instanceof Error ? error.message : String(error);
+    return res.status(500).json({ error: "wompi_error", message });
+  }
+});
+
+app.post("/api/payments/wompi/webhook", async (req, res) => {
+  const rawBody = (req as express.Request & { rawBody?: string }).rawBody || JSON.stringify(req.body ?? {});
+  const signatureHeader = req.headers["x-event-signature"] ?? req.headers["x-wompi-signature"];
+
+  if (!verifyWompiEventSignature(rawBody, signatureHeader)) {
+    console.warn("Wompi webhook signature rejected", {
+      method: req.method,
+      path: req.path,
+      hasSignature: Boolean(signatureHeader),
+      rawBodyLength: rawBody.length,
+    });
+    return res.status(401).json({ error: "invalid_signature" });
+  }
+
+  const event = req.body as Record<string, unknown>;
+  const transaction = (event.data as Record<string, unknown> | undefined)?.transaction as Record<string, unknown> | undefined
+    ?? (event.data as Record<string, unknown> | undefined)
+    ?? (event.transaction as Record<string, unknown> | undefined);
+  const reference = String(transaction?.reference ?? event.reference ?? "").trim();
+  const wompiStatus = String(transaction?.status ?? event.status ?? "").trim();
+  const orderStatus = mapWompiStatusToOrderStatus(wompiStatus);
+  const paymentMethod = normalizeWompiPaymentMethod(String(transaction?.payment_method_type ?? transaction?.payment_method ?? transaction?.type ?? ""));
+
+  if (!reference) {
+    console.warn("Wompi webhook received without reference", { eventType: String(event.event ?? "") });
+    return res.json({ ok: true, updated: false });
+  }
+
+  try {
+    const existing = await prisma.order.findUnique({ where: { id: reference } });
+    if (!existing) {
+      console.warn("Wompi webhook order not found", { reference, wompiStatus });
+      return res.json({ ok: true, updated: false, reference, status: orderStatus });
+    }
+
+    await prisma.order.update({
+      where: { id: reference },
+      data: {
+        status: orderStatus,
+        ...(paymentMethod ? { paymentMethod: paymentMethod.toLowerCase() } : {}),
+      },
+    });
+
+    return res.json({ ok: true, updated: true, reference, status: orderStatus });
+  } catch (error) {
+    console.error("Failed to process Wompi webhook", error);
+    return res.status(500).json({ error: "wompi_error", message: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.post("/api/functions/create-mp-preference", async (req, res) => {

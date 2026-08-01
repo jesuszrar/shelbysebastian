@@ -1,5 +1,5 @@
-import { Banknote, Building2, CheckCircle2, CreditCard, Smartphone, ArrowLeftRight } from "lucide-react";
-import { SiMastercard, SiMercadopago, SiVisa } from "react-icons/si";
+import { Banknote, CheckCircle2, CreditCard, ArrowLeftRight } from "lucide-react";
+import { SiMastercard, SiVisa } from "react-icons/si";
 
 type PaymentMethod = {
   name: string;
@@ -22,10 +22,10 @@ const methods: PaymentMethod[] = [
     logo: <img src="https://www.daviplata.com/documents/d/guest/daviplata-3" alt="Logo Daviplata" className="h-8 w-8 object-contain" />,
   },
   {
-    name: "Mercado Pago",
-    label: "Mercado Pago",
-    badgeClassName: "bg-white text-[#009ee3]",
-    logo: <SiMercadopago className="h-8 w-8" />,
+    name: "Wompi",
+    label: "Wompi",
+    badgeClassName: "bg-white text-[#0d2f81]",
+    logo: <CreditCard className="h-8 w-8" />,
   },
   {
     name: "Visa",
@@ -75,7 +75,7 @@ export const Payments = () => (
             Aceptamos los métodos más usados en Colombia. Tu plata viaja segura, tu compra llega rápido, y si algo no cuadra, te respondemos por WhatsApp en minutos.
           </p>
           <ul className="mt-6 space-y-3">
-            {["Sin recargos por usar Nequi o Daviplata", "Pago con tarjeta crédito o débito (Visa, Mastercard) vía Mercado Pago", "Confirmación inmediata por WhatsApp", "Contraentrega disponible en ciudades principales"].map((b) => (
+            {["Sin recargos por usar Nequi o Daviplata", "Pago con tarjeta crédito o débito (Visa, Mastercard) vía Wompi", "Confirmación inmediata por WhatsApp", "Contraentrega disponible en ciudades principales"].map((b) => (
               <li key={b} className="flex items-start gap-3"><CheckCircle2 className="h-5 w-5 text-white flex-shrink-0 mt-0.5" /><span className="text-secondary-foreground/90">{b}</span></li>
             ))}
           </ul>

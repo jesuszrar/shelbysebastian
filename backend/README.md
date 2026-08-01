@@ -8,13 +8,13 @@ This folder is the new backend for the app after moving away from Supabase.
 - Products CRUD
 - Orders CRUD
 - Cédula/email lookup table
-- Mercado Pago preference proxy
+- Wompi payment creation and webhook handling
 - File uploads served from `/uploads`
 
 ## Next steps
 
 1. Create a MySQL database.
-2. Copy `.env.example` to `.env` and set `DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGIN`, and either `MERCADOPAGO_ACCESS_TOKEN_CLIENT` or `MERCADOPAGO_ACCESS_TOKEN`. If you want invoice emails, also set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM`.
+2. Copy `.env.example` to `.env` and set `DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGIN`, `WOMPI_PUBLIC_KEY`, `WOMPI_PRIVATE_KEY`, `WOMPI_INTEGRITY_KEY`, `WOMPI_EVENTS_KEY`, and `WOMPI_ENVIRONMENT`. If you still use Mercado Pago for legacy flows, set `MERCADOPAGO_ACCESS_TOKEN_CLIENT` or `MERCADOPAGO_ACCESS_TOKEN`. If you want invoice emails, also set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM`.
 	- In `CORS_ORIGIN`, add the exact URL of your live frontend, for example `https://tudominio.com` or `https://www.tudominio.com`.
 3. Run these commands from PowerShell inside `backend/`:
 
