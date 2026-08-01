@@ -239,9 +239,18 @@ const Checkout = () => {
         customerPhone: data.phone,
       });
       if (error) throw error;
-      const paymentUrl = res?.paymentUrl || (res?.transaction?.redirect_url as string | undefined) || ((res?.transaction as Record<string, unknown> | undefined)?.next_action as Record<string, unknown> | undefined)?.redirect_to_url as string | undefined;
+      const txn = (res?.transaction as Record<string, unknown> | undefined) ?? undefined;
+      const nextActionUrl = txn ? ((txn.next_action as Record<string, unknown> | undefined)?.redirect_to_url as string | undefined) : undefined;
+      const paymentUrl = res?.paymentUrl || nextActionUrl || (txn?.checkout_url as string | undefined) || (txn?.payment_url as string | undefined);
+      console.log("[checkout] wompi paymentUrl summary", {
+        paymentUrlPresent: Boolean(paymentUrl),
+        paymentUrlIsNextAction: Boolean(nextActionUrl),
+        transactionId: txn?.id ?? null,
+        transactionHasRedirectUrl: Boolean(txn?.redirect_url),
+      });
       if (!paymentUrl) throw new Error("No recibimos un enlace de pago de Wompi.");
       clear();
+      // Redirect user to Wompi (Nequi/Daviplata) to complete payment
       window.location.href = paymentUrl;
     } catch (err) {
       setLoading(false);
@@ -294,15 +303,63 @@ const Checkout = () => {
 
   const handleManualConfirm = async () => {
     const data = validate();
-    if (!data || data.payment === "card" || data.payment === "pse" || data.payment === "nequi" || data.payment === "daviplata") return;
+    if (!data) return;
     setLoading(true);
+
+    // Methods that require external redirect (handled by Wompi)
+    const externalRedirectMethods = new Set<PaymentMethod>(["nequi", "daviplata", "pse"]);
+
     try {
+      const finalTotal = checkoutTotal;
+
+      // Create order as payment_pending first
+      await saveOrder("payment_pending", data.payment, data);
+
+      // If this is an external redirect method, create Wompi transaction and redirect
+      if (externalRedirectMethods.has(data.payment as PaymentMethod)) {
+        const { data: res, error } = await supabase.payments.createWompiPayment({
+          products: detailedItems.map((it) => ({ id: it.product.id, name: it.product.name, quantity: it.quantity, unit_price: it.product.price })),
+          total: finalTotal,
+          customerEmail: data.email,
+          reference: orderId,
+          paymentMethod: data.payment,
+          redirectUrl: `${window.location.origin}/order-success?order=${orderId}&total=${finalTotal}&method=${encodeURIComponent(data.payment)}&status=payment_pending`,
+          customerName: data.name,
+          customerPhone: data.phone,
+        });
+
+        if (error) {
+          console.error("[checkout] wompi create error", error);
+          throw error;
+        }
+
+        const paymentUrl = res?.paymentUrl || (res?.transaction as any)?.redirect_url || (res?.transaction as any)?.next_action?.redirect_to_url || null;
+        console.log("[checkout] wompi response", { paymentUrl, status: (res as any)?.transaction?.status });
+
+        if (paymentUrl) {
+          clear();
+          // Redirect user to Wompi to complete payment
+          window.location.href = paymentUrl;
+          return;
+        }
+
+        // Fallback: if no paymentUrl for external redirect methods, do NOT navigate to order-success
+        if (externalRedirectMethods.has(data.payment as PaymentMethod)) {
+          toast.error("No se generó enlace de pago Wompi");
+          return;
+        }
+
+        // For non-external methods (e.g., transferencia) continue to WhatsApp fallback
+        toast.success("¡Pago reportado!", { description: "Validaremos tu pago en minutos." });
+        clear();
+        return navigate(`/order-success?order=${orderId}&total=${finalTotal}&method=${encodeURIComponent(String(data.payment))}&status=payment_pending`);
+      }
+
+      // Non-redirect flow (transferencia) - keep WhatsApp fallback and then navigate
       const paymentLabel = PAYMENT_DETAILS[data.payment].label;
       const message = buildWhatsAppMessage(data, paymentLabel);
       await new Promise((r) => setTimeout(r, 500));
-      const finalTotal = checkoutTotal;
-      await saveOrder("payment_pending", data.payment, data);
-      clear();
+      await clear();
       toast.success("¡Pago reportado!", { description: "Validaremos tu transferencia en minutos." });
       window.open(`https://wa.me/573228426561?text=${message}`, "_blank");
       navigate(`/order-success?order=${orderId}&total=${finalTotal}&method=${encodeURIComponent(paymentLabel)}&status=payment_pending`);

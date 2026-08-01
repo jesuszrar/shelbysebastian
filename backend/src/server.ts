@@ -389,6 +389,7 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
   const reference = String(body.reference ?? body.referencePedido ?? body.orderId ?? "").trim();
   const paymentMethod = normalizeWompiPaymentMethod(body.paymentMethod ?? body.payment_method) ?? "CARD";
   const redirectUrl = String(body.redirectUrl ?? body.redirect_url ?? "").trim();
+  const externalRedirectMethods = new Set(["NEQUI", "DAVIPLATA", "PSE"]);
   const integrityKey = getWompiConfig().integrityKey;
 
   if (!merchant.acceptanceToken) {
@@ -423,7 +424,8 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
     reference,
     signature: integritySignature,
     payment_method: paymentMethodPayload,
-    redirect_url: redirectUrl || undefined,
+    // Do not include a frontend redirect URL for external methods (Nequi, Daviplata, PSE)
+    redirect_url: !externalRedirectMethods.has(paymentMethod) && redirectUrl ? redirectUrl : undefined,
     customer_data: {
       full_name: String(body.customerName ?? body.customer_name ?? "").trim() || undefined,
       phone_number: customerPhoneDigits || undefined,
@@ -489,13 +491,36 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
   }
 
   const transaction = (payload.data as Record<string, unknown> | undefined) ?? payload;
-  const paymentUrl = String(
+
+  const rawPaymentUrl = String(
     (transaction.next_action as Record<string, unknown> | undefined)?.redirect_to_url
       ?? transaction.redirect_url
       ?? transaction.checkout_url
       ?? transaction.payment_url
       ?? "",
   ).trim();
+
+  // Determine final paymentUrl. For external redirect methods, ensure we don't treat
+  // an internal confirmation redirect (like /order-success) or the same redirectUrl
+  // echoed back by Wompi as a real payment link.
+  let paymentUrl: string | null = rawPaymentUrl || null;
+  if (externalRedirectMethods.has(paymentMethod)) {
+    const isEchoOfFrontend = redirectUrl && rawPaymentUrl && rawPaymentUrl === redirectUrl;
+    const looksLikeOrderSuccess = rawPaymentUrl && /\/order-success(?:\?|$)/i.test(rawPaymentUrl);
+    if (!rawPaymentUrl || isEchoOfFrontend || looksLikeOrderSuccess) {
+      paymentUrl = null;
+    }
+  }
+
+  // If Nequi returned PENDING with no next_action, log for debugging
+  try {
+    const txnStatus = String((transaction as Record<string, unknown>)?.status ?? "").toUpperCase();
+    if (paymentMethod === "NEQUI" && txnStatus === "PENDING" && !(transaction as any)?.next_action) {
+      console.warn('[wompi] NEQUI returned PENDING with no next_action', { reference, amountInCents, transaction });
+    }
+  } catch (e) {
+    // ignore logging errors
+  }
 
   return { payload, transaction, paymentUrl, methods: merchant.methods };
 };
@@ -1139,9 +1164,16 @@ app.post("/api/payments/create-wompi-payment", async (req, res) => {
       transactionId: created.transaction?.id ?? null,
       transactionStatus: created.transaction?.status ?? null,
       hasNextAction: Boolean(created.transaction?.next_action),
-      nextActionKeys: created.transaction?.next_action
-        ? Object.keys(created.transaction.next_action as Record<string, unknown>)
-        : [],
+      nextActionKeys: created.transaction?.next_action ? Object.keys(created.transaction.next_action as Record<string, unknown>) : [],
+    });
+
+    // Log the redirect decision explicitly (use the requested shape)
+    const paymentMethod = normalizeWompiPaymentMethod((req.body as any)?.paymentMethod ?? (req.body as any)?.payment_method) ?? String((created.transaction as any)?.payment_method_type ?? (created.transaction as any)?.payment_method ?? "");
+    console.log("[wompi] redirect decision", {
+      paymentMethod,
+      hasNextAction: Boolean((created.transaction as any)?.next_action),
+      nextAction: (created.transaction as any)?.next_action ?? null,
+      paymentUrl: created.paymentUrl ?? null,
     });
     return res.json({
       ok: true,

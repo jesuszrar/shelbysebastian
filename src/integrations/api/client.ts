@@ -109,7 +109,7 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
     return { data: null, error: { message: "VITE_API_URL o VITE_BACKEND_URL no está configurado." } };
   }
 
-  const requiresAuth = path.startsWith("/api/data/") || path.startsWith("/api/rpc/") || path.startsWith("/api/auth/me") || path.startsWith("/api/functions/redeem-coupon") || path.startsWith("/api/functions/create-mp-preference") || path.startsWith("/api/functions/check-mp-methods") || path.startsWith("/api/functions/mp-webhook");
+  const requiresAuth = path.startsWith("/api/data/") || path.startsWith("/api/rpc/") || path.startsWith("/api/auth/me") || path.startsWith("/api/functions/redeem-coupon") || path.startsWith("/api/functions/mp-webhook");
   const isAdminMutation = path.includes("/api/data/coupons") || path.includes("/api/data/profiles");
 
   try {

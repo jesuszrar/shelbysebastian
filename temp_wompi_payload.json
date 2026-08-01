@@ -1,0 +1,1 @@
+﻿{ total:10000,customerEmail:test@example.com,customerPhone:3123456789,reference:TEST123456,paymentMethod:NEQUI,customerName:Test User,products:[{id:prod1,name:Test,quantity:1,unit_price:10000}]}
