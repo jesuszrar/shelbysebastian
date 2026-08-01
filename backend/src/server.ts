@@ -396,28 +396,48 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
     throw new Error("amount, customerEmail y reference son requeridos");
   }
 
+  const requestBodyObj = {
+    acceptance_token: merchant.acceptanceToken,
+    amount_in_cents: amountInCents,
+    currency: "COP",
+    customer_email: customerEmail,
+    reference,
+    payment_method: { type: paymentMethod },
+    redirect_url: redirectUrl || undefined,
+    customer_data: {
+      full_name: String(body.customerName ?? body.customer_name ?? "").trim() || undefined,
+      phone_number: String(body.customerPhone ?? body.customer_phone ?? "").trim() || undefined,
+    },
+    metadata: {
+      products: Array.isArray(body.products) ? body.products : [],
+    },
+  } as Record<string, unknown>;
+
+  // Safe log: do not print secret keys or full auth headers. Only indicate presence.
+  try {
+    const wompiCfg = getWompiConfig();
+    console.log("[wompi] create transaction - request summary", {
+      amountInCents,
+      currency: "COP",
+      reference,
+      customerEmail,
+      paymentMethod,
+      acceptanceToken: merchant.acceptanceToken ?? null,
+      signatureIntegrityPresent: Boolean(wompiCfg.integrityKey),
+      authorizationHeaderPresent: Boolean(buildWompiAuthorizationHeader().Authorization),
+      productsCount: Array.isArray(body.products) ? body.products.length : 0,
+    });
+  } catch (logErr) {
+    console.warn('[wompi] failed to log request summary', String(logErr));
+  }
+
   const response = await fetch(`${baseUrl}/transactions`, {
     method: "POST",
     headers: {
       ...buildWompiAuthorizationHeader(),
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      acceptance_token: merchant.acceptanceToken,
-      amount_in_cents: amountInCents,
-      currency: "COP",
-      customer_email: customerEmail,
-      reference,
-      payment_method: { type: paymentMethod },
-      redirect_url: redirectUrl || undefined,
-      customer_data: {
-        full_name: String(body.customerName ?? body.customer_name ?? "").trim() || undefined,
-        phone_number: String(body.customerPhone ?? body.customer_phone ?? "").trim() || undefined,
-      },
-      metadata: {
-        products: Array.isArray(body.products) ? body.products : [],
-      },
-    }),
+    body: JSON.stringify(requestBodyObj),
   });
 
   const text = await response.text();
@@ -429,6 +449,16 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
   }
 
   if (!response.ok) {
+    // If Wompi returns 422, capture and log the exact body for debugging (non-sensitive)
+    if (response.status === 422) {
+      try {
+        console.error('[wompi] transaction 422 response', { status: response.status, payload });
+      } catch (err) {
+        console.error('[wompi] transaction 422 response (failed to parse payload)', { status: response.status, raw: String(text).slice(0, 2000) });
+      }
+    } else {
+      console.error('[wompi] transaction failed', { status: response.status });
+    }
     throw new Error(`Wompi transaction failed: ${response.status}`);
   }
 
