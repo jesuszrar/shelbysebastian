@@ -302,20 +302,29 @@ const requireAuth = (req: express.Request, res: express.Response) => {
   return auth;
 };
 
+const logAdminDecision = async (req: express.Request, auth: AuthPayload, user: User | null) => {
+  const isAdminByRecord = isAdminUserRecord(user);
+  console.log("[auth] admin decision", {
+    method: req.method,
+    path: req.path,
+    hasAuthorization: Boolean(getAuthorizationHeader(req)),
+    authSub: auth.sub,
+    authEmail: auth.email,
+    authIsAdmin: auth.isAdmin,
+    userId: user?.id ?? null,
+    userEmail: user?.email ?? null,
+    dbIsAdmin: user?.isAdmin ?? null,
+    isAdminByRecord,
+    rule: isAdminByRecord ? "admin-cedula-or-db-flag" : "denied",
+  });
+};
+
 const requireAdmin = async (req: express.Request, res: express.Response) => {
   const auth = requireAuth(req, res);
   if (!auth) return null;
   const user = await prisma.user.findUnique({ where: { id: auth.sub } });
   const isAdminByRecord = isAdminUserRecord(user);
-  console.log("[auth] requireAdmin user", {
-    userId: user?.id ?? null,
-    userEmail: user?.email ?? null,
-    userIsAdmin: user?.isAdmin ?? null,
-    authIsAdmin: auth.isAdmin,
-    isAdminByRecord,
-    authSub: auth.sub,
-    authEmail: auth.email,
-  });
+  await logAdminDecision(req, auth, user);
   if (isAdminByRecord) {
     return user ?? ({ id: auth.sub, name: auth.name, email: auth.email, cedula: auth.cedula, password: "", isAdmin: true } as User);
   }
