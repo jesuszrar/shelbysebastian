@@ -109,6 +109,11 @@ export const buildWompiAuthorizationHeader = (): Record<string, string> => {
   return privateKey ? { Authorization: `Bearer ${privateKey}` } : {};
 };
 
+export const buildWompiTransactionIntegritySignature = (reference: string, amountInCents: number, currency: string, integrityKey: string): string => {
+  const signatureString = `${reference}${amountInCents}${currency}${integrityKey}`;
+  return crypto.createHash("sha256").update(signatureString).digest("hex");
+};
+
 export const getWompiMerchantSignature = (rawBody: string) => {
   const { eventsKey } = getWompiConfig();
   return crypto.createHmac("sha256", eventsKey).update(rawBody).digest("hex");

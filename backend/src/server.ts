@@ -12,7 +12,7 @@ import { resolvePreferredPaymentMethod } from "./lib/mercadopago.js";
 import { isAllowedCorsOrigin } from "./lib/cors.js";
 import { buildMercadoPagoPreferencePayload } from "./lib/mercadopagoPreference.js";
 import { isAdminUserRecord } from "./lib/auth.js";
-import { buildWompiAuthorizationHeader, extractWebhookSignature, extractWompiMerchantMethods, getWompiAcceptanceToken, getWompiConfig, isValidWompiPhoneNumber, mapWompiStatusToOrderStatus, normalizePhoneNumber, normalizeWompiPaymentMethod, verifyWompiEventSignature } from "./lib/wompi.js";
+import { buildWompiAuthorizationHeader, buildWompiTransactionIntegritySignature, extractWebhookSignature, extractWompiMerchantMethods, getWompiAcceptanceToken, getWompiConfig, isValidWompiPhoneNumber, mapWompiStatusToOrderStatus, normalizePhoneNumber, normalizeWompiPaymentMethod, verifyWompiEventSignature } from "./lib/wompi.js";
 import { wrap } from "./lib/serialize.js";
 
 dotenv.config();
@@ -389,9 +389,14 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
   const reference = String(body.reference ?? body.referencePedido ?? body.orderId ?? "").trim();
   const paymentMethod = normalizeWompiPaymentMethod(body.paymentMethod ?? body.payment_method) ?? "CARD";
   const redirectUrl = String(body.redirectUrl ?? body.redirect_url ?? "").trim();
+  const integrityKey = getWompiConfig().integrityKey;
 
   if (!merchant.acceptanceToken) {
     throw new Error("Wompi no devolvió acceptance_token");
+  }
+
+  if (!integrityKey) {
+    throw new Error("WOMPI_INTEGRITY_KEY no está configurada");
   }
 
   if (!amountInCents || !customerEmail || !reference) {
@@ -414,6 +419,9 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
     currency: "COP",
     customer_email: customerEmail,
     reference,
+    signature: {
+      integrity: buildWompiTransactionIntegritySignature(reference, amountInCents, "COP", integrityKey),
+    },
     payment_method: paymentMethodPayload,
     redirect_url: redirectUrl || undefined,
     customer_data: {
@@ -437,7 +445,8 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
       phoneNumberPresent: Boolean(customerPhoneDigits),
       phoneNumberLength: customerPhoneDigits.length,
       acceptanceTokenPresent: Boolean(merchant.acceptanceToken),
-      signatureIntegrityPresent: Boolean(wompiCfg.integrityKey),
+      integrityKeyPresent: Boolean(wompiCfg.integrityKey),
+      signatureGenerated: true,
       authorizationHeaderPresent: Boolean(buildWompiAuthorizationHeader().Authorization),
       productsCount: Array.isArray(body.products) ? body.products.length : 0,
     });
