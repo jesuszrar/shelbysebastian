@@ -12,7 +12,7 @@ import { resolvePreferredPaymentMethod } from "./lib/mercadopago.js";
 import { isAllowedCorsOrigin } from "./lib/cors.js";
 import { buildMercadoPagoPreferencePayload } from "./lib/mercadopagoPreference.js";
 import { isAdminUserRecord } from "./lib/auth.js";
-import { buildWompiAuthorizationHeader, extractWebhookSignature, extractWompiMerchantMethods, getWompiAcceptanceToken, getWompiConfig, mapWompiStatusToOrderStatus, normalizeWompiPaymentMethod, verifyWompiEventSignature } from "./lib/wompi.js";
+import { buildWompiAuthorizationHeader, extractWebhookSignature, extractWompiMerchantMethods, getWompiAcceptanceToken, getWompiConfig, isValidWompiPhoneNumber, mapWompiStatusToOrderStatus, normalizePhoneNumber, normalizeWompiPaymentMethod, verifyWompiEventSignature } from "./lib/wompi.js";
 import { wrap } from "./lib/serialize.js";
 
 dotenv.config();
@@ -384,6 +384,8 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
   const merchant = await readWompiPaymentMethodAvailability();
   const amountInCents = Math.round(Number(body.total ?? 0) * 100);
   const customerEmail = String(body.customerEmail ?? body.customer_email ?? "").trim().toLowerCase();
+  const customerPhoneRaw = String(body.customerPhone ?? body.customer_phone ?? "").trim();
+  const customerPhoneDigits = normalizePhoneNumber(customerPhoneRaw);
   const reference = String(body.reference ?? body.referencePedido ?? body.orderId ?? "").trim();
   const paymentMethod = normalizeWompiPaymentMethod(body.paymentMethod ?? body.payment_method) ?? "CARD";
   const redirectUrl = String(body.redirectUrl ?? body.redirect_url ?? "").trim();
@@ -396,17 +398,27 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
     throw new Error("amount, customerEmail y reference son requeridos");
   }
 
+  const needsPhoneNumber = paymentMethod === "NEQUI" || paymentMethod === "DAVIPLATA";
+  if (needsPhoneNumber && !isValidWompiPhoneNumber(customerPhoneDigits)) {
+    throw new Error("Wompi requiere phone_number de exactamente 10 dígitos para Nequi y Daviplata");
+  }
+
+  const paymentMethodPayload: Record<string, unknown> = {
+    type: paymentMethod,
+    ...(needsPhoneNumber ? { phone_number: customerPhoneDigits } : {}),
+  };
+
   const requestBodyObj = {
     acceptance_token: merchant.acceptanceToken,
     amount_in_cents: amountInCents,
     currency: "COP",
     customer_email: customerEmail,
     reference,
-    payment_method: { type: paymentMethod },
+    payment_method: paymentMethodPayload,
     redirect_url: redirectUrl || undefined,
     customer_data: {
       full_name: String(body.customerName ?? body.customer_name ?? "").trim() || undefined,
-      phone_number: String(body.customerPhone ?? body.customer_phone ?? "").trim() || undefined,
+      phone_number: customerPhoneDigits || undefined,
     },
     metadata: {
       products: Array.isArray(body.products) ? body.products : [],
@@ -422,7 +434,9 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
       reference,
       customerEmail,
       paymentMethod,
-      acceptanceToken: merchant.acceptanceToken ?? null,
+      phoneNumberPresent: Boolean(customerPhoneDigits),
+      phoneNumberLength: customerPhoneDigits.length,
+      acceptanceTokenPresent: Boolean(merchant.acceptanceToken),
       signatureIntegrityPresent: Boolean(wompiCfg.integrityKey),
       authorizationHeaderPresent: Boolean(buildWompiAuthorizationHeader().Authorization),
       productsCount: Array.isArray(body.products) ? body.products.length : 0,

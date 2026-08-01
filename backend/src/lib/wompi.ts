@@ -43,6 +43,9 @@ export const normalizeWompiPaymentMethod = (value: string | null | undefined): W
   return undefined;
 };
 
+export const normalizePhoneNumber = (value: unknown): string => String(value ?? "").replace(/\D/g, "");
+export const isValidWompiPhoneNumber = (value: string): boolean => value.length === 10;
+
 const readNestedValues = (value: unknown, keys: string[]): Array<unknown> => {
   if (!value || typeof value !== "object") return [];
   const row = value as Record<string, unknown>;
