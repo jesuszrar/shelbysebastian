@@ -94,3 +94,24 @@ model CedulaEmail {
   userId    String?  @unique
   createdAt DateTime @default(now())
 }
+
+model UserAddress {
+  id         String   @id @default(cuid())
+  userId     String
+  label      String
+  fullName   String
+  cedula     String
+  email      String
+  phone      String
+  department String
+  city       String
+  address    String
+  reference  String?
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}

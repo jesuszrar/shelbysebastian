@@ -483,3 +483,24 @@ const apiClient = {
 export { resolveApiBaseUrl };
 export type ApiClient = typeof apiClient;
 export const api = apiClient;
+
+// User addresses API helpers
+export const getUserAddresses = async () => {
+  return request<Array<Record<string, unknown>>>('/api/user/addresses', { method: 'GET' });
+};
+
+export const createUserAddress = async (body: Record<string, unknown>) => {
+  return request<Record<string, unknown>>('/api/user/addresses', { method: 'POST', body: JSON.stringify(body) });
+};
+
+export const patchUserAddress = async (id: string, body: Record<string, unknown>) => {
+  return request<Record<string, unknown>>(`/api/user/addresses/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) });
+};
+
+export const deleteUserAddress = async (id: string) => {
+  return request<Record<string, unknown>>(`/api/user/addresses/${encodeURIComponent(id)}`, { method: 'DELETE' });
+};
+
+export const setDefaultUserAddress = async (id: string) => {
+  return request<Record<string, unknown>>(`/api/user/addresses/${encodeURIComponent(id)}/default`, { method: 'PATCH' });
+};

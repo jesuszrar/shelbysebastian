@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { PrismaClient, type Product, type Order, type User, type Coupon, type CedulaEmail, Prisma } from "@prisma/client";
+import { PrismaClient, type Product, type Order, type User, type Coupon, type CedulaEmail, type UserAddress, Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
@@ -115,7 +115,7 @@ const serializeProduct = (product: Product) => wrap({ ...product, price: product
 const serializeOrder = (order: Order) => wrap({ ...order, total: order.total });
 const serializeCoupon = (coupon: Coupon) => wrap({ ...coupon, value: coupon.value, minimumSubtotal: coupon.minimumSubtotal });
 const serializeCouponAudit = (row: Record<string, unknown>) => wrap(row);
-const serializeCedulaEmail = (row: CedulaEmail) => wrap(row) as CedulaEmail;
+const serializeCedulaEmail = (row: CedulaEmail) => wrap(row) as CedulaEmail;\n\nconst serializeUserAddress = (row: UserAddress) => ({\n  id: row.id,\n  label: row.label,\n  fullName: row.fullName,\n  cedula: row.cedula,\n  email: row.email,\n  phone: row.phone,\n  department: row.department,\n  city: row.city,\n  address: row.address,\n  reference: row.reference,\n  isDefault: row.isDefault,\n  createdAt: row.createdAt,\n  updatedAt: row.updatedAt,\n});
 
 const getMailer = () => {
   const host = process.env.SMTP_HOST;
