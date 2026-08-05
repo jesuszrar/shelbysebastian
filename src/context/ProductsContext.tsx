@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { supabase } from "@/integrations/api/client";
+import { fetchData, postData } from "@/integrations/api/client";
 import { products as defaultProducts, type Product } from "@/data/products";
 
 type ProductRow = {
@@ -73,18 +73,13 @@ const seedProducts = async () => {
     stock: 0,
   }));
 
-  // Check if the products table exists before attempting upsert.
-  const check = await supabase.from("products").select("id").limit(1);
-  if (check.error) {
-    // Likely the table doesn't exist or the API key points to a different project
-    console.error("Skipping seed: products table not available", check.error);
+  const { data, error } = await postData<ProductRow[]>("products", rows);
+  if (error) {
+    console.error("Skipping seed: products table not available or failed", error);
     return;
   }
 
-  const { error } = await supabase.from("products").upsert(rows, { onConflict: "id" });
-  if (error) {
-    console.error("Error seeding products", error);
-  }
+  return data;
 };
 
 export const ProductsProvider = ({ children }: { children: ReactNode }) => {
@@ -93,10 +88,7 @@ export const ProductsProvider = ({ children }: { children: ReactNode }) => {
 
   const refreshProducts = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from<ProductRow>("products")
-      .select("id,name,category,price,oldPrice,badge,highlight,image,stock,description,specs")
-      .order("created_at", { ascending: false });
+    const { data, error } = await fetchData<ProductRow>("products", { orderBy: "created_at", ascending: false });
 
     if (error) {
       console.error("Error loading products", error);
@@ -118,10 +110,7 @@ export const ProductsProvider = ({ children }: { children: ReactNode }) => {
     const fetchedRows = (data || []) as ProductRow[];
     if (fetchedRows.length === 0) {
       await seedProducts();
-      const { data: seeded } = await supabase
-        .from<ProductRow>("products")
-        .select("id,name,category,price,image,stock,description,specs")
-        .order("created_at", { ascending: false });
+      const { data: seeded } = await fetchData<ProductRow>("products", { orderBy: "created_at", ascending: false });
       setRows((seeded || []) as ProductRow[]);
     } else {
       setRows(fetchedRows);

@@ -5,7 +5,7 @@ import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/AuthContext";
-import { supabase } from "@/integrations/api/client";
+import { fetchData, invokeFunction } from "@/integrations/api/client";
 import { formatCOP } from "@/data/products";
 import { toast } from "sonner";
 
@@ -37,12 +37,16 @@ const Profile = () => {
     }
     const load = async () => {
       try {
-        const result = await supabase.from("orders").select("id,total,shipping,status,paymentMethod,customerCity,customerAddress,createdAt,created_at,couponCode,discountAmount").eq("userId", user.id);
-        if (result.error) {
-          console.error(result.error);
+        const { data, error } = await fetchData<Array<Record<string, unknown>>>("orders", {
+          filters: JSON.stringify([{ column: "userId", value: user.id }]),
+          orderBy: "createdAt",
+          ascending: false,
+        });
+        if (error) {
+          console.error(error);
           setOrders([]);
         } else {
-          setOrders((result.data as Array<Record<string, unknown>>) || []);
+          setOrders(data || []);
         }
       } catch (error) {
         console.error(error);
@@ -83,9 +87,7 @@ const Profile = () => {
     }
     setCouponLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("redeem-coupon", {
-        body: { code, subtotal: 0, shipping: 0 },
-      });
+      const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal: 0, shipping: 0 });
       if (error || !data) {
         setCouponResult({ message: error?.message || "Cupón inválido o no encontrado." });
       } else {

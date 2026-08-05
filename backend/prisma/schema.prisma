@@ -37,23 +37,25 @@ model Product {
 }
 
 model Order {
-  id              String   @id
-  items           Json
-  total           Decimal  @db.Decimal(12, 2)
-  shipping        Int      @default(0)
-  status          String   @default("pending")
-  paymentMethod   String?
-  customerName    String?
-  customerEmail   String?
-  customerPhone   String?
-  customerCity    String?
-  customerAddress String?
-  notes           String?  @db.Text
-  discountAmount  Decimal? @db.Decimal(12, 2)
-  couponCode      String?
-  invoiceSentAt   DateTime?
-  userId          String?
-  createdAt       DateTime @default(now())
+  id                 String   @id
+  items              Json
+  total              Decimal  @db.Decimal(12, 2)
+  shipping           Int      @default(0)
+  status             String   @default("pending")
+  wompiTransactionId String?  @unique
+  paymentStatus      String?
+  paymentMethod      String?
+  customerName       String?
+  customerEmail      String?
+  customerPhone      String?
+  customerCity       String?
+  customerAddress    String?
+  notes              String?  @db.Text
+  discountAmount     Decimal? @db.Decimal(12, 2)
+  couponCode         String?
+  invoiceSentAt      DateTime?
+  userId             String?
+  createdAt          DateTime @default(now())
 
   user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 

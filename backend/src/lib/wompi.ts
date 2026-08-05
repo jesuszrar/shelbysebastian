@@ -26,7 +26,13 @@ export const getWompiConfig = (): WompiConfig => {
   const environment = normalizeText(process.env.WOMPI_ENVIRONMENT || "production") === "sandbox" ? "sandbox" : "production";
   return {
     baseUrl: environment === "sandbox" ? "https://sandbox.wompi.co/v1" : "https://production.wompi.co/v1",
-    publicKey: String(process.env.WOMPI_PUBLIC_KEY ?? "").trim(),
+    // Normalize public key: treat literal "undefined" or "null" as missing
+    publicKey: (() => {
+      const raw = String(process.env.WOMPI_PUBLIC_KEY ?? "").trim();
+      const lower = raw.toLowerCase();
+      if (!raw || lower === "undefined" || lower === "null") return "";
+      return raw;
+    })(),
     privateKey: String(process.env.WOMPI_PRIVATE_KEY ?? "").trim(),
     integrityKey: String(process.env.WOMPI_INTEGRITY_KEY ?? "").trim(),
     eventsKey: String(process.env.WOMPI_EVENTS_KEY ?? "").trim(),
@@ -57,25 +63,53 @@ const readNestedValues = (value: unknown, keys: string[]): Array<unknown> => {
 
 export const extractWompiMerchantMethods = (payload: unknown): WompiMerchantMethod[] => {
   const discovered = new Map<WompiPaymentMethod, string>();
+
+  const markMethod = (candidate: string | null | undefined) => {
+    const normalized = normalizeWompiPaymentMethod(candidate ?? "");
+    if (!normalized) return;
+    discovered.set(normalized, String(candidate ?? normalized));
+  };
+
   const visit = (value: unknown) => {
     if (!value) return;
     if (Array.isArray(value)) {
       value.forEach(visit);
       return;
     }
+    if (typeof value === "string") {
+      markMethod(value);
+      return;
+    }
     if (typeof value !== "object") return;
 
     const row = value as Record<string, unknown>;
-    const normalized = normalizeWompiPaymentMethod(
-      [row.id, row.name, row.type, row.slug, row.code, row.method, row.payment_method_type]
-        .map((entry) => (typeof entry === "string" ? entry : ""))
-        .find(Boolean) ?? "",
-    );
-    if (normalized) {
-      discovered.set(normalized, String(row.name ?? row.id ?? normalized));
+    const acceptedMethods = Array.isArray(row.accepted_payment_methods)
+      ? row.accepted_payment_methods
+      : Array.isArray(row.acceptedPaymentMethods)
+        ? row.acceptedPaymentMethods
+        : [];
+
+    for (const entry of acceptedMethods) {
+      if (typeof entry === "string") {
+        markMethod(entry);
+      }
     }
 
-    for (const nested of readNestedValues(row, ["data", "payment_methods", "methods", "available_payment_methods", "enabled_payment_methods", "paymentMethods", "paymentMethodsEnabled", "items"])) {
+    const paymentMethods = Array.isArray(row.payment_methods) ? row.payment_methods : [];
+    for (const entry of paymentMethods) {
+      if (!entry || typeof entry !== "object") continue;
+      const methodName = typeof (entry as Record<string, unknown>).name === "string"
+        ? String((entry as Record<string, unknown>).name)
+        : "";
+      markMethod(methodName);
+    }
+
+    const candidate = [row.id, row.name, row.type, row.slug, row.code, row.method, row.payment_method_type]
+      .map((entry) => (typeof entry === "string" ? entry : ""))
+      .find(Boolean) ?? "";
+    markMethod(candidate);
+
+    for (const nested of readNestedValues(row, ["data", "payment_methods", "accepted_payment_methods", "acceptedPaymentMethods", "methods", "available_payment_methods", "enabled_payment_methods", "paymentMethods", "paymentMethodsEnabled", "items"])) {
       visit(nested);
     }
   };

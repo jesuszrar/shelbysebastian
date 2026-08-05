@@ -3,7 +3,7 @@ import { Footer } from "@/components/shelby/Footer";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Button } from "@/components/ui/button";
 import { useProductsCatalog } from "@/context/ProductsContext";
-import { supabase } from "@/integrations/api/client";
+import { deleteData, fetchData, patchData, postData, uploadFile } from "@/integrations/api/client";
 import { formatCOP, products as defaultProducts, type Product } from "@/data/products";
 import { toast } from "sonner";
 import {
@@ -248,15 +248,15 @@ function OverviewPanel({ compact = false }: { compact?: boolean }) {
   useEffect(() => {
     const load = async () => {
       const [ordersResult, usersResult] = await Promise.all([
-        supabase.from<OrderRow>("orders").select("id,total,status,createdAt,created_at,userId,user_id,customerName,customerEmail,customerPhone,customerCity,customerAddress,paymentMethod").order("createdAt", { ascending: false }),
-        supabase.from<UserRow>("profiles").select("id,name,email,cedula,is_admin"),
+        fetchData<OrderRow>("orders", { orderBy: "createdAt", ascending: false }),
+        fetchData<UserRow>("profiles"),
       ]);
 
       if (ordersResult.error) console.error(ordersResult.error);
       if (usersResult.error) console.error(usersResult.error);
 
-      setOrders((ordersResult.data as OrderRow[]) || []);
-      setUsers((usersResult.data as UserRow[]) || []);
+      setOrders(ordersResult.data || []);
+      setUsers(usersResult.data || []);
       setLoading(false);
     };
 
@@ -376,15 +376,12 @@ function ProductsAdmin() {
     if (!editing) return;
     const extension = file.name.split(".").pop() || "jpg";
     const path = `products/${editing}-${Date.now()}.${extension}`;
-    const { error: uploadError } = await supabase.storage.from("product-images").upload(path, file, { upsert: true });
-    if (uploadError) {
-      console.error('Image upload error:', uploadError);
-      const detail = uploadError.message || JSON.stringify(uploadError);
-      toast.error(detail.length > 240 ? detail.slice(0, 240) + '…' : detail);
-      throw uploadError;
+    const result = await uploadFile(path, file);
+    if (!result?.publicUrl) {
+      toast.error("No se pudo subir la imagen");
+      throw new Error("No se pudo subir la imagen");
     }
-    const { data } = supabase.storage.from("product-images").getPublicUrl(path);
-    setForm((current) => ({ ...current, image: data.publicUrl }));
+    setForm((current) => ({ ...current, image: result.publicUrl }));
   };
 
   const save = async () => {
@@ -403,7 +400,7 @@ function ProductsAdmin() {
       image: form.image.trim() || null,
     };
 
-    const { error } = await supabase.from("products").upsert({ id: editing, ...payload }, { onConflict: "id" });
+    const { error } = await postData("products", { id: editing, ...payload });
     if (error) {
       console.error("Backend upsert error:", error);
       const detailed = (error && (error.message || JSON.stringify(error))) || "No se pudo guardar el producto";
@@ -429,21 +426,19 @@ function ProductsAdmin() {
     const name = prompt("Nombre del producto");
     if (!name) return;
 
-    const { error } = await supabase.from("products").insert([
-      {
-        id: newId,
-        name,
-        category: "Adhesivas",
-        price: 0,
-        oldPrice: null,
-        badge: null,
-        highlight: false,
-        stock: 0,
-        description: "",
-        image: null,
-        specs: [],
-      },
-    ]);
+    const { error } = await postData("products", {
+      id: newId,
+      name,
+      category: "Adhesivas",
+      price: 0,
+      oldPrice: null,
+      badge: null,
+      highlight: false,
+      stock: 0,
+      description: "",
+      image: null,
+      specs: [],
+    });
 
     if (error) {
       console.error(error);
@@ -472,7 +467,7 @@ function ProductsAdmin() {
 
   const remove = async (id: string) => {
     if (!confirm("Eliminar producto?")) return;
-    const { error } = await supabase.from("products").delete().eq("id", id);
+    const { error } = await deleteData("products", [{ column: "id", value: id }]);
     if (error) {
       console.error(error);
       const detailed = (error && (error.message || JSON.stringify(error))) || "No se pudo eliminar el producto";
@@ -652,22 +647,16 @@ function CouponsAdmin() {
 
   const loadCoupons = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from<CouponRow>("coupons")
-      .select("code,type,value,active,minimumSubtotal,expiresAt,createdAt,updatedAt")
-      .order("createdAt", { ascending: false });
+    const { data, error } = await fetchData<CouponRow>("coupons", { orderBy: "createdAt", ascending: false });
     if (error) console.error(error);
-    setRows((data as CouponRow[]) || []);
+    setRows(data || []);
     setLoading(false);
   };
 
   const loadAudit = async () => {
-    const { data, error } = await supabase
-      .from<CouponAuditRow>("coupon_audit")
-      .select("id,couponCode,action,performedByEmail,details,createdAt")
-      .order("createdAt", { ascending: false });
+    const { data, error } = await fetchData<CouponAuditRow>("coupon_audit", { orderBy: "createdAt", ascending: false });
     if (error) console.error(error);
-    setAuditRows((data as CouponAuditRow[]) || []);
+    setAuditRows(data || []);
   };
 
   const refreshAll = async () => {
@@ -726,8 +715,8 @@ function CouponsAdmin() {
       payload.minimumSubtotal = form.minimumSubtotal === null || form.minimumSubtotal === undefined ? null : form.minimumSubtotal;
 
       const response = editing
-        ? await supabase.from("coupons").update(payload).eq("code", editing)
-        : await supabase.from("coupons").insert(payload);
+        ? await patchData<CouponRow>("coupons", payload, [{ column: "code", value: editing }])
+        : await postData<CouponRow>("coupons", payload);
 
       if (response.error) {
         console.error(response.error);
@@ -746,7 +735,7 @@ function CouponsAdmin() {
 
   const toggleActive = async (coupon: CouponRow) => {
     setSavingId(coupon.code);
-    const { error } = await supabase.from("coupons").update({ active: !coupon.active }).eq("code", coupon.code);
+    const { error } = await patchData<CouponRow>("coupons", { active: !coupon.active }, [{ column: "code", value: coupon.code }]);
     if (error) {
       console.error(error);
       toast.error("No se pudo actualizar el estado");
@@ -764,16 +753,14 @@ function CouponsAdmin() {
     if (!code) return;
 
     setSavingId(coupon.code);
-    const { error } = await supabase.from("coupons").insert([
-      {
-        code,
-        type: coupon.type,
-        value: coupon.value,
-        active: coupon.active,
-        minimumSubtotal: coupon.minimumSubtotal,
-        expiresAt: coupon.expiresAt || null,
-      },
-    ]);
+    const { error } = await postData("coupons", {
+      code,
+      type: coupon.type,
+      value: coupon.value,
+      active: coupon.active,
+      minimumSubtotal: coupon.minimumSubtotal,
+      expiresAt: coupon.expiresAt || null,
+    });
     if (error) {
       console.error(error);
       toast.error("No se pudo duplicar el cupón");
@@ -787,7 +774,7 @@ function CouponsAdmin() {
   const deleteCoupon = async (code: string) => {
     if (!confirm(`Eliminar cupón ${code}?`)) return;
     setSavingId(code);
-    const { error } = await supabase.from("coupons").delete().eq("code", code);
+    const { error } = await deleteData("coupons", [{ column: "code", value: code }]);
     if (error) {
       console.error(error);
       toast.error("No se pudo eliminar el cupón");
@@ -996,10 +983,10 @@ function OrdersAdmin() {
 
   const fetchOrders = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from<OrderRow>("orders")
-      .select("id,total,status,created_at,user_id")
-      .order("created_at", { ascending: false });
+    const { data, error } = await fetchData<OrderRow>("orders", {
+      orderBy: "created_at",
+      ascending: false,
+    });
     if (error) console.error(error);
     setRows((data as OrderRow[]) || []);
     setLoading(false);
@@ -1022,7 +1009,7 @@ function OrdersAdmin() {
 
   const updateStatus = async (id: string, status: string) => {
     setSavingId(id);
-    const { error } = await supabase.from("orders").update({ status }).eq("id", id);
+    const { error } = await patchData<OrderRow>("orders", { status }, [{ column: "id", value: id }]);
     if (error) {
       console.error(error);
       setSavingId(null);
@@ -1117,9 +1104,9 @@ function UsersAdmin() {
 
   const fetchUsers = async () => {
     setLoading(true);
-    const { data, error } = await supabase.from<UserRow>("profiles").select("id,name,email,cedula,is_admin");
+    const { data, error } = await fetchData<UserRow>("profiles");
     if (error) console.error(error);
-    setRows((data as UserRow[]) || []);
+    setRows(data || []);
     setLoading(false);
   };
 
@@ -1140,7 +1127,7 @@ function UsersAdmin() {
   const toggleAdmin = async (id: string, current?: boolean) => {
     setSavingId(id);
     try {
-      const { error } = await supabase.from("profiles").update({ is_admin: !current }).eq("id", id);
+      const { error } = await patchData<UserRow>("profiles", { is_admin: !current }, [{ column: "id", value: id }]);
       if (error) {
         console.error(error);
         const detail = error.message || JSON.stringify(error);
@@ -1163,11 +1150,10 @@ function UsersAdmin() {
     }
 
     setPromoting(true);
-    const { data: profile, error } = await supabase
-      .from<UserRow>("profiles")
-      .select("id,name,email,cedula,is_admin")
-      .eq("cedula", cedula)
-      .maybeSingle();
+    const { data: profile, error } = await fetchData<UserRow>("profiles", {
+      filters: JSON.stringify([{ column: "cedula", value: cedula }]),
+      maybeSingle: true,
+    });
 
     if (error) {
       console.error(error);
@@ -1182,7 +1168,7 @@ function UsersAdmin() {
       return;
     }
 
-    const { error: updateError } = await supabase.from("profiles").update({ is_admin: true }).eq("id", profile.id);
+    const { error: updateError } = await patchData<UserRow>("profiles", { is_admin: true }, [{ column: "id", value: profile.id }]);
     if (updateError) {
       console.error(updateError);
       const detail = updateError.message || JSON.stringify(updateError);

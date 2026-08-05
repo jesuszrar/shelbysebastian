@@ -1,13 +1,13 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { supabase } from "@/integrations/api/client";
-import type { Session, User as SbUser } from "@supabase/supabase-js";
+﻿import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
+import { getStoredSession, saveSession, clearSession, onAuthStateChange, SESSION_EXPIRED_EVENT, resolveApiBaseUrl, getEmailByCedula, persistCedulaEmail, syncProfile, type SessionUser, type StoredSession } from "@/integrations/api/client";
 import { ADMIN_CEDULA, isAdminUser } from "./authUtils";
 
-export type User = { id: string; name: string; email: string; cedula?: string };
+export type User = { id: string; name: string; email: string; cedula?: string; isAdmin?: boolean };
 
 type AuthContextValue = {
   user: User | null;
-  session: Session | null;
+  session: StoredSession | null;
   isAuthenticated: boolean;
   loading: boolean;
   login: (cedula: string, password: string) => Promise<void>;
@@ -26,19 +26,16 @@ const normalizeCedula = (cedula: string) => cedula.replace(/\D/g, "").trim();
 
 const setActiveCedula = (cedula: string) => {
   if (typeof window === "undefined") return;
-
   window.localStorage.setItem(ACTIVE_CEDULA_STORAGE_KEY, cedula);
 };
 
 const getActiveCedula = () => {
   if (typeof window === "undefined") return null;
-
   return window.localStorage.getItem(ACTIVE_CEDULA_STORAGE_KEY);
 };
 
 const clearActiveCedula = () => {
   if (typeof window === "undefined") return;
-
   window.localStorage.removeItem(ACTIVE_CEDULA_STORAGE_KEY);
 };
 
@@ -61,144 +58,81 @@ const writeCedulaEmailMap = (cedula: string, email: string) => {
   window.localStorage.setItem(CEDULA_EMAIL_STORAGE_KEY, JSON.stringify(current));
 };
 
-const persistCedulaEmail = async (cedula: string, email: string) => {
+const persistCedulaEmailLocal = async (cedula: string, email: string, accessToken?: string) => {
   const normalizedCedula = normalizeCedula(cedula);
-
   writeCedulaEmailMap(normalizedCedula, email);
-
-  const { error } = await supabase
-    .from("cedula_emails")
-    .upsert({ cedula: normalizedCedula, email: email.trim() }, { onConflict: "cedula" });
-
-  if (error) {
-    console.error("Error saving cedula email map", error);
+  const ok = await persistCedulaEmail(normalizedCedula, email.trim(), accessToken);
+  if (!ok) {
+    console.error("Error saving cedula email map to backend");
   }
 };
 
-const toUser = (u: SbUser | null | undefined): User | null =>
+const toUser = (u: SessionUser | null | undefined): User | null =>
   u
     ? {
         id: u.id,
         email: u.email ?? "",
-        name: (u.user_metadata?.name as string) ?? (u.email?.split("@")[0] ?? "Cliente"),
-        cedula: (u.user_metadata?.cedula as string) ?? undefined,
+        name: (u.user_metadata?.name as string) ?? u.name ?? u.email?.split("@")[0] ?? "Cliente",
+        cedula: (u.user_metadata?.cedula as string) ?? u.cedula ?? undefined,
+        isAdmin: Boolean(u.user_metadata?.is_admin ?? u.is_admin),
       }
     : null;
 
-const syncSupabaseProfile = async (sessionUser: SbUser, cedula: string, name?: string) => {
-  const userName = name ?? (sessionUser.user_metadata?.name as string) ?? sessionUser.email?.split("@")[0] ?? "Cliente";
-  const isAdmin = isAdminUser({ cedula } as { cedula?: string | null }, { user: sessionUser } as { user?: { user_metadata?: { is_admin?: boolean } | null } | null }, cedula);
-
-  const { error } = await supabase.rpc("sync_profile", {
-    user_id: sessionUser.id,
-    user_email: sessionUser.email ?? "",
-    user_name: userName,
-    user_cedula: cedula,
-    user_is_admin: isAdmin,
-  });
-
-  if (error) {
-    console.error("Error syncing profile", error);
-  }
+const getAuthUrl = (path: string) => {
+  const baseUrl = resolveApiBaseUrl();
+  return baseUrl ? `${baseUrl}${path}` : path;
 };
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  const [session, setSession] = useState<Session | null>(null);
+  const navigate = useNavigate();
+  const [session, setSession] = useState<StoredSession>(null);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+    const subscription = onAuthStateChange((event, s) => {
       setSession(s);
       setUser(toUser(s?.user));
+      if (event === SESSION_EXPIRED_EVENT) {
+        setSession(null);
+        setUser(null);
+        clearActiveCedula();
+        if (typeof window !== "undefined") {
+          try {
+            window.alert("La sesión expiró, inicia sesión nuevamente");
+          } catch {
+            // ignore
+          }
+        }
+        navigate("/login");
+      }
     });
 
     const restoreSession = async () => {
       try {
-        const { data } = await supabase.auth.getSession();
-        setSession(data.session);
-        if (data.session?.user) {
-          setUser(toUser(data.session.user));
-        } else {
-          const storedSession = window.localStorage.getItem("shelby:session");
-          if (storedSession) {
-            try {
-              const parsed = JSON.parse(storedSession) as { user?: SbUser | null };
-              if (parsed.user) {
-                setUser(toUser(parsed.user));
-              } else {
-                setUser(null);
-              }
-            } catch {
-              setUser(null);
-            }
-          } else {
-            setUser(null);
-          }
-        }
-      } catch {
-        const storedSession = window.localStorage.getItem("shelby:session");
-        if (storedSession) {
-          try {
-            const parsed = JSON.parse(storedSession) as { user?: SbUser | null };
-            setUser(parsed.user ? toUser(parsed.user) : null);
-          } catch {
-            setUser(null);
-          }
-        } else {
-          setUser(null);
-        }
+        const stored = getStoredSession();
+        setSession(stored);
+        setUser(toUser(stored?.user));
       } finally {
         setLoading(false);
       }
     };
 
     void restoreSession();
-    return () => sub.subscription.unsubscribe();
-  }, []);
+    return () => subscription.unsubscribe();
+  }, [navigate]);
 
   const findEmailByCedula = async (cedula: string) => {
     const normalizedCedula = normalizeCedula(cedula);
-
-    const { data: mapRow, error: mapError } = await supabase
-      .from("cedula_emails")
-      .select("email")
-      .eq("cedula", normalizedCedula)
-      .maybeSingle();
-
-    if (!mapError && mapRow?.email) {
-      return mapRow.email;
-    }
 
     const localEmail = readCedulaEmailMap()[normalizedCedula];
     if (localEmail) {
       return localEmail;
     }
 
-    if (mapError && mapError.code !== "PGRST116") {
-      console.error("Error fetching cedula email map", mapError);
-    }
-
-    const { data: rpcEmail, error: rpcError } = await supabase.rpc('get_email_by_cedula', { lookup_cedula: normalizedCedula });
-    if (!rpcError && rpcEmail) {
-      return rpcEmail as string;
-    }
-
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('email')
-      .or(`cedula.eq.${normalizedCedula},cedula.eq.${cedula.trim()}`)
-      .single();
-    if (!error && data?.email) {
-      return data.email;
-    }
-
-    if (rpcError && rpcError.code !== 'PGRST116') {
-      console.error('Error fetching profile by cedula via rpc', rpcError);
-    }
-
-    if (error && error.code !== 'PGRST116') {
-      console.error('Error fetching profile by cedula', error);
+    const backendEmail = await getEmailByCedula(normalizedCedula);
+    if (backendEmail) {
+      return backendEmail;
     }
 
     return null;
@@ -206,105 +140,111 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const login = async (cedula: string, password: string) => {
     const normalizedCedula = normalizeCedula(cedula);
-
     const email = await findEmailByCedula(normalizedCedula);
     if (!email) {
-      throw new Error('Cédula no registrada. Regístrate primero.');
+      throw new Error("Cédula no registrada. Regístrate primero.");
     }
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password: password.trim(),
+    const response = await fetch(getAuthUrl("/api/auth/login"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email.trim(), password: password.trim() }),
     });
-    if (error) {
-      throw new Error(error.message === 'Invalid login credentials' ? 'Cédula o contraseña incorrectos' : error.message);
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message = (data as { error?: string } | null)?.error ?? response.statusText;
+      throw new Error(String(message));
     }
 
+    const result = data as { session?: StoredSession | null; user?: SessionUser | null };
+    if (!result.session || !result.user) {
+      throw new Error("No se pudo iniciar sesión. Intenta nuevamente.");
+    }
+
+    saveSession(result.session);
+    setSession(result.session);
+    setUser(toUser(result.session.user));
     setActiveCedula(normalizedCedula);
-    if (data.session?.user) {
-      const sessionUserName = (data.session.user.user_metadata?.name as string) ?? data.session.user.email?.split("@")[0] ?? "Cliente";
-      await syncSupabaseProfile(data.session.user, normalizedCedula, sessionUserName);
-    }
-    if (normalizedCedula === ADMIN_CEDULA) {
-      await supabase.auth.updateUser({ data: { is_admin: true } });
-    }
 
-    return data;
+    const sessionUserName = result.user.user_metadata?.name as string ?? result.user.name ?? result.user.email?.split("@")[0] ?? "Cliente";
+    await syncProfile(result.user, normalizedCedula, sessionUserName, result.session.access_token);
   };
 
   const register = async (name: string, cedula: string, email: string, password: string) => {
     const normalizedEmail = email.trim();
     const normalizedCedula = normalizeCedula(cedula);
 
-    const { data, error } = await supabase.auth.signUp({
-      email: normalizedEmail,
-      password: password.trim(),
-      options: {
-        data: { name: name.trim(), cedula: normalizedCedula },
-      },
+    const response = await fetch(getAuthUrl("/api/auth/register"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: normalizedEmail, password: password.trim(), data: { name: name.trim(), cedula: normalizedCedula } }),
     });
-    if (error) throw new Error(error.message);
-    if (!data.user) {
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message = (data as { error?: string } | null)?.error ?? response.statusText;
+      throw new Error(String(message));
+    }
+
+    const result = data as { session?: StoredSession | null; user?: SessionUser | null };
+    if (!result.session || !result.user) {
       throw new Error("No se pudo crear el usuario. Intenta nuevamente.");
     }
 
-    await persistCedulaEmail(normalizedCedula, normalizedEmail);
+    await persistCedulaEmailLocal(normalizedCedula, normalizedEmail, result.session.access_token);
+    await syncProfile(result.user, normalizedCedula, name.trim(), result.session.access_token);
 
-    // Try to sync the profile immediately. If signup didn't return a session,
-    // this may fail due to project auth settings, but trigger-based sync should still run.
-    await syncSupabaseProfile(data.user, normalizedCedula, name.trim());
-
-    let activeUser: SbUser | null = data.session?.user ?? null;
-
-    if (!activeUser) {
-      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-        email: normalizedEmail,
-        password: password.trim(),
-      });
-
-      if (signInError) {
-        const message = signInError.message.toLowerCase();
-        // Supabase can return this when email confirmation is required.
-        if ((message.includes("email") && message.includes("confirm")) || message.includes("invalid login credentials")) {
-          return;
-        }
-        throw new Error(signInError.message);
-      }
-
-      activeUser = signInData.session?.user ?? null;
-      if (activeUser) {
-        await syncSupabaseProfile(activeUser, normalizedCedula, name.trim());
-      }
-    }
-
-    if (!activeUser) {
-      return;
-    }
-
+    saveSession(result.session);
+    setSession(result.session);
+    setUser(toUser(result.session.user));
     setActiveCedula(normalizedCedula);
-    if (normalizedCedula === ADMIN_CEDULA) {
-      await supabase.auth.updateUser({ data: { is_admin: true } });
-    }
-    return;
   };
 
   const verifyRegistrationCode = async (email: string, token: string) => {
-    const { data, error } = await supabase.auth.verifyOtp({
-      email: email.trim(),
-      token: token.trim(),
-      type: "email",
+    const response = await fetch(getAuthUrl("/api/auth/verify"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email.trim(), token: token.trim() }),
     });
-    if (error) throw new Error(error.message);
-    if (!data.session) throw new Error("No se pudo verificar el código. Intenta de nuevo.");
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message = (data as { error?: string } | null)?.error ?? response.statusText;
+      throw new Error(String(message));
+    }
+
+    const result = data as { session?: StoredSession | null; user?: SessionUser | null };
+    if (!result.session || !result.user) {
+      throw new Error("No se pudo verificar el código. Intenta de nuevo.");
+    }
+
+    saveSession(result.session);
+    setSession(result.session);
+    setUser(toUser(result.session.user));
   };
 
   const logout = async () => {
     clearActiveCedula();
-    await supabase.auth.signOut();
+    clearSession();
+    setSession(null);
+    setUser(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, isAuthenticated: !!user, loading, login, register, verifyRegistrationCode, logout, isAdmin: isAdminUser(user, session, getActiveCedula()) }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        session,
+        isAuthenticated: !!user,
+        loading,
+        login,
+        register,
+        verifyRegistrationCode,
+        logout,
+        isAdmin: isAdminUser(user, session, getActiveCedula()),
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

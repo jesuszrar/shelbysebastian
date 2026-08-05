@@ -5,7 +5,7 @@ import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
 import { Button } from "@/components/ui/button";
 import { formatCOP } from "@/data/products";
-import { supabase } from "@/integrations/api/client";
+import { fetchData } from "@/integrations/api/client";
 import { trackPurchase } from "@/lib/metaPixel";
 
 type PaymentStatus = "payment_pending" | "payment_approved" | "payment_failed";
@@ -17,6 +17,15 @@ const normalizeStatus = (value: string | null) => {
   return "payment_pending" as const;
 };
 
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  card: "Tarjeta",
+  pse: "PSE",
+  nequi: "Nequi",
+  daviplata: "Daviplata",
+  transferencia: "Transferencia",
+  whatsapp: "WhatsApp",
+};
+
 const OrderSuccess = () => {
   const [params] = useSearchParams();
   const order = params.get("order") || undefined;
@@ -26,6 +35,10 @@ const OrderSuccess = () => {
   const [status, setStatus] = useState<PaymentStatus>(initialStatus);
   const isFailed = status === "payment_failed";
   const isPending = status === "payment_pending";
+  const friendlyMethod = method ? PAYMENT_METHOD_LABELS[method.toLowerCase()] ?? method : undefined;
+  const pendingHint = method && ["nequi", "daviplata", "pse"].includes(method.toLowerCase())
+    ? `Si usaste ${friendlyMethod}, Wompi puede devolver un estado pendiente sin enlace directo. Mantén esta página abierta y revisa la app o el teléfono registrado.`
+    : "Si pagaste por transferencia o WhatsApp, tu pedido se confirmará cuando recibamos la validación.";
 
   useEffect(() => {
     if (!isFailed && !isPending) {
@@ -45,11 +58,10 @@ const OrderSuccess = () => {
     let intervalId: number | undefined;
 
     const refreshStatus = async () => {
-      const { data, error } = await supabase
-        .from("orders")
-        .select("status,paymentMethod,total")
-        .eq("id", order)
-        .maybeSingle();
+      const { data, error } = await fetchData<{ status?: string | null; paymentMethod?: string | null; total?: number }>("orders", {
+        filters: JSON.stringify([{ column: "id", value: order }]),
+        maybeSingle: true,
+      });
 
       if (error) {
         console.error(error);
@@ -98,9 +110,12 @@ const OrderSuccess = () => {
                 ? "Estamos validando tu pago. Te confirmamos por WhatsApp en cuanto se acredite y te enviaremos la factura al correo registrado."
                 : "Tu pago fue procesado correctamente. Te enviaremos la factura al correo registrado y los detalles del envío por WhatsApp."}
             </p>
+            {isPending && (
+              <p className="text-sm text-secondary/90 mt-4">{pendingHint}</p>
+            )}
             <div className="mt-6 bg-muted/30 border border-border rounded-2xl p-5 text-left text-sm space-y-2 text-secondary/90">
               {order && <div className="flex justify-between"><span className="text-muted-foreground">N.º de pedido</span><span className="font-mono text-secondary">{order}</span></div>}
-              {method && <div className="flex justify-between"><span className="text-muted-foreground">Método</span><span className="text-secondary">{method}</span></div>}
+              {method && <div className="flex justify-between"><span className="text-muted-foreground">Método</span><span className="text-secondary">{friendlyMethod ?? method}</span></div>}
               {!Number.isNaN(totalNum) && totalNum > 0 && (
                 <div className="flex justify-between items-baseline pt-2 border-t border-border"><span className="text-muted-foreground">Total</span><span className="font-display text-xl text-primary">{formatCOP(totalNum)}</span></div>
               )}
@@ -109,6 +124,11 @@ const OrderSuccess = () => {
               <Button asChild className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft">
                 <Link to={isFailed ? "/checkout" : "/products"}><ShoppingBag className="h-4 w-4" /> {isFailed ? "Intentar de nuevo" : "Seguir comprando"}</Link>
               </Button>
+              {isPending && order && (
+                <Button asChild variant="outline" className="flex-1 border-border text-secondary hover:bg-secondary/10 hover:text-secondary">
+                  <Link to={`/payment-processing?order=${order}`}>Verificar estado</Link>
+                </Button>
+              )}
               <Button asChild variant="outline" className="flex-1 border-whatsapp text-whatsapp hover:bg-whatsapp hover:text-white">
                 <a href="https://wa.me/573228426561?text=Hola%20Shelby%2C%20acabo%20de%20realizar%20un%20pedido" target="_blank" rel="noopener noreferrer">
                   <MessageCircle className="h-4 w-4" /> Contactar soporte

@@ -12,7 +12,7 @@ import { resolvePreferredPaymentMethod } from "./lib/mercadopago.js";
 import { isAllowedCorsOrigin } from "./lib/cors.js";
 import { buildMercadoPagoPreferencePayload } from "./lib/mercadopagoPreference.js";
 import { isAdminUserRecord } from "./lib/auth.js";
-import { buildWompiAuthorizationHeader, buildWompiTransactionIntegritySignature, extractWebhookSignature, extractWompiMerchantMethods, getWompiAcceptanceToken, getWompiConfig, isValidWompiPhoneNumber, mapWompiStatusToOrderStatus, normalizePhoneNumber, normalizeWompiPaymentMethod, verifyWompiEventSignature } from "./lib/wompi.js";
+import { buildWompiAuthorizationHeader, extractWebhookSignature, extractWompiMerchantMethods, getWompiConfig, mapWompiStatusToOrderStatus, normalizePhoneNumber, normalizeWompiPaymentMethod, verifyWompiEventSignature } from "./lib/wompi.js";
 import { wrap } from "./lib/serialize.js";
 
 dotenv.config();
@@ -352,7 +352,12 @@ type WompiCreatePaymentBody = {
 const readWompiPaymentMethodAvailability = async () => {
   const { baseUrl, publicKey } = getWompiConfig();
   if (!publicKey) {
-    throw new Error("WOMPI_PUBLIC_KEY no está configurada");
+    console.warn("[wompi] payment methods unavailable because WOMPI_PUBLIC_KEY is missing; returning empty methods list for local dev");
+    return {
+      payload: {},
+      methods: [] as Array<{ id: string; name: string; available: boolean }>,
+      acceptanceToken: "",
+    };
   }
 
   const response = await fetch(`${baseUrl}/merchants/${encodeURIComponent(publicKey)}`, {
@@ -373,71 +378,92 @@ const readWompiPaymentMethodAvailability = async () => {
   return {
     payload,
     methods: extractWompiMerchantMethods(payload),
-    acceptanceToken: getWompiAcceptanceToken(payload),
   };
 };
 
 const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
   const { baseUrl, publicKey } = getWompiConfig();
-  if (!publicKey) throw new Error("WOMPI_PUBLIC_KEY no está configurada");
+  const paymentMethod = normalizeWompiPaymentMethod(body.paymentMethod ?? body.payment_method) ?? "CARD";
+  const reference = String(body.reference ?? body.referencePedido ?? body.orderId ?? "").trim();
+  const redirectUrl = String(body.redirectUrl ?? body.redirect_url ?? "").trim() || undefined;
+  const customerEmail = String(body.customerEmail ?? body.customer_email ?? "").trim().toLowerCase();
+
+  console.log("[wompi] create transaction request body", {
+    paymentMethod,
+    amount: body.total ?? null,
+    orderId: body.orderId ?? null,
+    reference,
+    customerEmail,
+    redirectUrl,
+  });
+
+  if (!publicKey) {
+    console.warn("[wompi] local dev fallback activated because WOMPI_PUBLIC_KEY is missing", {
+      reference,
+      paymentMethod,
+      amount: Number(body.total ?? 0),
+    });
+
+    return {
+      payload: { data: { id: `LOCAL-${reference || "ORDER"}`, status: "PENDING" } },
+      transaction: {
+        id: `LOCAL-${reference || "ORDER"}`,
+        status: "PENDING",
+        payment_method_type: paymentMethod,
+        payment_method: paymentMethod,
+        next_action: null,
+        redirect_url: null,
+        checkout_url: null,
+        payment_url: null,
+        reference,
+      },
+      methods: [] as Array<{ id: string; name: string; available: boolean }>,
+    };
+  }
 
   const merchant = await readWompiPaymentMethodAvailability();
   const amountInCents = Math.round(Number(body.total ?? 0) * 100);
-  const customerEmail = String(body.customerEmail ?? body.customer_email ?? "").trim().toLowerCase();
   const customerPhoneRaw = String(body.customerPhone ?? body.customer_phone ?? "").trim();
   const customerPhoneDigits = normalizePhoneNumber(customerPhoneRaw);
-  const reference = String(body.reference ?? body.referencePedido ?? body.orderId ?? "").trim();
-  const paymentMethod = normalizeWompiPaymentMethod(body.paymentMethod ?? body.payment_method) ?? "CARD";
-  const redirectUrl = String(body.redirectUrl ?? body.redirect_url ?? "").trim();
-  const externalRedirectMethods = new Set(["NEQUI", "DAVIPLATA", "PSE"]);
-  const integrityKey = getWompiConfig().integrityKey;
 
-  if (!merchant.acceptanceToken) {
-    throw new Error("Wompi no devolvió acceptance_token");
+  const missingFields: string[] = [];
+  if (!body.total && body.total !== 0) missingFields.push("amount");
+  if (!customerEmail) missingFields.push("customerEmail");
+  if (!reference) missingFields.push("reference");
+
+  if (missingFields.length > 0) {
+    const error = new Error("required_fields_missing");
+    (error as any).missingFields = missingFields;
+    (error as any).received = {
+      paymentMethod,
+      amount: body.total ?? null,
+      orderId: body.orderId ?? null,
+      customerEmail,
+      reference,
+      redirectUrl,
+    };
+    throw error;
   }
-
-  if (!integrityKey) {
-    throw new Error("WOMPI_INTEGRITY_KEY no está configurada");
-  }
-
-  if (!amountInCents || !customerEmail || !reference) {
-    throw new Error("amount, customerEmail y reference son requeridos");
-  }
-
-  const needsPhoneNumber = paymentMethod === "NEQUI" || paymentMethod === "DAVIPLATA";
-  if (needsPhoneNumber && !isValidWompiPhoneNumber(customerPhoneDigits)) {
-    throw new Error("Wompi requiere phone_number de exactamente 10 dígitos para Nequi y Daviplata");
-  }
-
-  const paymentMethodPayload: Record<string, unknown> = {
-    type: paymentMethod,
-    ...(needsPhoneNumber ? { phone_number: customerPhoneDigits } : {}),
-  };
-
-  const integritySignature = buildWompiTransactionIntegritySignature(reference, amountInCents, "COP", integrityKey);
-
-  const requestBodyObj = {
-    acceptance_token: merchant.acceptanceToken,
-    amount_in_cents: amountInCents,
+  const requestBody = {
+    name: `Pedido ${reference}`,
+    description: `Checkout de pago para pedido ${reference}`,
+    single_use: true,
+    collect_shipping: false,
     currency: "COP",
-    customer_email: customerEmail,
+    amount_in_cents: amountInCents,
     reference,
-    signature: integritySignature,
-    payment_method: paymentMethodPayload,
-    // Do not include a frontend redirect URL for external methods (Nequi, Daviplata, PSE)
-    redirect_url: !externalRedirectMethods.has(paymentMethod) && redirectUrl ? redirectUrl : undefined,
+    redirect_url: redirectUrl,
+    payment_method_types: [paymentMethod],
+    customer_email: customerEmail,
     customer_data: {
       full_name: String(body.customerName ?? body.customer_name ?? "").trim() || undefined,
-      phone_number: customerPhoneDigits || undefined,
     },
     metadata: {
       products: Array.isArray(body.products) ? body.products : [],
     },
   } as Record<string, unknown>;
 
-  // Safe log: do not print secret keys or full auth headers. Only indicate presence.
   try {
-    const wompiCfg = getWompiConfig();
     console.log("[wompi] create transaction - request summary", {
       amountInCents,
       currency: "COP",
@@ -446,9 +472,6 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
       paymentMethod,
       phoneNumberPresent: Boolean(customerPhoneDigits),
       phoneNumberLength: customerPhoneDigits.length,
-      acceptanceTokenPresent: Boolean(merchant.acceptanceToken),
-      integrityKeyPresent: Boolean(wompiCfg.integrityKey),
-      signatureGenerated: true,
       authorizationHeaderPresent: Boolean(buildWompiAuthorizationHeader().Authorization),
       productsCount: Array.isArray(body.products) ? body.products.length : 0,
     });
@@ -456,13 +479,15 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
     console.warn('[wompi] failed to log request summary', String(logErr));
   }
 
-  const response = await fetch(`${baseUrl}/transactions`, {
+  const paymentLinkUrl = `${baseUrl}/payment_links`;
+  console.log("[wompi] creating payment link", { url: paymentLinkUrl, requestBody });
+  const response = await fetch(paymentLinkUrl, {
     method: "POST",
     headers: {
       ...buildWompiAuthorizationHeader(),
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(requestBodyObj),
+    body: JSON.stringify(requestBody),
   });
 
   const text = await response.text();
@@ -473,13 +498,19 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
     payload = { raw: text };
   }
 
+  try {
+    console.log("[wompi payment link response]", JSON.stringify(payload, null, 2));
+  } catch (e) {
+    /* ignore logging errors */
+  }
+
+
   if (!response.ok) {
-    // If Wompi returns 422, capture and log the exact body for debugging (non-sensitive)
     if (response.status === 422) {
       try {
-        console.error('[wompi] transaction 422 response', { status: response.status, payload });
+        console.error('[wompi] transaction 422 response', JSON.stringify(payload, null, 2));
       } catch (err) {
-        console.error('[wompi] transaction 422 response (failed to parse payload)', { status: response.status, raw: String(text).slice(0, 2000) });
+        console.error('[wompi] transaction 422 response (failed to stringify payload)', { status: response.status, raw: String(text).slice(0, 2000) });
       }
     } else {
       console.error('[wompi] transaction failed', { status: response.status });
@@ -491,38 +522,31 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
   }
 
   const transaction = (payload.data as Record<string, unknown> | undefined) ?? payload;
+  const paymentLinkId = String((payload as any)?.data?.id ?? transaction?.id ?? "").trim() || null;
+  const paymentUrl = paymentLinkId ? `https://checkout.wompi.co/l/${paymentLinkId}` : null;
 
-  const rawPaymentUrl = String(
-    (transaction.next_action as Record<string, unknown> | undefined)?.redirect_to_url
-      ?? transaction.redirect_url
-      ?? transaction.checkout_url
-      ?? transaction.payment_url
-      ?? "",
-  ).trim();
-
-  // Determine final paymentUrl. For external redirect methods, ensure we don't treat
-  // an internal confirmation redirect (like /order-success) or the same redirectUrl
-  // echoed back by Wompi as a real payment link.
-  let paymentUrl: string | null = rawPaymentUrl || null;
-  if (externalRedirectMethods.has(paymentMethod)) {
-    const isEchoOfFrontend = redirectUrl && rawPaymentUrl && rawPaymentUrl === redirectUrl;
-    const looksLikeOrderSuccess = rawPaymentUrl && /\/order-success(?:\?|$)/i.test(rawPaymentUrl);
-    if (!rawPaymentUrl || isEchoOfFrontend || looksLikeOrderSuccess) {
-      paymentUrl = null;
-    }
-  }
-
-  // If Nequi returned PENDING with no next_action, log for debugging
   try {
-    const txnStatus = String((transaction as Record<string, unknown>)?.status ?? "").toUpperCase();
-    if (paymentMethod === "NEQUI" && txnStatus === "PENDING" && !(transaction as any)?.next_action) {
-      console.warn('[wompi] NEQUI returned PENDING with no next_action', { reference, amountInCents, transaction });
-    }
+    console.log("[wompi payment link created]", {
+      id: paymentLinkId,
+      url: paymentUrl,
+    });
   } catch (e) {
-    // ignore logging errors
+    /* ignore */
   }
 
-  return { payload, transaction, paymentUrl, methods: merchant.methods };
+  try {
+    console.log("[wompi] transaction response", {
+      id: paymentLinkId,
+      status: null,
+      payment_method: null,
+      paymentLinkId,
+      paymentUrl,
+    });
+  } catch (e) {
+    /* ignore */
+  }
+
+  return { payload, transaction, methods: merchant.methods, paymentUrl, transactionId: paymentLinkId, status: null };
 };
 
 const requireAdmin = async (req: express.Request, res: express.Response) => {
@@ -667,12 +691,89 @@ app.post("/api/auth/login", async (req, res) => {
   return res.json({ session: issueSession(user), user: serializeUser(user) });
 });
 
+app.post("/api/auth/refresh", async (req, res) => {
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+
+  const user = await prisma.user.findUnique({ where: { id: auth.sub } });
+  if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
+
+  return res.json({ session: issueSession(user) });
+});
+
 app.post("/api/auth/verify", async (req, res) => {
   const { email } = req.body as { email?: string };
   if (!email) return res.status(400).json({ error: "email es requerido" });
   const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
   if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
   return res.json({ session: issueSession(user), user: serializeUser(user) });
+});
+
+app.get("/api/users/email-by-cedula", async (req, res) => {
+  const cedula = String(req.query.cedula ?? "").trim();
+  if (!cedula) return res.status(400).json({ error: "cedula es requerida" });
+  const email = await findEmailByCedula(cedula);
+  return res.json({ email });
+});
+
+app.post("/api/users/cedula-email", async (req, res) => {
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+
+  const { cedula, email } = req.body as { cedula?: string; email?: string };
+  if (!cedula || !email) return res.status(400).json({ error: "cedula y email son requeridos" });
+
+  const normalizedCedula = normalizeCedula(cedula);
+  const normalizedEmail = String(email).trim().toLowerCase();
+
+  await prisma.cedulaEmail.upsert({
+    where: { cedula: normalizedCedula },
+    update: { email: normalizedEmail, userId: auth.sub },
+    create: { cedula: normalizedCedula, email: normalizedEmail, userId: auth.sub },
+  });
+
+  return res.json({ ok: true });
+});
+
+app.post("/api/profile/sync", async (req, res) => {
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+
+  const { user_id, user_email, user_name, user_cedula, user_is_admin } = req.body as {
+    user_id?: string;
+    user_email?: string;
+    user_name?: string;
+    user_cedula?: string;
+    user_is_admin?: boolean;
+  };
+
+  if (!user_id || !user_email || !user_name || !user_cedula) {
+    return res.status(400).json({ error: "user_id, user_email, user_name y user_cedula son requeridos" });
+  }
+
+  if (auth.sub !== user_id && !auth.isAdmin) {
+    return res.status(403).json({ error: "No autorizado para sincronizar este perfil" });
+  }
+
+  await syncProfileAndCedula({
+    user_id,
+    user_email,
+    user_name,
+    user_cedula,
+    user_is_admin: Boolean(user_is_admin),
+  });
+
+  return res.json({ ok: true });
+});
+
+app.get("/api/profile", async (req, res) => {
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+
+  const user = await prisma.user.findUnique({ where: { id: auth.sub } });
+  if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
+
+  return res.json({ user: serializeUser(user) });
 });
 
 app.post("/api/rpc/:name", async (req, res) => {
@@ -805,20 +906,50 @@ app.post("/api/data/:table", async (req, res) => {
     const saved = [] as Order[];
     for (const row of rows as Array<Record<string, unknown>>) {
       const orderId = String(row.id || crypto.randomUUID());
-      const order = await prisma.order.upsert({
-        where: { id: orderId },
-        update: normalizeOrderCreateData(row),
-        create: {
-          id: orderId,
-          ...normalizeOrderCreateData(row),
-        },
-      });
+      const rawUserId = row.userId !== undefined ? String(row.userId) : row.user_id !== undefined ? String(row.user_id) : undefined;
+      const candidateUserId = rawUserId && rawUserId !== "null" && rawUserId !== "undefined" ? rawUserId : null;
+      const resolvedUserId = candidateUserId ? await prisma.user.findUnique({ where: { id: candidateUserId } }).then((user) => user?.id ?? null) : null;
+      const normalizedOrderData = {
+        ...normalizeOrderCreateData(row),
+        userId: resolvedUserId ?? null,
+      };
+
+      console.log("[orders] incoming row", { row });
+      console.log("[orders] resolvedUserId", { candidateUserId, resolvedUserId });
+      console.log("[orders] normalizedOrderData", normalizedOrderData);
+
+      let order: Order;
+      try {
+        order = await prisma.order.upsert({
+          where: { id: orderId },
+          update: normalizedOrderData,
+          create: {
+            id: orderId,
+            ...normalizedOrderData,
+          },
+        });
+      } catch (error) {
+        console.error("[orders] prisma.upsert failed", {
+          message: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+          code: (error as any)?.code,
+          meta: (error as any)?.meta,
+        });
+        return res.status(500).json({
+          error: error instanceof Error ? error.message : String(error),
+          code: (error as any)?.code,
+          meta: (error as any)?.meta,
+        });
+      }
+
+      console.log("[orders] prisma.upsert success", { orderId, order });
       if (revenueStatuses.has(order.status.toLowerCase()) && order.customerEmail && !order.invoiceSentAt) {
         await sendInvoiceEmail(order);
         await prisma.order.update({ where: { id: order.id }, data: { invoiceSentAt: new Date() } });
       }
       saved.push(order);
     }
+    console.log("[orders] responding", { count: saved.length });
     return res.json(saved.map(serializeOrder));
   }
 
@@ -1146,16 +1277,6 @@ app.post("/api/functions/redeem-coupon", async (req, res) => {
   });
 });
 
-app.get("/api/payments/wompi/methods", async (_req, res) => {
-  try {
-    const merchant = await readWompiPaymentMethodAvailability();
-    return res.json({ methods: merchant.methods });
-  } catch (error) {
-    console.error("Could not load Wompi payment methods", error);
-    return res.status(500).json({ error: "wompi_error", message: error instanceof Error ? error.message : String(error) });
-  }
-});
-
 app.post("/api/payments/create-wompi-payment", async (req, res) => {
   try {
     const created = await createWompiTransaction(req.body as WompiCreatePaymentBody);
@@ -1167,30 +1288,101 @@ app.post("/api/payments/create-wompi-payment", async (req, res) => {
       nextActionKeys: created.transaction?.next_action ? Object.keys(created.transaction.next_action as Record<string, unknown>) : [],
     });
 
-    // Log the redirect decision explicitly (use the requested shape)
     const paymentMethod = normalizeWompiPaymentMethod((req.body as any)?.paymentMethod ?? (req.body as any)?.payment_method) ?? String((created.transaction as any)?.payment_method_type ?? (created.transaction as any)?.payment_method ?? "");
+    const returnedPaymentUrl: string | null = created.paymentUrl || null;
+
     console.log("[wompi] redirect decision", {
       paymentMethod,
-      hasNextAction: Boolean((created.transaction as any)?.next_action),
-      nextAction: (created.transaction as any)?.next_action ?? null,
-      paymentUrl: created.paymentUrl ?? null,
+      paymentUrl: returnedPaymentUrl ?? null,
     });
-    return res.json({
-      ok: true,
-      paymentUrl: created.paymentUrl || null,
+
+    const requestReference = String((req.body as any)?.reference ?? (req.body as any)?.referencePedido ?? (req.body as any)?.orderId ?? "").trim();
+    const transactionId = String((created.transaction as any)?.id ?? "").trim() || null;
+    const wompiStatus = String((created.transaction as any)?.status ?? "").trim();
+    const orderStatus = mapWompiStatusToOrderStatus(wompiStatus) || "payment_pending";
+
+    if (requestReference) {
+      try {
+        const existing = await prisma.order.findUnique({ where: { id: requestReference } });
+        if (existing) {
+          const updateData: Record<string, unknown> = {
+            status: orderStatus,
+          };
+          if (transactionId) {
+            updateData.wompiTransactionId = transactionId;
+          }
+
+          try {
+            await prisma.order.update({ where: { id: requestReference }, data: updateData });
+            console.log("[wompi] order updated with transaction", { orderId: requestReference, transactionId, orderStatus });
+          } catch (updateError) {
+            const err = updateError as Error & { code?: string; message?: string };
+            if (String(err.message).includes("wompiTransactionId") || String(err.message).match(/Unknown column|does not exist/i)) {
+              console.warn("[wompi] create-wompi-payment: wompiTransactionId column missing, continuing without it", { orderId: requestReference, transactionId, orderStatus, error: err.message });
+            } else {
+              throw err;
+            }
+          }
+        } else {
+          console.warn("[wompi] create-wompi-payment: order reference not found to update", { reference: requestReference });
+        }
+      } catch (err) {
+        console.error("[wompi] failed to persist transaction to order", String(err));
+      }
+    }
+
+    const normalizedMethod = normalizeWompiPaymentMethod((req.body as any)?.paymentMethod ?? (req.body as any)?.payment_method) ?? "CARD";
+    const externalRedirectMethods = new Set(["NEQUI", "DAVIPLATA", "PSE"]);
+    const pendingWithoutPaymentUrl = Boolean(!returnedPaymentUrl && created.transaction && String((created.transaction as any)?.status ?? "").toUpperCase() === "PENDING" && externalRedirectMethods.has(normalizedMethod));
+
+    const responseBody = {
+      success: true,
+      transactionId: transactionId ?? null,
+      status: wompiStatus || "PENDING",
+      paymentUrl: returnedPaymentUrl || null,
+      pendingWithoutPaymentUrl,
+      orderId: requestReference || null,
       transaction: created.transaction,
       methods: created.methods,
-    });
+    };
+
+    try {
+      console.log("[response to frontend]", JSON.stringify(responseBody, null, 2));
+    } catch (e) {
+      /* ignore logging errors */
+    }
+
+    return res.json(responseBody);
   } catch (error) {
     console.error("Wompi payment creation failed", error && (error as any).message ? (error as any).message : error);
     const message = error instanceof Error ? error.message : String(error);
     const maybeStatus = (error as any)?.status ?? null;
     const maybePayload = (error as any)?.payload ?? null;
-    if (maybeStatus === 422 && maybePayload) {
-      // Return the wompi payload for debugging (non-sensitive content)
-      return res.status(422).json({ error: "wompi_error", message, wompi: maybePayload });
+    const requestBody = req.body as Record<string, unknown>;
+    const received = {
+      paymentMethod: requestBody.paymentMethod ?? requestBody.payment_method ?? null,
+      amount: requestBody.total ?? null,
+      orderId: requestBody.orderId ?? requestBody.reference ?? requestBody.referencePedido ?? null,
+      customerEmail: requestBody.customerEmail ?? requestBody.customer_email ?? null,
+      reference: requestBody.reference ?? requestBody.referencePedido ?? requestBody.orderId ?? null,
+      redirectUrl: requestBody.redirectUrl ?? requestBody.redirect_url ?? null,
+    };
+
+    if (message === "required_fields_missing" || maybeStatus === 422) {
+      const missingFields = (error as any)?.missingFields ?? [];
+      const responseBody = {
+        error: "campo requerido faltante",
+        received,
+        missingFields,
+        wompi: maybePayload ?? null,
+      };
+      try { console.log("[response to frontend]", JSON.stringify(responseBody, null, 2)); } catch (e) {}
+      return res.status(422).json(responseBody);
     }
-    return res.status(500).json({ error: "wompi_error", message });
+
+    const responseBody = { error: "wompi_error", message, received };
+    try { console.log("[response to frontend]", JSON.stringify(responseBody, null, 2)); } catch (e) {}
+    return res.status(500).json(responseBody);
   }
 });
 
@@ -1212,10 +1404,21 @@ app.post("/api/payments/wompi/webhook", async (req, res) => {
   const transaction = (event.data as Record<string, unknown> | undefined)?.transaction as Record<string, unknown> | undefined
     ?? (event.data as Record<string, unknown> | undefined)
     ?? (event.transaction as Record<string, unknown> | undefined);
+  // Log webhook event for debugging
+  try {
+    const eventType = String(event.event ?? event.type ?? "");
+    const transactionId = String(transaction?.id ?? "" ) || null;
+    const status = String(transaction?.status ?? event.status ?? "") || null;
+    console.log("[wompi webhook]", { event: eventType, transactionId, status, reference: String(transaction?.reference ?? event.reference ?? "") });
+  } catch (e) {
+    /* ignore */
+  }
   const reference = String(transaction?.reference ?? event.reference ?? "").trim();
   const wompiStatus = String(transaction?.status ?? event.status ?? "").trim();
-  const orderStatus = mapWompiStatusToOrderStatus(wompiStatus);
+  const isApprovedEvent = String(wompiStatus).toUpperCase() === "APPROVED";
+  const orderStatus = isApprovedEvent ? "payment_approved" : mapWompiStatusToOrderStatus(wompiStatus);
   const paymentMethod = normalizeWompiPaymentMethod(String(transaction?.payment_method_type ?? transaction?.payment_method ?? transaction?.type ?? ""));
+  const transactionId = String(transaction?.id ?? "").trim() || null;
 
   if (!reference) {
     console.warn("Wompi webhook received without reference", { eventType: String(event.event ?? "") });
@@ -1229,18 +1432,101 @@ app.post("/api/payments/wompi/webhook", async (req, res) => {
       return res.json({ ok: true, updated: false, reference, status: orderStatus });
     }
 
-    await prisma.order.update({
-      where: { id: reference },
-      data: {
-        status: orderStatus,
-        ...(paymentMethod ? { paymentMethod: paymentMethod.toLowerCase() } : {}),
-      },
-    });
+    const updateData: Record<string, unknown> = {
+      status: orderStatus,
+      ...(paymentMethod ? { paymentMethod: paymentMethod.toLowerCase() } : {}),
+    };
+
+    if (isApprovedEvent) {
+      updateData.paymentStatus = "approved";
+    }
+
+    if (transactionId) {
+      updateData.wompiTransactionId = transactionId;
+    }
+
+    try {
+      await prisma.order.update({ where: { id: reference }, data: updateData as any });
+      console.log("[wompi webhook] order updated", { orderId: reference, transactionId, newStatus: orderStatus });
+    } catch (updateError) {
+      const err = updateError as Error & { code?: string; message?: string };
+      if (String(err.message).includes("wompiTransactionId") || String(err.message).includes("paymentStatus") || String(err.message).match(/Unknown column|does not exist/i)) {
+        console.warn("[wompi] webhook update skipped missing column", { reference, transactionId, newStatus: orderStatus, error: err.message });
+      } else {
+        throw err;
+      }
+    }
 
     return res.json({ ok: true, updated: true, reference, status: orderStatus });
   } catch (error) {
     console.error("Failed to process Wompi webhook", error);
     return res.status(500).json({ error: "wompi_error", message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Endpoint to query transaction status by orderId or transactionId
+app.get("/api/payments/transaction-status", async (req, res) => {
+  try {
+    const orderId = String(req.query.orderId ?? "").trim();
+    let transactionId = String(req.query.transactionId ?? "").trim();
+
+    let order: any = null;
+    if (orderId) {
+      try {
+        order = await prisma.order.findUnique({ where: { id: orderId } });
+        if (order && !transactionId) transactionId = String(order.wompiTransactionId ?? "").trim();
+      } catch (err) {
+        const error = err as Error & { code?: string; message?: string };
+        if (String(error.message).includes("wompiTransactionId") || String(error.message).match(/Unknown column|does not exist/i)) {
+          console.warn("[wompi] transaction-status: wompiTransactionId column missing, continuing with Wompi transactionId only", { orderId, error: error.message });
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    if (!transactionId) return res.status(400).json({ error: "missing_transaction_id", message: "transactionId or orderId with wompiTransactionId is required" });
+
+    const { baseUrl } = getWompiConfig();
+    const response = await fetch(`${baseUrl}/transactions/${encodeURIComponent(transactionId)}`, { headers: buildWompiAuthorizationHeader() });
+    const text = await response.text();
+    let payload: any = {};
+    try { payload = text ? JSON.parse(text) : {}; } catch { payload = { raw: text }; }
+    const transaction = (payload.data ?? payload) as Record<string, unknown>;
+    const wompiStatus = String(transaction?.status ?? "").trim();
+    const orderStatus = mapWompiStatusToOrderStatus(wompiStatus) || null;
+
+    // If we have an order and the status changed to a final state, update it
+    if (order && orderStatus && orderStatus !== order.status) {
+      try {
+        await prisma.order.update({ where: { id: orderId }, data: { status: orderStatus } });
+        console.log('[wompi] transaction-status: order updated', { orderId, orderStatus });
+      } catch (err) {
+        console.error('[wompi] transaction-status: failed to update order', String(err));
+      }
+    }
+
+    const normalizedPaymentMethod = normalizeWompiPaymentMethod(String(transaction?.payment_method_type ?? transaction?.payment_method ?? transaction?.type ?? "")) ?? undefined;
+    const externalRedirectMethods = new Set(["NEQUI", "DAVIPLATA", "PSE"]);
+    const rawPaymentUrl = String(
+      (transaction?.next_action as Record<string, unknown> | undefined)?.redirect_to_url
+        ?? transaction?.redirect_url
+        ?? transaction?.checkout_url
+        ?? transaction?.payment_url
+        ?? "",
+    ).trim();
+    const pendingWithoutPaymentUrl = Boolean(
+      !rawPaymentUrl && String(wompiStatus).toUpperCase() === "PENDING" && externalRedirectMethods.has(String(normalizedPaymentMethod ?? "").toUpperCase()),
+    );
+
+    if (pendingWithoutPaymentUrl) {
+      console.warn('[wompi] transaction-status: pending without payment URL', { orderId, transactionId, paymentMethod: normalizedPaymentMethod, status: wompiStatus });
+    }
+
+    return res.json({ ok: true, transaction, status: wompiStatus, mappedStatus: orderStatus, orderId: orderId || null, paymentMethod: normalizedPaymentMethod?.toLowerCase() ?? null, pendingWithoutPaymentUrl });
+  } catch (error) {
+    console.error('Failed to fetch transaction status', error);
+    return res.status(500).json({ error: 'wompi_error', message: error instanceof Error ? error.message : String(error) });
   }
 });
 

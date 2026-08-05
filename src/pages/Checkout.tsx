@@ -7,9 +7,9 @@ import { Button } from "@/components/ui/button";
 import { useCart } from "@/context/CartContext";
 import { useAuth } from "@/context/AuthContext";
 import { formatCOP } from "@/data/products";
-import { supabase } from "@/integrations/api/client";
 import { toast } from "sonner";
-import { CreditCard, Truck, MessageCircle, Lock, ShoppingBag, Copy, CheckCircle2, Loader2, Smartphone, Building2 } from "lucide-react";
+import { CreditCard, Truck, MessageCircle, Lock, ShoppingBag, Copy, CheckCircle2, Loader2, Smartphone, Building2, Landmark } from "lucide-react";
+import { SiVisa, SiMastercard } from "react-icons/si";
 import { trackInitiateCheckout } from "@/lib/metaPixel";
 import { getWompiErrorMessage } from "@/lib/payment";
 
@@ -35,6 +35,64 @@ const WOMPI_PAYMENT_LABELS: Record<Exclude<PaymentMethod, "transferencia">, stri
   nequi: "Nequi",
   daviplata: "Daviplata",
 };
+
+const PAYMENT_METHOD_NOTES: Record<PaymentMethod, string> = {
+  card: "El pago con tarjeta se procesa en Wompi. Si no ves ningún paso, espera unos segundos y no recargues hasta que se muestre la pantalla de pago.",
+  pse: "PSE puede abrir un enlace bancario. Mantén esta ventana abierta mientras Wompi carga la confirmación.",
+  nequi: "Nequi enviará un push al número indicado. Asegúrate de usar un número Nequi activo de 10 dígitos y no cerrar esta ventana.",
+  daviplata: "Daviplata pedirá autorización desde la app. Revisa el teléfono y espera la confirmación en la app de Daviplata.",
+  transferencia: "En transferencia no hay pago automático. Copia los datos y coordina el pago por WhatsApp. Confirma el pago manualmente.",
+};
+
+const WOMPI_METHOD_OPTIONS: Array<{
+  value: Exclude<PaymentMethod, "transferencia">;
+  title: string;
+  description: string;
+  logo: React.ReactNode;
+  disabled?: boolean;
+}> = [
+  {
+    value: "card",
+    title: "Tarjeta",
+    description: "Pago seguro con tarjeta de crédito o débito vía Wompi",
+    logo: (
+      <div className="flex items-center gap-1.5">
+        <SiVisa className="h-4 w-4 text-blue-600" />
+        <SiMastercard className="h-4 w-4 text-red-500" />
+      </div>
+    ),
+  },
+  {
+    value: "pse",
+    title: "PSE",
+    description: "Pago bancario directo vía Wompi",
+    logo: <Landmark className="h-4 w-4 text-muted-foreground" />,
+  },
+  {
+    value: "nequi",
+    title: "Nequi",
+    description: "Pago instantáneo vía Wompi",
+    logo: (
+      <img
+        src="https://cdn.prod.website-files.com/6317a229ebf7723658463b4b/663a6b0d43303ddf38035997_logo-nequi.svg"
+        alt="Nequi"
+        className="h-5 w-5 object-contain"
+      />
+    ),
+  },
+  {
+    value: "daviplata",
+    title: "Daviplata",
+    description: "Pago instantáneo vía Wompi",
+    logo: (
+      <img
+        src="https://www.daviplata.com/documents/d/guest/daviplata-3"
+        alt="Daviplata"
+        className="h-5 w-5 object-contain"
+      />
+    ),
+  },
+];
 
 const normalizePaymentStatus = (status?: string | null) => {
   const normalized = String(status ?? "").trim().toLowerCase();
@@ -63,7 +121,6 @@ const Checkout = () => {
   const [discountAmount, setDiscountAmount] = useState(0);
   const [couponLoading, setCouponLoading] = useState(false);
   const [step, setStep] = useState<"form" | "manual">("form");
-  const [availableWompiMethods, setAvailableWompiMethods] = useState<string[]>([]);
 
   const orderId = useMemo(() => `SHB-${Date.now().toString(36).toUpperCase().slice(-6)}`, []);
 
@@ -79,22 +136,6 @@ const Checkout = () => {
     });
   }, [detailedItems, total]);
 
-  // Check which Wompi methods are enabled for this account
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const res = await supabase.payments.getWompiMethods();
-        if (res.error) throw res.error;
-        const methods = (res.data?.methods || []).filter((m) => Boolean(m.available)).map((m) => String(m.id).toLowerCase());
-        if (mounted) setAvailableWompiMethods(methods);
-      } catch (err) {
-        console.warn('Could not check Wompi payment methods', err);
-      }
-    })();
-    return () => { mounted = false; };
-  }, []);
-
   const update = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const v = e.target.value;
     setForm((f) => ({ ...f, [k]: v }));
@@ -102,32 +143,29 @@ const Checkout = () => {
   };
 
   const saveOrder = async (status: "payment_pending" | "payment_approved" | "payment_failed", paymentMethod: PaymentMethod | "whatsapp", data: z.infer<typeof checkoutSchema>) => {
-    const { error } = await supabase.from("orders").upsert(
-      {
-        id: orderId,
-        items: detailedItems.map((it) => ({
-          productId: it.product.id,
-          title: it.product.name,
-          quantity: it.quantity,
-          unit_price: it.product.price,
-          lineTotal: it.product.price * it.quantity,
-        })),
-        total: checkoutTotal,
-        shipping,
-        discountAmount: discountAmount || null,
-        couponCode: couponCode.trim().toUpperCase() || null,
-        status,
-        paymentMethod,
-        customerName: data.name,
-        customerEmail: data.email,
-        customerPhone: data.phone,
-        customerCity: data.city,
-        customerAddress: data.address,
-        notes: data.notes || null,
-        userId: user?.id || null,
-      },
-      { onConflict: "id" },
-    );
+    const { error } = await postData("orders", {
+      id: orderId,
+      items: detailedItems.map((it) => ({
+        productId: it.product.id,
+        title: it.product.name,
+        quantity: it.quantity,
+        unit_price: it.product.price,
+        lineTotal: it.product.price * it.quantity,
+      })),
+      total: checkoutTotal,
+      shipping,
+      discountAmount: discountAmount || null,
+      couponCode: couponCode.trim().toUpperCase() || null,
+      status,
+      paymentMethod,
+      customerName: data.name,
+      customerEmail: data.email,
+      customerPhone: data.phone,
+      customerCity: data.city,
+      customerAddress: data.address,
+      notes: data.notes || null,
+      userId: user?.id || null,
+    });
 
     if (error) {
       throw error;
@@ -145,9 +183,7 @@ const Checkout = () => {
     setCouponMessage(null);
 
     try {
-      const { data, error } = await supabase.functions.invoke("redeem-coupon", {
-        body: { code, subtotal, shipping },
-      });
+const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, shipping });
 
       if (error || !data) {
         setCouponMessage(error?.message || "Cupón inválido o no encontrado.");
@@ -214,16 +250,19 @@ const Checkout = () => {
   };
 
   const submitCheckout = async (data: z.infer<typeof checkoutSchema> & { payment: PaymentMethod }) => {
+    if (loading) return;
+    console.log("[checkout] payment flow start", { paymentMethod: data.payment, timestamp: Date.now() });
     setLoading(true);
     try {
       if (data.payment === "transferencia") {
         await saveOrder("payment_pending", data.payment, data);
         setStep("manual");
+        setLoading(false);
         return;
       }
 
       await saveOrder("payment_pending", data.payment, data);
-      const { data: res, error } = await supabase.payments.createWompiPayment({
+      const { data: res, error } = await createWompiPayment({
         products: detailedItems.map((it) => ({
           id: it.product.id,
           name: it.product.name,
@@ -234,24 +273,39 @@ const Checkout = () => {
         customerEmail: data.email,
         reference: orderId,
         paymentMethod: data.payment,
-        redirectUrl: `${window.location.origin}/order-success?order=${orderId}&total=${checkoutTotal}&method=${encodeURIComponent(data.payment)}&status=payment_pending`,
+        redirectUrl: `${window.location.origin}/payment-processing?order=${orderId}`,
         customerName: data.name,
         customerPhone: data.phone,
       });
+      try {
+        console.log("[client response]", JSON.stringify(res, null, 2));
+      } catch (e) {}
+      console.log("[paymentUrl]", (res as any)?.paymentUrl);
+      console.log("[transactionId]", (res as any)?.transactionId);
       if (error) throw error;
+      const paymentUrl = res?.paymentUrl || null;
       const txn = (res?.transaction as Record<string, unknown> | undefined) ?? undefined;
-      const nextActionUrl = txn ? ((txn.next_action as Record<string, unknown> | undefined)?.redirect_to_url as string | undefined) : undefined;
-      const paymentUrl = res?.paymentUrl || nextActionUrl || (txn?.checkout_url as string | undefined) || (txn?.payment_url as string | undefined);
+      const pendingWithoutPaymentUrl = Boolean(res?.pendingWithoutPaymentUrl) || (!paymentUrl && txn && String(txn.status ?? "").toUpperCase() === "PENDING" && ["NEQUI", "DAVIPLATA", "PSE"].includes(String((txn.payment_method_type ?? txn.payment_method ?? txn.type ?? "")).toUpperCase()));
       console.log("[checkout] wompi paymentUrl summary", {
         paymentUrlPresent: Boolean(paymentUrl),
-        paymentUrlIsNextAction: Boolean(nextActionUrl),
+        pendingWithoutPaymentUrl,
         transactionId: txn?.id ?? null,
-        transactionHasRedirectUrl: Boolean(txn?.redirect_url),
       });
-      if (!paymentUrl) throw new Error("No recibimos un enlace de pago de Wompi.");
+      console.log("[checkout] payment flow finished");
+      try {
+        sessionStorage.setItem(
+          `payment_${orderId}`,
+          JSON.stringify({ paymentUrl: paymentUrl || null, transactionId: txn?.id ?? null, paymentMethod: data.payment, pendingWithoutPaymentUrl }),
+        );
+      } catch {}
       clear();
-      // Redirect user to Wompi (Nequi/Daviplata) to complete payment
-      window.location.href = paymentUrl;
+
+      if (paymentUrl) {
+        window.location.href = paymentUrl;
+        return;
+      }
+
+      navigate(`/payment-processing?order=${orderId}`);
     } catch (err) {
       setLoading(false);
       const msg = getWompiErrorMessage(err);
@@ -304,6 +358,8 @@ const Checkout = () => {
   const handleManualConfirm = async () => {
     const data = validate();
     if (!data) return;
+    if (loading) return;
+    console.log("[checkout] payment flow start", { paymentMethod: data.payment, timestamp: Date.now() });
     setLoading(true);
 
     // Methods that require external redirect (handled by Wompi)
@@ -317,35 +373,51 @@ const Checkout = () => {
 
       // If this is an external redirect method, create Wompi transaction and redirect
       if (externalRedirectMethods.has(data.payment as PaymentMethod)) {
-        const { data: res, error } = await supabase.payments.createWompiPayment({
+const { data: res, error } = await createWompiPayment({
           products: detailedItems.map((it) => ({ id: it.product.id, name: it.product.name, quantity: it.quantity, unit_price: it.product.price })),
           total: finalTotal,
           customerEmail: data.email,
           reference: orderId,
           paymentMethod: data.payment,
-          redirectUrl: `${window.location.origin}/order-success?order=${orderId}&total=${finalTotal}&method=${encodeURIComponent(data.payment)}&status=payment_pending`,
+          redirectUrl: `${window.location.origin}/payment-processing?order=${orderId}`,
           customerName: data.name,
           customerPhone: data.phone,
         });
+
+        try {
+          console.log("[client response]", JSON.stringify(res, null, 2));
+        } catch (e) {}
+        console.log("[paymentUrl]", (res as any)?.paymentUrl);
+        console.log("[transactionId]", (res as any)?.transactionId);
 
         if (error) {
           console.error("[checkout] wompi create error", error);
           throw error;
         }
 
-        const paymentUrl = res?.paymentUrl || (res?.transaction as any)?.redirect_url || (res?.transaction as any)?.next_action?.redirect_to_url || null;
-        console.log("[checkout] wompi response", { paymentUrl, status: (res as any)?.transaction?.status });
+        const txn = (res as any)?.transaction as Record<string, unknown> | undefined;
+        const paymentUrl = res?.paymentUrl || null;
+        const pendingWithoutPaymentUrl = Boolean(res?.pendingWithoutPaymentUrl) || (!paymentUrl && txn && String(txn.status ?? "").toUpperCase() === "PENDING" && ["NEQUI", "DAVIPLATA", "PSE"].includes(String((txn.payment_method_type ?? txn.payment_method ?? txn.type ?? "")).toUpperCase()));
+        console.log("[checkout] wompi response", { paymentUrl, status: txn?.status, pendingWithoutPaymentUrl });
 
         if (paymentUrl) {
+          try { sessionStorage.setItem(`payment_${orderId}`, JSON.stringify({ paymentUrl, transactionId: txn?.id ?? null, paymentMethod: data.payment, pendingWithoutPaymentUrl })); } catch {}
           clear();
-          // Redirect user to Wompi to complete payment
           window.location.href = paymentUrl;
           return;
+        }
+
+        if (pendingWithoutPaymentUrl) {
+          console.log("[checkout] payment flow finished");
+          try { sessionStorage.setItem(`payment_${orderId}`, JSON.stringify({ paymentUrl, transactionId: txn?.id ?? null, paymentMethod: data.payment, pendingWithoutPaymentUrl })); } catch {}
+          clear();
+          return navigate(`/payment-processing?order=${orderId}`);
         }
 
         // Fallback: if no paymentUrl for external redirect methods, do NOT navigate to order-success
         if (externalRedirectMethods.has(data.payment as PaymentMethod)) {
           toast.error("No se generó enlace de pago Wompi");
+          setLoading(false);
           return;
         }
 
@@ -454,21 +526,27 @@ const Checkout = () => {
                   💡 Envío a Bogotá $15.000 · Otras ciudades $15.000 · Gratis desde $460.000
                 </p>
               </Section>
-              <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                <span className={`rounded-full border px-3 py-1 ${availableWompiMethods.includes("nequi") || availableWompiMethods.length === 0 ? "border-brand-green/30 text-brand-green" : "border-border"}`}>{availableWompiMethods.includes("nequi") || availableWompiMethods.length === 0 ? "✓ Nequi activo" : "Nequi no disponible"}</span>
-                <span className={`rounded-full border px-3 py-1 ${availableWompiMethods.includes("daviplata") || availableWompiMethods.length === 0 ? "border-brand-green/30 text-brand-green" : "border-border"}`}>{availableWompiMethods.includes("daviplata") || availableWompiMethods.length === 0 ? "✓ Daviplata activo" : "Daviplata no disponible"}</span>
-              </div>
               <Section icon={CreditCard} title="Método de pago">
                 <p className="text-sm text-muted-foreground mb-4">
-                  Wompi valida disponibilidad en tiempo real para Nequi, Daviplata, tarjeta y PSE.
+                  Wompi maneja los métodos de pago disponibles en su checkout. Selecciona el método que prefieras y sigue al enlace de pago.
                 </p>
                 <div className="grid gap-3">
-                  <PaymentOption value="card" selected={form.payment} onSelect={(v) => setForm((f) => ({ ...f, payment: v }))} icon={CreditCard} title="Tarjeta" description="Pago seguro con tarjeta de crédito o débito vía Wompi" badge="Disponible" disabled={availableWompiMethods.length > 0 && !availableWompiMethods.includes("card")} />
-                  <PaymentOption value="pse" selected={form.payment} onSelect={(v) => setForm((f) => ({ ...f, payment: v }))} icon={CreditCard} title="PSE" description="Pago bancario directo vía Wompi" badge="Disponible" disabled={availableWompiMethods.length > 0 && !availableWompiMethods.includes("pse")} />
-                  <PaymentOption value="nequi" selected={form.payment} onSelect={(v) => setForm((f) => ({ ...f, payment: v }))} icon={Smartphone} title="Nequi" description="Pago instantáneo vía Wompi" disabled={availableWompiMethods.length > 0 && !availableWompiMethods.includes("nequi")} />
-                  <PaymentOption value="daviplata" selected={form.payment} onSelect={(v) => setForm((f) => ({ ...f, payment: v }))} icon={Smartphone} title="Daviplata" description="Pago instantáneo vía Wompi" disabled={availableWompiMethods.length > 0 && !availableWompiMethods.includes("daviplata")} />
+                  {WOMPI_METHOD_OPTIONS.map((method) => (
+                    <PaymentOption
+                      key={method.value}
+                      value={method.value}
+                      selected={form.payment}
+                      onSelect={(v) => setForm((f) => ({ ...f, payment: v }))}
+                      icon={CreditCard}
+                      title={method.title}
+                      description={method.description}
+                      logo={method.logo}
+                      badge="Disponible"
+                    />
+                  ))}
                   <PaymentOption value="transferencia" selected={form.payment} onSelect={(v) => setForm((f) => ({ ...f, payment: v }))} icon={Building2} title="Transferencia bancaria" description="Bancolombia y otros bancos — confirmación manual" />
                 </div>
+                <p className="mt-4 rounded-2xl border border-border bg-background p-4 text-sm text-muted-foreground">{PAYMENT_METHOD_NOTES[form.payment]}</p>
               </Section>
             </div>
             <aside className="lg:sticky lg:top-32 h-fit bg-card border border-border rounded-2xl p-6 shadow-elegant">
@@ -495,7 +573,7 @@ const Checkout = () => {
                 <Button
                   type="button"
                   onClick={() => void handleSubmitPayment("nequi")}
-                  disabled={loading || (availableWompiMethods.length > 0 && !availableWompiMethods.includes("nequi"))}
+                  disabled={loading}
                   size="lg"
                   className="w-full h-12 bg-secondary text-secondary-foreground hover:bg-secondary/90 shadow-soft"
                 >
@@ -504,7 +582,7 @@ const Checkout = () => {
                 <Button
                   type="button"
                   onClick={() => void handleSubmitPayment("daviplata")}
-                  disabled={loading || (availableWompiMethods.length > 0 && !availableWompiMethods.includes("daviplata"))}
+                  disabled={loading}
                   size="lg"
                   className="w-full h-12 bg-secondary text-secondary-foreground hover:bg-secondary/90 shadow-soft"
                 >
@@ -513,9 +591,7 @@ const Checkout = () => {
               </div>
               <Button
                 type="submit"
-                disabled={
-                  loading || (form.payment !== "transferencia" && availableWompiMethods.length > 0 && !availableWompiMethods.includes(form.payment))
-                }
+                disabled={loading}
                 size="lg"
                 className="w-full mt-4 h-12 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft"
               >
@@ -569,16 +645,16 @@ function Input({ label, error, ...props }: React.InputHTMLAttributes<HTMLInputEl
   );
 }
 
-function PaymentOption({ value, selected, onSelect, icon: Icon, title, description, badge, disabled }: {
+function PaymentOption({ value, selected, onSelect, icon: Icon, title, description, badge, disabled, logo }: {
   value: PaymentMethod; selected: PaymentMethod; onSelect: (v: PaymentMethod) => void;
-  icon: React.ComponentType<{ className?: string }>; title: string; description: string; badge?: string; disabled?: boolean;
+  icon: React.ComponentType<{ className?: string }>; title: string; description: string; badge?: string; disabled?: boolean; logo?: React.ReactNode;
 }) {
   const active = selected === value;
   return (
     <label className={`relative ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'} flex items-start gap-4 border rounded-xl p-4 transition-smooth ${active ? "border-primary/50 bg-card shadow-soft ring-1 ring-primary/10" : "border-border hover:border-primary/40 bg-background"}`}>
       <input type="radio" name="payment" value={value} checked={active} onChange={() => { if (!disabled) onSelect(value); }} className="sr-only" disabled={disabled} />
       <div className={`h-10 w-10 rounded-lg flex items-center justify-center flex-shrink-0 transition-smooth ${active ? "bg-primary shadow-soft" : "bg-muted"}`}>
-        <Icon className={`h-5 w-5 ${active ? "text-primary-foreground" : "text-muted-foreground"}`} />
+        {logo ?? <Icon className={`h-5 w-5 ${active ? "text-primary-foreground" : "text-muted-foreground"}`} />}
       </div>
       <div className="flex-1">
         <div className="flex items-center gap-2">
