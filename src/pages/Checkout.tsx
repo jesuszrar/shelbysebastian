@@ -11,6 +11,8 @@ import { toast } from "sonner";
 import { CreditCard, Truck, MessageCircle, Lock, ShoppingBag, Copy, CheckCircle2, Loader2, Smartphone, Building2, Landmark } from "lucide-react";
 import { SiVisa, SiMastercard } from "react-icons/si";
 import { trackInitiateCheckout } from "@/lib/metaPixel";
+import AddressList from "@/components/addresses/AddressList";
+import { getUserAddresses, createUserAddress } from "@/integrations/api/client";
 import { getWompiErrorMessage } from "@/lib/payment";
 
 type PaymentMethod = "card" | "pse" | "nequi" | "daviplata" | "transferencia";
@@ -19,6 +21,7 @@ const checkoutSchema = z.object({
   name: z.string().trim().min(2, "Nombre requerido").max(80),
   email: z.string().trim().email("Correo inválido").max(120),
   phone: z.string().trim().min(7, "Teléfono inválido").max(20),
+  department: z.string().trim().min(2, "Departamento requerido").max(60),
   city: z.string().trim().min(2, "Ciudad requerida").max(60),
   address: z.string().trim().min(5, "Dirección requerida").max(200),
   notes: z.string().max(500).optional(),
@@ -109,11 +112,14 @@ const Checkout = () => {
     name: user?.name ?? "",
     email: user?.email ?? "",
     phone: "",
+    department: "",
     city: storedCity || "",
     address: "",
     notes: "",
     payment: "card" as PaymentMethod,
   });
+  const [addressesAvailable, setAddressesAvailable] = useState<boolean | null>(null);
+  const [saveAddressOnCheckout, setSaveAddressOnCheckout] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [couponCode, setCouponCode] = useState("");
@@ -136,14 +142,62 @@ const Checkout = () => {
     });
   }, [detailedItems, total]);
 
+  useEffect(() => {
+    if (!user?.id) {
+      setAddressesAvailable(false);
+      return;
+    }
+    (async () => {
+      const res = await getUserAddresses();
+      if (res.error) { setAddressesAvailable(false); return; }
+      setAddressesAvailable(Boolean(res.data && res.data.length > 0));
+    })();
+  }, [user?.id]);
+
   const update = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const v = e.target.value;
     setForm((f) => ({ ...f, [k]: v }));
     if (k === "city") setCity(v);
   };
 
+  const extractWompiPaymentUrl = (res: unknown) => {
+    const data = res as Record<string, unknown> | null;
+    return data?.paymentUrl ?? data?.payment_url ?? data?.url ?? null;
+  };
+
+  const extractWompiPaymentLinkId = (res: unknown) => {
+    const data = res as Record<string, unknown> | null;
+    return data?.paymentLinkId ?? data?.payment_link_id ?? data?.paymentLink?.id ?? null;
+  };
+
+  const extractWompiTransactionId = (res: unknown) => {
+    const data = res as Record<string, unknown> | null;
+    return data?.transactionId ?? data?.transaction_id ?? null;
+  };
+
+  const isWompiResponseSuccessful = (res: unknown) => {
+    const data = res as Record<string, unknown> | null;
+    if (!data) return false;
+    if (data.success === true) return true;
+    if (data.ok === true) return true;
+    return false;
+  };
+
+  const handleSelectAddress = (addr: Record<string, any>) => {
+    setForm((f) => ({
+      ...f,
+      name: addr.fullName ?? f.name,
+      email: addr.email ?? f.email,
+      phone: addr.phone ?? f.phone,
+      department: addr.department ?? f.department,
+      city: addr.city ?? f.city,
+      address: addr.address ?? f.address,
+      notes: addr.reference ?? f.notes,
+    }));
+  };
+
   const saveOrder = async (status: "payment_pending" | "payment_approved" | "payment_failed", paymentMethod: PaymentMethod | "whatsapp", data: z.infer<typeof checkoutSchema>) => {
-    const { error } = await postData("orders", {
+    const payload: Record<string, unknown> = {
       id: orderId,
       items: detailedItems.map((it) => ({
         productId: it.product.id,
@@ -158,6 +212,7 @@ const Checkout = () => {
       couponCode: couponCode.trim().toUpperCase() || null,
       status,
       paymentMethod,
+      // customer snapshot (existing)
       customerName: data.name,
       customerEmail: data.email,
       customerPhone: data.phone,
@@ -165,10 +220,38 @@ const Checkout = () => {
       customerAddress: data.address,
       notes: data.notes || null,
       userId: user?.id || null,
-    });
+      // shipping snapshot (explicit fields requested)
+      shipping_name: data.name,
+      shipping_email: data.email,
+      shipping_phone: data.phone,
+      shipping_department: (data as any).department ?? null,
+      shipping_city: data.city,
+      shipping_address: data.address,
+      shipping_reference: data.notes || null,
+    };
+
+    const { error } = await postData("orders", payload);
 
     if (error) {
       throw error;
+    }
+    // If user wanted to save the address (and is authenticated) create it
+    try {
+      if (saveAddressOnCheckout && user?.id) {
+        await createUserAddress({
+          label: "Casa",
+          fullName: data.name,
+          cedula: user?.cedula ?? undefined,
+          email: data.email,
+          phone: data.phone,
+          department: (data as any).department,
+          city: data.city,
+          address: data.address,
+          reference: data.notes || undefined,
+        });
+      }
+    } catch (e) {
+      console.warn("No se pudo guardar la dirección automáticamente", e);
     }
   };
 
@@ -262,6 +345,18 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
       }
 
       await saveOrder("payment_pending", data.payment, data);
+      const wompiEndpoint = "/api/payments/create-wompi-payment";
+      console.log("[checkout] creating wompi payment", {
+        endpoint: wompiEndpoint,
+        paymentMethod: data.payment,
+        total: checkoutTotal,
+        customerEmail: data.email,
+        reference: orderId,
+        currency: "COP",
+        redirectUrl: `${window.location.origin}/payment-processing?order=${orderId}`,
+        customerName: data.name,
+        customerPhone: data.phone,
+      });
       const { data: res, error } = await createWompiPayment({
         products: detailedItems.map((it) => ({
           id: it.product.id,
@@ -277,15 +372,28 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
         customerName: data.name,
         customerPhone: data.phone,
       });
+      const paymentUrl = extractWompiPaymentUrl(res);
+      const paymentLinkId = extractWompiPaymentLinkId(res);
+      const transactionId = extractWompiTransactionId(res);
+      const success = isWompiResponseSuccessful(res);
+      console.log("[checkout] wompi response", { response: res, success, paymentUrl, paymentLinkId, transactionId });
+      if (error) {
+        console.error("[checkout] createWompiPayment failed", {
+          endpoint: wompiEndpoint,
+          status: error.code ?? null,
+          message: error.message ?? String(error),
+          responseBody: res,
+        });
+        throw error;
+      }
       try {
         console.log("[client response]", JSON.stringify(res, null, 2));
       } catch (e) {}
-      console.log("[paymentUrl]", (res as any)?.paymentUrl);
-      console.log("[transactionId]", (res as any)?.transactionId);
-      if (error) throw error;
-      const paymentUrl = res?.paymentUrl || null;
-      const txn = (res?.transaction as Record<string, unknown> | undefined) ?? undefined;
-      const pendingWithoutPaymentUrl = Boolean(res?.pendingWithoutPaymentUrl) || (!paymentUrl && txn && String(txn.status ?? "").toUpperCase() === "PENDING" && ["NEQUI", "DAVIPLATA", "PSE"].includes(String((txn.payment_method_type ?? txn.payment_method ?? txn.type ?? "")).toUpperCase()));
+      console.log("[paymentUrl]", paymentUrl);
+      console.log("[paymentLinkId]", paymentLinkId);
+      console.log("[transactionId]", transactionId);
+      const txn = (res as any)?.transaction as Record<string, unknown> | undefined;
+      const pendingWithoutPaymentUrl = Boolean((res as any)?.pendingWithoutPaymentUrl) || (!paymentUrl && txn && String(txn.status ?? "").toUpperCase() === "PENDING" && ["NEQUI", "DAVIPLATA", "PSE"].includes(String((txn.payment_method_type ?? txn.payment_method ?? txn.type ?? "")).toUpperCase()));
       console.log("[checkout] wompi paymentUrl summary", {
         paymentUrlPresent: Boolean(paymentUrl),
         pendingWithoutPaymentUrl,
@@ -295,17 +403,22 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
       try {
         sessionStorage.setItem(
           `payment_${orderId}`,
-          JSON.stringify({ paymentUrl: paymentUrl || null, transactionId: txn?.id ?? null, paymentMethod: data.payment, pendingWithoutPaymentUrl }),
+          JSON.stringify({ paymentUrl: paymentUrl || null, paymentLinkId: paymentLinkId || null, transactionId: transactionId || null, paymentMethod: data.payment, pendingWithoutPaymentUrl }),
         );
       } catch {}
       clear();
 
-      if (paymentUrl) {
+      if (success && paymentUrl) {
         window.location.href = paymentUrl;
         return;
       }
 
-      navigate(`/payment-processing?order=${orderId}`);
+      if (pendingWithoutPaymentUrl) {
+        navigate(`/payment-processing?order=${orderId}`);
+        return;
+      }
+
+      throw new Error("Wompi payment response invalid: missing paymentUrl or unsuccessful");
     } catch (err) {
       setLoading(false);
       const msg = getWompiErrorMessage(err);
@@ -373,7 +486,19 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
 
       // If this is an external redirect method, create Wompi transaction and redirect
       if (externalRedirectMethods.has(data.payment as PaymentMethod)) {
-const { data: res, error } = await createWompiPayment({
+const wompiEndpoint = "/api/payments/create-wompi-payment";
+        console.log("[checkout] creating wompi payment", {
+          endpoint: wompiEndpoint,
+          paymentMethod: data.payment,
+          total: finalTotal,
+          customerEmail: data.email,
+          reference: orderId,
+          currency: "COP",
+          redirectUrl: `${window.location.origin}/payment-processing?order=${orderId}`,
+          customerName: data.name,
+          customerPhone: data.phone,
+        });
+        const { data: res, error } = await createWompiPayment({
           products: detailedItems.map((it) => ({ id: it.product.id, name: it.product.name, quantity: it.quantity, unit_price: it.product.price })),
           total: finalTotal,
           customerEmail: data.email,
@@ -383,25 +508,34 @@ const { data: res, error } = await createWompiPayment({
           customerName: data.name,
           customerPhone: data.phone,
         });
+        const paymentUrl = extractWompiPaymentUrl(res);
+        const paymentLinkId = extractWompiPaymentLinkId(res);
+        const transactionId = extractWompiTransactionId(res);
+        const success = isWompiResponseSuccessful(res);
+        console.log("[checkout] wompi response", { response: res, success, paymentUrl, paymentLinkId, transactionId });
+        if (error) {
+          console.error("[checkout] createWompiPayment failed", {
+            endpoint: wompiEndpoint,
+            status: error.code ?? null,
+            message: error.message ?? String(error),
+            responseBody: res,
+          });
+          throw error;
+        }
 
         try {
           console.log("[client response]", JSON.stringify(res, null, 2));
         } catch (e) {}
-        console.log("[paymentUrl]", (res as any)?.paymentUrl);
-        console.log("[transactionId]", (res as any)?.transactionId);
-
-        if (error) {
-          console.error("[checkout] wompi create error", error);
-          throw error;
-        }
+        console.log("[paymentUrl]", paymentUrl);
+        console.log("[paymentLinkId]", paymentLinkId);
+        console.log("[transactionId]", transactionId);
 
         const txn = (res as any)?.transaction as Record<string, unknown> | undefined;
-        const paymentUrl = res?.paymentUrl || null;
-        const pendingWithoutPaymentUrl = Boolean(res?.pendingWithoutPaymentUrl) || (!paymentUrl && txn && String(txn.status ?? "").toUpperCase() === "PENDING" && ["NEQUI", "DAVIPLATA", "PSE"].includes(String((txn.payment_method_type ?? txn.payment_method ?? txn.type ?? "")).toUpperCase()));
-        console.log("[checkout] wompi response", { paymentUrl, status: txn?.status, pendingWithoutPaymentUrl });
+        const pendingWithoutPaymentUrl = Boolean((res as any)?.pendingWithoutPaymentUrl) || (!paymentUrl && txn && String(txn.status ?? "").toUpperCase() === "PENDING" && ["NEQUI", "DAVIPLATA", "PSE"].includes(String((txn.payment_method_type ?? txn.payment_method ?? txn.type ?? "")).toUpperCase()));
+        console.log("[checkout] wompi response summary", { paymentUrl, status: txn?.status, pendingWithoutPaymentUrl });
 
-        if (paymentUrl) {
-          try { sessionStorage.setItem(`payment_${orderId}`, JSON.stringify({ paymentUrl, transactionId: txn?.id ?? null, paymentMethod: data.payment, pendingWithoutPaymentUrl })); } catch {}
+        if (success && paymentUrl) {
+          try { sessionStorage.setItem(`payment_${orderId}`, JSON.stringify({ paymentUrl, paymentLinkId: paymentLinkId || null, transactionId: transactionId || null, paymentMethod: data.payment, pendingWithoutPaymentUrl })); } catch {}
           clear();
           window.location.href = paymentUrl;
           return;
@@ -409,17 +543,20 @@ const { data: res, error } = await createWompiPayment({
 
         if (pendingWithoutPaymentUrl) {
           console.log("[checkout] payment flow finished");
-          try { sessionStorage.setItem(`payment_${orderId}`, JSON.stringify({ paymentUrl, transactionId: txn?.id ?? null, paymentMethod: data.payment, pendingWithoutPaymentUrl })); } catch {}
+          try { sessionStorage.setItem(`payment_${orderId}`, JSON.stringify({ paymentUrl, paymentLinkId: paymentLinkId || null, transactionId: transactionId || null, paymentMethod: data.payment, pendingWithoutPaymentUrl })); } catch {}
           clear();
           return navigate(`/payment-processing?order=${orderId}`);
         }
 
-        // Fallback: if no paymentUrl for external redirect methods, do NOT navigate to order-success
         if (externalRedirectMethods.has(data.payment as PaymentMethod)) {
           toast.error("No se generó enlace de pago Wompi");
           setLoading(false);
           return;
         }
+
+        // Non-external fallback should continue to order success or WhatsApp fallback
+        console.warn("[checkout] manual confirm wompi response invalid", { success, paymentUrl, pendingWithoutPaymentUrl, response: res });
+        throw new Error("Wompi payment response invalid: missing paymentUrl or unsuccessful");
 
         // For non-external methods (e.g., transferencia) continue to WhatsApp fallback
         toast.success("¡Pago reportado!", { description: "Validaremos tu pago en minutos." });
@@ -496,35 +633,48 @@ const { data: res, error } = await createWompiPayment({
           <form onSubmit={handleSubmit} className="grid lg:grid-cols-3 gap-8">
             <div className="lg:col-span-2 space-y-6">
                       <Section icon={Truck} title="Datos de envío">
-                <div className="grid sm:grid-cols-2 gap-4">
-                  <Input label="Nombre completo" value={form.name} onChange={update("name")} error={errors.name} autoComplete="name" />
-                  <Input label="Correo electrónico" value={form.email} onChange={update("email")} error={errors.email} type="email" autoComplete="email" placeholder="cliente@correo.com" />
-                  <Input label="Teléfono / WhatsApp" value={form.phone} onChange={update("phone")} error={errors.phone} type="tel" placeholder="3001234567" />
-                  <Input label="Ciudad" value={form.city} onChange={update("city")} error={errors.city} placeholder="Bogotá, Medellín..." />
-                  <Input label="Dirección" value={form.address} onChange={update("address")} error={errors.address} placeholder="Calle 123 # 45-67" />
-                </div>
-                <div className="mt-4">
-                  <label className="text-sm font-medium text-secondary block mb-1.5">Notas (opcional)</label>
-                  <textarea value={form.notes} onChange={update("notes")} rows={3} className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth resize-none" placeholder="Referencias del lugar..." />
-                </div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] items-end">
-                  <label className="text-sm font-medium text-secondary block">Código de cupón</label>
-                  <div className="flex gap-2">
-                    <input
-                      value={couponCode}
-                      onChange={(event) => setCouponCode(event.target.value)}
-                      className="w-full rounded-2xl border border-border bg-background px-4 py-3 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                      placeholder="EJEMPLO10"
-                    />
-                    <Button type="button" disabled={couponLoading} onClick={handleApplyCoupon} className="h-12 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft">
-                      {couponLoading ? "Validando..." : "Aplicar"}
-                    </Button>
-                  </div>
-                  {couponMessage && <p className="sm:col-span-2 text-sm text-secondary/90">{couponMessage}</p>}
-                </div>
-                <p className="text-xs text-muted-foreground mt-3">
-                  💡 Envío a Bogotá $15.000 · Otras ciudades $15.000 · Gratis desde $460.000
-                </p>
+                {addressesAvailable === null ? (
+                  <div>Cargando direcciones...</div>
+                ) : addressesAvailable === true ? (
+                  <AddressList onSelect={handleSelectAddress} />
+                ) : (
+                  <>
+                    <div className="grid sm:grid-cols-2 gap-4">
+                      <Input label="Nombre completo" value={form.name} onChange={update("name")} error={errors.name} autoComplete="name" />
+                      <Input label="Correo electrónico" value={form.email} onChange={update("email")} error={errors.email} type="email" autoComplete="email" placeholder="cliente@correo.com" />
+                      <Input label="Teléfono / WhatsApp" value={form.phone} onChange={update("phone")} error={errors.phone} type="tel" placeholder="3001234567" />
+                      <Input label="Departamento" value={(form as any).department} onChange={update("department" as any)} error={errors.department} placeholder="Cundinamarca" />
+                      <Input label="Ciudad" value={form.city} onChange={update("city")} error={errors.city} placeholder="Bogotá, Medellín..." />
+                      <Input label="Dirección" value={form.address} onChange={update("address")} error={errors.address} placeholder="Calle 123 # 45-67" />
+                    </div>
+                    <div className="mt-4">
+                      <label className="text-sm font-medium text-secondary block mb-1.5">Notas (opcional)</label>
+                      <textarea value={form.notes} onChange={update("notes")} rows={3} className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth resize-none" placeholder="Referencias del lugar..." />
+                    </div>
+                    <div className="mt-4 flex items-center gap-3">
+                      <input id="saveAddress" type="checkbox" checked={saveAddressOnCheckout} onChange={(e) => setSaveAddressOnCheckout(e.target.checked)} className="h-4 w-4" />
+                      <label htmlFor="saveAddress" className="text-sm">Guardar esta dirección para futuras compras</label>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] items-end">
+                      <label className="text-sm font-medium text-secondary block">Código de cupón</label>
+                      <div className="flex gap-2">
+                        <input
+                          value={couponCode}
+                          onChange={(event) => setCouponCode(event.target.value)}
+                          className="w-full rounded-2xl border border-border bg-background px-4 py-3 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                          placeholder="EJEMPLO10"
+                        />
+                        <Button type="button" disabled={couponLoading} onClick={handleApplyCoupon} className="h-12 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft">
+                          {couponLoading ? "Validando..." : "Aplicar"}
+                        </Button>
+                      </div>
+                      {couponMessage && <p className="sm:col-span-2 text-sm text-secondary/90">{couponMessage}</p>}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-3">
+                      💡 Envío a Bogotá $15.000 · Otras ciudades $15.000 · Gratis desde $460.000
+                    </p>
+                  </>
+                )}
               </Section>
               <Section icon={CreditCard} title="Método de pago">
                 <p className="text-sm text-muted-foreground mb-4">

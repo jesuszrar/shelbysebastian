@@ -24,7 +24,7 @@ const normalizeText = (value: string | null | undefined) => String(value ?? "").
 
 export const getWompiConfig = (): WompiConfig => {
   const environment = normalizeText(process.env.WOMPI_ENVIRONMENT || "production") === "sandbox" ? "sandbox" : "production";
-  return {
+  const config: WompiConfig = {
     baseUrl: environment === "sandbox" ? "https://sandbox.wompi.co/v1" : "https://production.wompi.co/v1",
     // Normalize public key: treat literal "undefined" or "null" as missing
     publicKey: (() => {
@@ -37,6 +37,14 @@ export const getWompiConfig = (): WompiConfig => {
     integrityKey: String(process.env.WOMPI_INTEGRITY_KEY ?? "").trim(),
     eventsKey: String(process.env.WOMPI_EVENTS_KEY ?? "").trim(),
   };
+  console.log("[wompi config]", {
+    baseUrl: config.baseUrl,
+    publicKeySuffix: config.publicKey ? config.publicKey.slice(-6) : null,
+    hasPrivateKey: Boolean(config.privateKey),
+    hasIntegrityKey: Boolean(config.integrityKey),
+    hasEventsKey: Boolean(config.eventsKey),
+  });
+  return config;
 };
 
 export const normalizeWompiPaymentMethod = (value: string | null | undefined): WompiPaymentMethod | undefined => {
@@ -179,5 +187,18 @@ export const mapWompiStatusToOrderStatus = (status: string | null | undefined) =
   if (normalized === "APPROVED") return "payment_approved";
   if (normalized === "PENDING") return "payment_pending";
   if (normalized === "DECLINED" || normalized === "VOIDED" || normalized === "ERROR" || normalized === "FAILED") return "payment_failed";
-  return "payment_failed";
+  return "payment_pending";
+};
+
+export const mapWompiStatusToUiState = (status: string | null | undefined, errorType?: string | null) => {
+  const normalized = normalizeText(status).toUpperCase();
+  if (errorType && ["NOT_FOUND_ERROR", "TRANSACTION_NOT_FOUND"].includes(errorType.toUpperCase())) {
+    return { status: "payment_pending", reason: "transaction_not_found" as const };
+  }
+  if (normalized === "APPROVED") return { status: "payment_approved", reason: "approved" as const };
+  if (normalized === "PENDING") return { status: "payment_pending", reason: "pending" as const };
+  if (normalized === "DECLINED" || normalized === "VOIDED" || normalized === "ERROR" || normalized === "FAILED") {
+    return { status: "payment_failed", reason: "declined_or_failed" as const };
+  }
+  return { status: "payment_pending", reason: "unknown" as const };
 };

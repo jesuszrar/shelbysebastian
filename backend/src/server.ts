@@ -112,10 +112,36 @@ const serializeUser = (user: User | null) =>
     : null;
 
 const serializeProduct = (product: Product) => wrap({ ...product, price: product.price });
-const serializeOrder = (order: Order) => wrap({ ...order, total: order.total });
+const serializeOrder = (order: Order) => wrap({
+  ...order,
+  total: order.total,
+  shipping_name: (order as any).shipping_name ?? null,
+  shipping_email: (order as any).shipping_email ?? null,
+  shipping_phone: (order as any).shipping_phone ?? null,
+  shipping_department: (order as any).shipping_department ?? null,
+  shipping_city: (order as any).shipping_city ?? null,
+  shipping_address: (order as any).shipping_address ?? null,
+  shipping_reference: (order as any).shipping_reference ?? null,
+});
 const serializeCoupon = (coupon: Coupon) => wrap({ ...coupon, value: coupon.value, minimumSubtotal: coupon.minimumSubtotal });
 const serializeCouponAudit = (row: Record<string, unknown>) => wrap(row);
-const serializeCedulaEmail = (row: CedulaEmail) => wrap(row) as CedulaEmail;\n\nconst serializeUserAddress = (row: UserAddress) => ({\n  id: row.id,\n  label: row.label,\n  fullName: row.fullName,\n  cedula: row.cedula,\n  email: row.email,\n  phone: row.phone,\n  department: row.department,\n  city: row.city,\n  address: row.address,\n  reference: row.reference,\n  isDefault: row.isDefault,\n  createdAt: row.createdAt,\n  updatedAt: row.updatedAt,\n});
+const serializeCedulaEmail = (row: CedulaEmail) => wrap(row) as CedulaEmail;
+
+const serializeUserAddress = (row: UserAddress) => ({
+  id: row.id,
+  label: row.label,
+  fullName: row.fullName,
+  cedula: row.cedula,
+  email: row.email,
+  phone: row.phone,
+  department: row.department,
+  city: row.city,
+  address: row.address,
+  reference: row.reference,
+  isDefault: row.isDefault,
+  createdAt: row.createdAt,
+  updatedAt: row.updatedAt,
+});
 
 const getMailer = () => {
   const host = process.env.SMTP_HOST;
@@ -200,6 +226,13 @@ const normalizeOrderCreateData = (row: Record<string, unknown>) => ({
   customerAddress: row.customerAddress !== undefined ? String(row.customerAddress) : row.customer_address !== undefined ? String(row.customer_address) : undefined,
   notes: row.notes !== undefined ? String(row.notes) : undefined,
   userId: row.userId !== undefined ? String(row.userId) : row.user_id !== undefined ? String(row.user_id) : undefined,
+  shipping_name: row.shipping_name !== undefined ? String(row.shipping_name) : undefined,
+  shipping_email: row.shipping_email !== undefined ? String(row.shipping_email).trim().toLowerCase() : undefined,
+  shipping_phone: row.shipping_phone !== undefined ? String(row.shipping_phone) : undefined,
+  shipping_department: row.shipping_department !== undefined ? String(row.shipping_department) : undefined,
+  shipping_city: row.shipping_city !== undefined ? String(row.shipping_city) : undefined,
+  shipping_address: row.shipping_address !== undefined ? String(row.shipping_address) : undefined,
+  shipping_reference: row.shipping_reference !== undefined ? String(row.shipping_reference) : undefined,
 });
 
 const normalizeOrderUpdateData = (row: Record<string, unknown>) => {
@@ -227,8 +260,116 @@ const normalizeOrderUpdateData = (row: Record<string, unknown>) => {
   if (row.notes !== undefined) data.notes = String(row.notes);
   if (row.userId !== undefined) data.userId = String(row.userId);
   if (row.user_id !== undefined) data.userId = String(row.user_id);
+  if (row.shipping_name !== undefined) data.shipping_name = String(row.shipping_name);
+  if (row.shipping_email !== undefined) data.shipping_email = String(row.shipping_email).trim().toLowerCase();
+  if (row.shipping_phone !== undefined) data.shipping_phone = String(row.shipping_phone);
+  if (row.shipping_department !== undefined) data.shipping_department = String(row.shipping_department);
+  if (row.shipping_city !== undefined) data.shipping_city = String(row.shipping_city);
+  if (row.shipping_address !== undefined) data.shipping_address = String(row.shipping_address);
+  if (row.shipping_reference !== undefined) data.shipping_reference = String(row.shipping_reference);
   return data;
 };
+
+// User addresses endpoints
+app.get("/api/user/addresses", async (req, res) => {
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+  const rows = await prisma.userAddress.findMany({ where: { userId: auth.sub }, orderBy: { createdAt: "desc" } });
+  return res.json((rows ?? []).map(serializeUserAddress));
+});
+
+app.post("/api/user/addresses", async (req, res) => {
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+  const body = req.body as Record<string, unknown>;
+  const data = {
+    userId: auth.sub,
+    label: String(body.label ?? "Casa"),
+    fullName: String(body.fullName ?? body.full_name ?? ""),
+    cedula: String(body.cedula ?? ""),
+    email: body.email ? String(body.email).trim().toLowerCase() : "",
+    phone: body.phone ? String(body.phone) : "",
+    department: String(body.department ?? ""),
+    city: String(body.city ?? ""),
+    address: String(body.address ?? ""),
+    reference: body.reference ? String(body.reference) : null,
+    isDefault: Boolean(body.isDefault ?? false),
+  } as any;
+
+  if (data.isDefault) {
+    await prisma.userAddress.updateMany({ where: { userId: auth.sub, isDefault: true }, data: { isDefault: false } });
+  } else {
+    const count = await prisma.userAddress.count({ where: { userId: auth.sub } });
+    if (count === 0) data.isDefault = true;
+  }
+
+  // ensure relation connect by id to satisfy Prisma relation input
+  const createData = { ...data } as any;
+  delete createData.userId;
+  createData.user = { connect: { id: auth.sub } };
+  const created = await prisma.userAddress.create({ data: createData });
+  return res.json(serializeUserAddress(created));
+});
+
+app.patch("/api/user/addresses/:id", async (req, res) => {
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+  const { id } = req.params;
+  const existing = await prisma.userAddress.findUnique({ where: { id } });
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (existing.userId !== auth.sub) return res.status(403).json({ error: "No autorizado" });
+  const body = req.body as Record<string, unknown>;
+  const data: Record<string, unknown> = {};
+  if (body.label !== undefined) data.label = String(body.label);
+  if (body.fullName !== undefined) data.fullName = String(body.fullName);
+  if (body.cedula !== undefined) data.cedula = String(body.cedula);
+  if (body.email !== undefined) data.email = String(body.email).trim().toLowerCase();
+  if (body.phone !== undefined) data.phone = String(body.phone);
+  if (body.department !== undefined) data.department = String(body.department);
+  if (body.city !== undefined) data.city = String(body.city);
+  if (body.address !== undefined) data.address = String(body.address);
+  if (body.reference !== undefined) data.reference = body.reference ? String(body.reference) : null;
+  if (body.isDefault !== undefined) data.isDefault = Boolean(body.isDefault);
+
+  if (data.isDefault === true) {
+    await prisma.userAddress.updateMany({ where: { userId: auth.sub, isDefault: true }, data: { isDefault: false } });
+  }
+
+  const updated = await prisma.userAddress.update({ where: { id }, data });
+  return res.json(serializeUserAddress(updated));
+});
+
+app.delete("/api/user/addresses/:id", async (req, res) => {
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+  const { id } = req.params;
+  const existing = await prisma.userAddress.findUnique({ where: { id } });
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (existing.userId !== auth.sub) return res.status(403).json({ error: "No autorizado" });
+  // If the address being deleted is the default, pick another address of the user
+  // and mark it as default to preserve a principal address when possible.
+  const wasDefault = Boolean(existing.isDefault);
+  await prisma.userAddress.delete({ where: { id } });
+  if (wasDefault) {
+    const another = await prisma.userAddress.findFirst({ where: { userId: auth.sub }, orderBy: { createdAt: "desc" } });
+    if (another) {
+      await prisma.userAddress.update({ where: { id: another.id }, data: { isDefault: true } });
+    }
+  }
+  return res.json({ ok: true });
+});
+
+app.patch("/api/user/addresses/:id/default", async (req, res) => {
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+  const { id } = req.params;
+  const existing = await prisma.userAddress.findUnique({ where: { id } });
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (existing.userId !== auth.sub) return res.status(403).json({ error: "No autorizado" });
+  await prisma.userAddress.updateMany({ where: { userId: auth.sub, isDefault: true }, data: { isDefault: false } });
+  const updated = await prisma.userAddress.update({ where: { id }, data: { isDefault: true } });
+  return res.json(serializeUserAddress(updated));
+});
 
 const issueSession = (user: User): StoredSession => {
   const payload: AuthPayload = {
@@ -382,7 +523,7 @@ const readWompiPaymentMethodAvailability = async () => {
 };
 
 const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
-  const { baseUrl, publicKey } = getWompiConfig();
+  const { baseUrl, publicKey, privateKey } = getWompiConfig();
   const paymentMethod = normalizeWompiPaymentMethod(body.paymentMethod ?? body.payment_method) ?? "CARD";
   const reference = String(body.reference ?? body.referencePedido ?? body.orderId ?? "").trim();
   const redirectUrl = String(body.redirectUrl ?? body.redirect_url ?? "").trim() || undefined;
@@ -463,6 +604,16 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
     },
   } as Record<string, unknown>;
 
+  console.log("[wompi] create transaction request summary", {
+    reference,
+    amountInCents,
+    currency: "COP",
+    paymentMethod,
+    customerEmail,
+    publicKeySuffix: publicKey ? publicKey.slice(-6) : null,
+    hasPrivateKey: Boolean(privateKey),
+  });
+
   try {
     console.log("[wompi] create transaction - request summary", {
       amountInCents,
@@ -506,14 +657,21 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
 
 
   if (!response.ok) {
+    const errorDetails = {
+      url: paymentLinkUrl,
+      status: response.status,
+      statusText: response.statusText,
+      payload,
+      rawText: text,
+    };
     if (response.status === 422) {
       try {
-        console.error('[wompi] transaction 422 response', JSON.stringify(payload, null, 2));
+        console.error('[wompi] transaction 422 response', JSON.stringify(errorDetails, null, 2));
       } catch (err) {
         console.error('[wompi] transaction 422 response (failed to stringify payload)', { status: response.status, raw: String(text).slice(0, 2000) });
       }
     } else {
-      console.error('[wompi] transaction failed', { status: response.status });
+      console.error('[wompi] transaction failed', errorDetails);
     }
     const err: any = new Error(`Wompi transaction failed: ${response.status}`);
     err.status = response.status;
@@ -546,7 +704,7 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
     /* ignore */
   }
 
-  return { payload, transaction, methods: merchant.methods, paymentUrl, transactionId: paymentLinkId, status: null };
+  return { payload, transaction, methods: merchant.methods, paymentLinkId, paymentUrl, transactionId: null, status: null };
 };
 
 const requireAdmin = async (req: express.Request, res: express.Response) => {
@@ -1278,6 +1436,14 @@ app.post("/api/functions/redeem-coupon", async (req, res) => {
 });
 
 app.post("/api/payments/create-wompi-payment", async (req, res) => {
+  console.log("[wompi] /api/payments/create-wompi-payment called", {
+    path: req.path,
+    method: req.method,
+    paymentMethod: req.body?.paymentMethod ?? req.body?.payment_method ?? null,
+    total: req.body?.total ?? null,
+    customerEmail: req.body?.customerEmail ?? req.body?.customer_email ?? null,
+    reference: req.body?.reference ?? req.body?.referencePedido ?? req.body?.orderId ?? null,
+  });
   try {
     const created = await createWompiTransaction(req.body as WompiCreatePaymentBody);
     console.log("[wompi] final payment response", {
@@ -1297,7 +1463,6 @@ app.post("/api/payments/create-wompi-payment", async (req, res) => {
     });
 
     const requestReference = String((req.body as any)?.reference ?? (req.body as any)?.referencePedido ?? (req.body as any)?.orderId ?? "").trim();
-    const transactionId = String((created.transaction as any)?.id ?? "").trim() || null;
     const wompiStatus = String((created.transaction as any)?.status ?? "").trim();
     const orderStatus = mapWompiStatusToOrderStatus(wompiStatus) || "payment_pending";
 
@@ -1308,13 +1473,10 @@ app.post("/api/payments/create-wompi-payment", async (req, res) => {
           const updateData: Record<string, unknown> = {
             status: orderStatus,
           };
-          if (transactionId) {
-            updateData.wompiTransactionId = transactionId;
-          }
 
           try {
             await prisma.order.update({ where: { id: requestReference }, data: updateData });
-            console.log("[wompi] order updated with transaction", { orderId: requestReference, transactionId, orderStatus });
+            console.log("[wompi] order updated with payment-link response", { orderId: requestReference, orderStatus, paymentLinkId: created.paymentLinkId ?? null });
           } catch (updateError) {
             const err = updateError as Error & { code?: string; message?: string };
             if (String(err.message).includes("wompiTransactionId") || String(err.message).match(/Unknown column|does not exist/i)) {
@@ -1337,11 +1499,13 @@ app.post("/api/payments/create-wompi-payment", async (req, res) => {
 
     const responseBody = {
       success: true,
-      transactionId: transactionId ?? null,
+      paymentLinkId: created.paymentLinkId ?? null,
+      transactionId: null,
+      reference: requestReference || null,
+      orderId: requestReference || null,
       status: wompiStatus || "PENDING",
       paymentUrl: returnedPaymentUrl || null,
       pendingWithoutPaymentUrl,
-      orderId: requestReference || null,
       transaction: created.transaction,
       methods: created.methods,
     };
@@ -1469,6 +1633,7 @@ app.get("/api/payments/transaction-status", async (req, res) => {
   try {
     const orderId = String(req.query.orderId ?? "").trim();
     let transactionId = String(req.query.transactionId ?? "").trim();
+    const reference = String(req.query.reference ?? "").trim();
 
     let order: any = null;
     if (orderId) {
@@ -1485,22 +1650,50 @@ app.get("/api/payments/transaction-status", async (req, res) => {
       }
     }
 
-    if (!transactionId) return res.status(400).json({ error: "missing_transaction_id", message: "transactionId or orderId with wompiTransactionId is required" });
-
     const { baseUrl } = getWompiConfig();
-    const response = await fetch(`${baseUrl}/transactions/${encodeURIComponent(transactionId)}`, { headers: buildWompiAuthorizationHeader() });
-    const text = await response.text();
     let payload: any = {};
-    try { payload = text ? JSON.parse(text) : {}; } catch { payload = { raw: text }; }
-    const transaction = (payload.data ?? payload) as Record<string, unknown>;
+    let transaction: Record<string, unknown> = {};
+    let lookupId = transactionId;
+    let lookupMode = transactionId ? "transaction-id" : "reference";
+    let lookupErrorType: string | null = null;
+
+    if (lookupId) {
+      const response = await fetch(`${baseUrl}/transactions/${encodeURIComponent(lookupId)}`, { headers: buildWompiAuthorizationHeader() });
+      const text = await response.text();
+      try { payload = text ? JSON.parse(text) : {}; } catch { payload = { raw: text }; }
+      transaction = (payload.data ?? payload) as Record<string, unknown>;
+      lookupErrorType = (payload?.error as Record<string, unknown> | undefined)?.type?.toString() ?? null;
+    } else if (reference) {
+      const response = await fetch(`${baseUrl}/transactions?reference=${encodeURIComponent(reference)}`, { headers: buildWompiAuthorizationHeader() });
+      const text = await response.text();
+      try { payload = text ? JSON.parse(text) : {}; } catch { payload = { raw: text }; }
+      const candidates = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
+      const firstCandidate = (candidates as Array<Record<string, unknown>>)[0];
+      if (firstCandidate && (firstCandidate.id || firstCandidate.transaction_id)) {
+        lookupId = String(firstCandidate.id ?? firstCandidate.transaction_id ?? "").trim();
+        lookupMode = "reference";
+        const txResponse = await fetch(`${baseUrl}/transactions/${encodeURIComponent(lookupId)}`, { headers: buildWompiAuthorizationHeader() });
+        const txText = await txResponse.text();
+        try { payload = txText ? JSON.parse(txText) : {}; } catch { payload = { raw: txText }; }
+        transaction = (payload.data ?? payload) as Record<string, unknown>;
+        lookupErrorType = (payload?.error as Record<string, unknown> | undefined)?.type?.toString() ?? null;
+      } else {
+        lookupErrorType = "TRANSACTION_NOT_FOUND";
+      }
+    }
+
+    if (!lookupId) {
+      return res.status(400).json({ error: "missing_transaction_id", message: "transactionId, orderId with wompiTransactionId, or reference is required" });
+    }
+
+    const isTransactionNotFound = !transaction || Boolean(lookupErrorType?.toUpperCase().includes("NOT_FOUND")) || Boolean((payload?.error as Record<string, unknown> | undefined)?.type?.toString().toUpperCase().includes("NOT_FOUND"));
     const wompiStatus = String(transaction?.status ?? "").trim();
     const orderStatus = mapWompiStatusToOrderStatus(wompiStatus) || null;
 
-    // If we have an order and the status changed to a final state, update it
     if (order && orderStatus && orderStatus !== order.status) {
       try {
         await prisma.order.update({ where: { id: orderId }, data: { status: orderStatus } });
-        console.log('[wompi] transaction-status: order updated', { orderId, orderStatus });
+        console.log('[wompi] transaction-status: order updated', { orderId, orderStatus, lookupMode, lookupId });
       } catch (err) {
         console.error('[wompi] transaction-status: failed to update order', String(err));
       }
@@ -1518,12 +1711,15 @@ app.get("/api/payments/transaction-status", async (req, res) => {
     const pendingWithoutPaymentUrl = Boolean(
       !rawPaymentUrl && String(wompiStatus).toUpperCase() === "PENDING" && externalRedirectMethods.has(String(normalizedPaymentMethod ?? "").toUpperCase()),
     );
+    const reconciliationState = isTransactionNotFound
+      ? { status: "payment_pending", mappedStatus: "payment_pending", reason: "transaction_not_found" }
+      : { status: wompiStatus || "PENDING", mappedStatus: orderStatus, reason: "transaction_lookup" };
 
     if (pendingWithoutPaymentUrl) {
-      console.warn('[wompi] transaction-status: pending without payment URL', { orderId, transactionId, paymentMethod: normalizedPaymentMethod, status: wompiStatus });
+      console.warn('[wompi] transaction-status: pending without payment URL', { orderId, transactionId: lookupId, paymentMethod: normalizedPaymentMethod, status: wompiStatus, lookupMode });
     }
 
-    return res.json({ ok: true, transaction, status: wompiStatus, mappedStatus: orderStatus, orderId: orderId || null, paymentMethod: normalizedPaymentMethod?.toLowerCase() ?? null, pendingWithoutPaymentUrl });
+    return res.json({ ok: true, transaction, status: reconciliationState.status, mappedStatus: reconciliationState.mappedStatus, orderId: orderId || null, paymentMethod: normalizedPaymentMethod?.toLowerCase() ?? null, pendingWithoutPaymentUrl, reason: reconciliationState.reason, transactionNotFound: isTransactionNotFound, lookupMode, lookupId });
   } catch (error) {
     console.error('Failed to fetch transaction status', error);
     return res.status(500).json({ error: 'wompi_error', message: error instanceof Error ? error.message : String(error) });

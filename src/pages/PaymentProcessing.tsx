@@ -55,8 +55,10 @@ const PaymentProcessing = () => {
         const params = new URLSearchParams();
         if (transactionId) {
           params.set("transactionId", transactionId);
-        } else if (orderId) {
+        }
+        if (orderId) {
           params.set("orderId", orderId);
+          params.set("reference", orderId);
         }
 
         if (!params.toString()) return;
@@ -89,6 +91,10 @@ const PaymentProcessing = () => {
 
         if (String(data.status).toUpperCase() === "APPROVED" || String(data.mappedStatus).toLowerCase() === "payment_approved") {
           navigate(`/order-success?order=${orderId}&status=payment_approved`);
+        } else if (data?.transactionNotFound) {
+          setStatus("PENDING");
+          setTransaction(null);
+          setTransactionId(null);
         }
       } catch (error) {
         console.warn("[payment-processing] failed to fetch transaction status", error);

@@ -358,8 +358,24 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
       ...init,
       headers,
     });
+    if (path === "/api/payments/create-wompi-payment") {
+      console.log("[api] wompi endpoint called", {
+        url,
+        method: init?.method ?? "GET",
+        path,
+      });
+    }
     const data = (await response.json().catch(() => null)) as T | null;
     if (!response.ok) {
+      if (path === "/api/payments/create-wompi-payment") {
+        console.error("[api] wompi response error", {
+          url,
+          status: response.status,
+          statusText: response.statusText,
+          responseBody: data,
+          path,
+        });
+      }
       const responseMessage = (data as { message?: string; error?: string } | null)?.message ?? (data as { error?: string } | null)?.error ?? response.statusText;
       const normalizedMessage = String(responseMessage ?? "").toLowerCase();
       const isExpiredJwt = response.status === 401 && normalizedMessage.includes("jwt expired");
