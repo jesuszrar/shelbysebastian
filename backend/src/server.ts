@@ -1480,7 +1480,8 @@ app.post("/api/payments/create-wompi-payment", async (req, res) => {
           } catch (updateError) {
             const err = updateError as Error & { code?: string; message?: string };
             if (String(err.message).includes("wompiTransactionId") || String(err.message).match(/Unknown column|does not exist/i)) {
-              console.warn("[wompi] create-wompi-payment: wompiTransactionId column missing, continuing without it", { orderId: requestReference, transactionId, orderStatus, error: err.message });
+              const createdTransactionId = String((created.transaction as any)?.id ?? (created as any)?.transactionId ?? "") || null;
+              console.warn("[wompi] create-wompi-payment: wompiTransactionId column missing, continuing without it", { orderId: requestReference, transactionId: createdTransactionId, orderStatus, error: err.message });
             } else {
               throw err;
             }
