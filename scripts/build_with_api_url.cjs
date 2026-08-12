@@ -2,7 +2,7 @@ const { spawnSync } = require('child_process');
 const path = require('path');
 
 const projectRoot = path.resolve(__dirname, '..');
-const env = { ...process.env, VITE_API_URL: 'https://shelby-backend.onrender.com' };
+const env = { ...process.env, VITE_API_URL: 'https://shelby-backend-production.up.railway.app' };
 
 console.log('Building with VITE_API_URL=', env.VITE_API_URL);
 const result = spawnSync('npm.cmd', ['run', 'build'], {

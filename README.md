@@ -48,10 +48,9 @@ Eso crea las tablas del esquema Prisma:
 
 Hostinger sirve sitios estáticos. Build del frontend debe generarse con la variable de entorno correcta y luego subir la carpeta `dist` al panel de Hostinger (o mediante FTP).
 
-- Localmente: exporta la variable `VITE_API_URL` apuntando a tu backend en Render y ejecuta `npm run build`.
-	- Ejemplo (Windows PowerShell): `setx VITE_API_URL "https://shelby-backend.onrender.com"` y luego `npm run build`.
-- Sube la carpeta `dist` resultante a Hostinger.
-- Asegúrate de incluir `public/.htaccess` para reglas SPA (ya agregado en el repo).
+	- Ejemplo (Windows PowerShell): `setx VITE_API_URL "https://shelby-backend-production.up.railway.app"` y luego `npm run build`.
+ Localmente: exporta la variable `VITE_API_URL` apuntando a tu backend en Railway y ejecuta `npm run build`.
+	- Ejemplo (Windows PowerShell): `setx VITE_API_URL "https://shelby-backend-production.up.railway.app"` y luego `npm run build`.
 
 ## 5) Verificacion final
 

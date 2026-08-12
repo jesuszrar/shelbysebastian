@@ -17,15 +17,17 @@ export type SessionUser = {
 export type StoredSession = { access_token: string; user: SessionUser } | null;
 
 const resolveApiBaseUrl = () => {
-  const configuredUrl = import.meta.env.VITE_API_URL ?? import.meta.env.VITE_BACKEND_URL ?? "";
-  const fallbackFromEnv = import.meta.env.VITE_FALLBACK_API ?? "";
+  // Primary source: VITE_API_URL (build-time). Do NOT fall back silently to old Render URLs.
+  const configuredUrl = String(import.meta.env.VITE_API_URL ?? import.meta.env.VITE_BACKEND_URL ?? "").trim();
   const placeholderBackend = "tu-backend-en-render.com";
+  const oldRenderHost = "shelby-backend.onrender.com";
   const localBackend = "http://localhost:3001";
 
   const normalize = (value: string) => {
-    const normalized = value.trim().replace(/\/$/, "");
+    const normalized = String(value ?? "").trim().replace(/\/$/, "");
     if (!normalized) return "";
-    if (normalized.includes(placeholderBackend)) return "";
+    // Explicitly reject known deprecated hosts to avoid accidental fallback to Render
+    if (normalized.includes(placeholderBackend) || normalized.includes(oldRenderHost)) return "";
     return normalized;
   };
 
@@ -37,13 +39,10 @@ const resolveApiBaseUrl = () => {
   const resolvedConfigured = normalize(configuredUrl);
   if (resolvedConfigured) return resolvedConfigured;
 
-  if (isLocalFrontendOrigin()) {
-    return localBackend;
-  }
+  // If running locally in dev, prefer local backend
+  if (isLocalFrontendOrigin()) return localBackend;
 
-  const resolvedFallbackFromEnv = normalize(fallbackFromEnv);
-  if (resolvedFallbackFromEnv) return resolvedFallbackFromEnv;
-
+  // No fallback to legacy Render host; return empty to surface configuration errors.
   return "";
 };
 
