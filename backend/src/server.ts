@@ -14,6 +14,7 @@ import { buildMercadoPagoPreferencePayload } from "./lib/mercadopagoPreference.j
 import { isAdminUserRecord } from "./lib/auth.js";
 import { buildWompiAuthorizationHeader, extractWebhookSignature, extractWompiMerchantMethods, getWompiConfig, mapWompiStatusToOrderStatus, normalizePhoneNumber, normalizeWompiPaymentMethod, verifyWompiEventSignature } from "./lib/wompi.js";
 import { wrap } from "./lib/serialize.js";
+import cookieParser from "cookie-parser";
 
 dotenv.config();
 
@@ -36,6 +37,12 @@ const parseBoolean = (value: unknown): boolean => {
   const normalized = String(value ?? "").trim().toLowerCase();
   return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "si" || normalized === "sí";
 };
+
+// Cookie defaults: secure in production; SameSite default to 'none' in production
+const cookieSecure = process.env.COOKIE_SECURE ? parseBoolean(process.env.COOKIE_SECURE) : process.env.NODE_ENV === "production";
+const cookieSameSite = (process.env.COOKIE_SAMESITE as any) ?? (process.env.NODE_ENV === "production" ? "none" : "lax");
+const REFRESH_TOKEN_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
+const buildRefreshCookieOptions = () => ({ httpOnly: true, secure: cookieSecure, sameSite: cookieSameSite as any, path: "/", maxAge: REFRESH_TOKEN_MAX_AGE });
 
 const parseCouponData = (row: Record<string, unknown>) => ({
   code: String(row.code ?? "").trim().toUpperCase(),
@@ -91,6 +98,7 @@ app.use(express.json({
     (req as express.Request & { rawBody?: string }).rawBody = buffer.toString("utf8");
   },
 }));
+app.use(cookieParser());
 app.use("/uploads", express.static(uploadsDir));
 
 const parseDecimal = (value: unknown): Prisma.Decimal | null | undefined => {
@@ -98,6 +106,19 @@ const parseDecimal = (value: unknown): Prisma.Decimal | null | undefined => {
   const normalized = String(value ?? "").trim();
   if (normalized === "") return undefined;
   return new Prisma.Decimal(normalized);
+};
+
+const dbCallWithRetry = async <T>(fn: () => Promise<T>, attempts = 3, delayMs = 250): Promise<T> => {
+  let lastErr: any = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
 };
 
 const serializeUser = (user: User | null) =>
@@ -386,7 +407,7 @@ const issueSession = (user: User): StoredSession => {
     email: user.email,
     isAdmin: user.isAdmin,
   });
-  const accessToken = jwt.sign(payload, jwtSecret, { expiresIn: "7d" });
+  const accessToken = jwt.sign(payload, jwtSecret, { expiresIn: "15m" });
   return {
     access_token: accessToken,
     user: {
@@ -803,33 +824,44 @@ app.get("/", (_req, res) => {
 
 app.post("/api/auth/register", async (req, res) => {
   const { email, password, data = {} } = req.body as { email?: string; password?: string; data?: { name?: string; cedula?: string } };
-  if (!email || !password || !data.name || !data.cedula) {
+  if (!email || !password || typeof data.name !== "string" || data.name.trim() === "" || !data.cedula) {
     return res.status(400).json({ error: "email, password, name y cedula son requeridos" });
   }
 
   const normalizedCedula = normalizeCedula(data.cedula);
-  const existingEmail = await prisma.user.findUnique({ where: { email } });
+  const existingEmail = await dbCallWithRetry(() => prisma.user.findUnique({ where: { email } }));
   if (existingEmail) return res.status(409).json({ error: "Ya existe un usuario con ese correo" });
 
-  const existingCedula = await prisma.user.findFirst({ where: { cedula: normalizedCedula } });
+  const existingCedula = await dbCallWithRetry(() => prisma.user.findFirst({ where: { cedula: normalizedCedula } }));
   if (existingCedula) return res.status(409).json({ error: "Ya existe un usuario con esa cédula" });
 
   const hashed = await bcrypt.hash(password, 10);
-  const user = await prisma.user.create({
+  const user = await dbCallWithRetry(() => prisma.user.create({
     data: {
-      name: data.name.trim(),
+      name: (data.name ?? "").trim(),
       email: email.trim().toLowerCase(),
       password: hashed,
       cedula: normalizedCedula,
       isAdmin: normalizedCedula === "1108758522",
     },
-  });
+  }));
 
-  await prisma.cedulaEmail.upsert({
+  await dbCallWithRetry(() => prisma.cedulaEmail.upsert({
     where: { cedula: normalizedCedula },
     update: { email: user.email, userId: user.id },
     create: { cedula: normalizedCedula, email: user.email, userId: user.id },
-  });
+  }));
+
+  // create refresh token and set cookie
+  try {
+    const { generateRefreshToken, createRefreshToken } = await import("./lib/refreshTokens.js");
+    const token = generateRefreshToken();
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    await createRefreshToken(user.id, token, expiresAt);
+    res.cookie("refresh_token", token, buildRefreshCookieOptions());
+  } catch (err) {
+    console.error("failed to create refresh token on register", err);
+  }
 
   return res.json({ session: issueSession(user), user: serializeUser(user) });
 });
@@ -846,17 +878,62 @@ app.post("/api/auth/login", async (req, res) => {
   const valid = await bcrypt.compare(password, user.password);
   if (!valid) return res.status(401).json({ error: "Invalid login credentials" });
 
+  try {
+    const { generateRefreshToken, createRefreshToken } = await import("./lib/refreshTokens.js");
+    const token = generateRefreshToken();
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    await createRefreshToken(user.id, token, expiresAt);
+    res.cookie("refresh_token", token, buildRefreshCookieOptions());
+  } catch (err) {
+    console.error("failed to create refresh token on login", err);
+  }
+
   return res.json({ session: issueSession(user), user: serializeUser(user) });
 });
 
 app.post("/api/auth/refresh", async (req, res) => {
-  const auth = requireAuth(req, res);
-  if (!auth) return;
+  // Read refresh token from cookie
+  const token = (req.cookies && (req.cookies as any).refresh_token) ?? req.headers["x-refresh-token"] ?? null;
+  if (!token) return res.status(401).json({ error: "missing_refresh_token" });
 
-  const user = await prisma.user.findUnique({ where: { id: auth.sub } });
-  if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
+  try {
+    const { verifyRefreshToken, rotateRefreshToken, generateRefreshToken, createRefreshToken } = await import("./lib/refreshTokens.js");
+    const verification = await verifyRefreshToken(String(token));
+    if (!verification || !verification.valid) return res.status(401).json({ error: "invalid_refresh_token" });
 
-  return res.json({ session: issueSession(user) });
+    const existing = verification.record;
+    const user = await prisma.user.findUnique({ where: { id: existing.userId } });
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
+
+    // rotate
+    const newToken = generateRefreshToken();
+    const newExpires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const created = await rotateRefreshToken(existing.id, newToken, newExpires);
+    // set cookie
+    res.cookie("refresh_token", newToken, buildRefreshCookieOptions());
+
+    return res.json({ session: issueSession(user) });
+  } catch (err) {
+    console.error("refresh error", err);
+    return res.status(500).json({ error: "refresh_failed" });
+  }
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  const token = (req.cookies && (req.cookies as any).refresh_token) ?? req.headers["x-refresh-token"] ?? null;
+  if (token) {
+    try {
+      const { verifyRefreshToken, revokeRefreshToken } = await import("./lib/refreshTokens.js");
+      const verification = await verifyRefreshToken(String(token));
+      if (verification && verification.record) {
+        await revokeRefreshToken(verification.record.id);
+      }
+    } catch (err) {
+      console.error("logout revoke failed", err);
+    }
+  }
+  res.clearCookie("refresh_token", { httpOnly: true, secure: cookieSecure, sameSite: cookieSameSite as any, path: "/" });
+  return res.json({ ok: true });
 });
 
 app.post("/api/auth/verify", async (req, res) => {

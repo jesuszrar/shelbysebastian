@@ -148,6 +148,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const response = await fetch(getAuthUrl("/api/auth/login"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ email: email.trim(), password: password.trim() }),
     });
 
@@ -178,6 +179,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const response = await fetch(getAuthUrl("/api/auth/register"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ email: normalizedEmail, password: password.trim(), data: { name: name.trim(), cedula: normalizedCedula } }),
     });
 
@@ -225,6 +227,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const logout = async () => {
+    try {
+      await fetch(getAuthUrl("/api/auth/logout"), { method: "POST", credentials: "include" });
+    } catch (err) {
+      console.error("logout request failed", err);
+    }
     clearActiveCedula();
     clearSession();
     setSession(null);

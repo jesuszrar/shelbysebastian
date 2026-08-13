@@ -213,6 +213,8 @@ export const buildRequestHeaders = (headersInit: HeadersInit | undefined, access
   return headers;
 };
 
+let refreshPromise: Promise<StoredSession | null> | null = null;
+
 export const decodeJwt = (token: string | undefined | null) => {
   try {
     if (!token) return null;
@@ -243,24 +245,27 @@ export const isTokenExpiringSoon = (token: string | undefined | null, minutes = 
 };
 
 export const refreshSession = async (): Promise<StoredSession | null> => {
-  const stored = getStoredSession();
-  if (!stored?.access_token) return null;
-
+  if (refreshPromise) return refreshPromise;
   const url = API_BASE_URL ? `${API_BASE_URL}/api/auth/refresh` : `/api/auth/refresh`;
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: buildRequestHeaders(undefined, stored.access_token),
-    });
-    if (!response.ok) return null;
-    const data = (await response.json().catch(() => null)) as { session?: StoredSession | null } | null;
-    if (!data?.session) return null;
-    saveSession(data.session);
-    emitAuthChange("SIGNED_IN", data.session);
-    return data.session;
-  } catch {
-    return null;
-  }
+  refreshPromise = (async () => {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!response.ok) return null;
+      const data = (await response.json().catch(() => null)) as { session?: StoredSession | null } | null;
+      if (!data?.session) return null;
+      saveSession(data.session);
+      emitAuthChange("SIGNED_IN", data.session);
+      return data.session;
+    } catch {
+      return null;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+  return refreshPromise;
 };
 
 const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
@@ -356,6 +361,7 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
     const response = await fetch(url, {
       ...init,
       headers,
+      credentials: (init && (init as any).credentials) || "include",
     });
     if (path === "/api/payments/create-wompi-payment") {
       console.log("[api] wompi endpoint called", {
@@ -379,6 +385,30 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
       const normalizedMessage = String(responseMessage ?? "").toLowerCase();
       const isExpiredJwt = response.status === 401 && normalizedMessage.includes("jwt expired");
       if (isExpiredJwt) {
+        // Attempt to refresh once and retry original request
+        const refreshed = await refreshSession();
+        if (refreshed) {
+          // rebuild headers with new access token
+          const newHeaders = buildRequestHeaders(init?.headers, refreshed.access_token);
+          const retryResp = await fetch(url, { ...init, headers: newHeaders, credentials: "include" });
+          const retryData = (await retryResp.json().catch(() => null)) as T | null;
+          if (!retryResp.ok) {
+            // failed after refresh
+            clearSession();
+            emitAuthChange(SESSION_EXPIRED_EVENT, null);
+            if (typeof window !== "undefined") {
+              try {
+                window.alert("La sesión expiró, inicia sesión nuevamente");
+                window.location.href = "/login";
+              } catch {
+                // ignore
+              }
+            }
+            return { data: null, error: { message: (retryData as any)?.error ?? retryResp.statusText, code: String(retryResp.status) } };
+          }
+          return { data: retryData, error: null };
+        }
+
         clearSession();
         emitAuthChange(SESSION_EXPIRED_EVENT, null);
         if (typeof window !== "undefined") {
