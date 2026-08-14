@@ -26,6 +26,9 @@ export const Hero = () => (
           <Button asChild size="lg" variant="outline" className="border-white/35 bg-white/10 text-white hover:bg-white/20 backdrop-blur-sm h-14 px-8">
             <a href="https://wa.me/573228426561" target="_blank" rel="noopener noreferrer">Hablar con un asesor</a>
           </Button>
+          <Button asChild size="lg" className="bg-gradient-gold text-primary hover:brightness-105 shadow-gold text-base h-14 px-8 border border-amber-300/70">
+            <a href="https://www.niimbot.com/es" target="_blank" rel="noopener noreferrer">Visitar Niimbot</a>
+          </Button>
         </div>
         <div className="mt-10 grid grid-cols-3 gap-6 max-w-xl">
           {[
