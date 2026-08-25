@@ -16,6 +16,7 @@ import { getUserAddresses, createUserAddress } from "@/integrations/api/client";
 import { getWompiErrorMessage } from "@/lib/payment";
 
 type PaymentMethod = "card" | "pse" | "nequi" | "daviplata" | "transferencia";
+const WOMPI_MINIMUM_TOTAL = 150000;
 
 const checkoutSchema = z.object({
   name: z.string().trim().min(2, "Nombre requerido").max(80),
@@ -342,6 +343,10 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
         setStep("manual");
         setLoading(false);
         return;
+      }
+
+      if (checkoutTotal < WOMPI_MINIMUM_TOTAL) {
+        throw new Error(`Wompi requiere un pedido mínimo de ${formatCOP(WOMPI_MINIMUM_TOTAL)} para pagos electrónicos.`);
       }
 
       await saveOrder("payment_pending", data.payment, data);

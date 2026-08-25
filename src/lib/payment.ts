@@ -4,6 +4,10 @@ export const getWompiErrorMessage = (error: unknown) => {
 
   if (!message) return "No pudimos iniciar el pago.";
 
+  if (normalized.includes("pedido mínimo") || normalized.includes("pedido minimo")) {
+    return message;
+  }
+
   if (normalized.includes("wompi") && (normalized.includes("key") || normalized.includes("token") || normalized.includes("configur"))) {
     return "Wompi no está configurado en este momento. Añade las claves en Render para habilitar el checkout.";
   }

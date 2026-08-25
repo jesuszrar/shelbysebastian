@@ -606,6 +606,19 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
     };
     throw error;
   }
+
+  if (amountInCents < 15000000) {
+    const error = new Error("Wompi requiere un pedido mínimo de $ 150.000 para pagos electrónicos.");
+    (error as any).status = 422;
+    (error as any).payload = {
+      error: {
+        type: "UNPROCESSABLE",
+        reason: "La base de la transacción debe ser igual o mayor a 150000",
+      },
+    };
+    throw error;
+  }
+
   const requestBody = {
     name: `Pedido ${reference}`,
     description: `Checkout de pago para pedido ${reference}`,
@@ -1610,13 +1623,26 @@ app.post("/api/payments/create-wompi-payment", async (req, res) => {
       redirectUrl: requestBody.redirectUrl ?? requestBody.redirect_url ?? null,
     };
 
-    if (message === "required_fields_missing" || maybeStatus === 422) {
+    if (message === "required_fields_missing") {
       const missingFields = (error as any)?.missingFields ?? [];
       const responseBody = {
         error: "campo requerido faltante",
         received,
         missingFields,
         wompi: maybePayload ?? null,
+      };
+      try { console.log("[response to frontend]", JSON.stringify(responseBody, null, 2)); } catch (e) {}
+      return res.status(422).json(responseBody);
+    }
+
+    if (maybeStatus === 422) {
+      const wompi = maybePayload ?? null;
+      const wompiReason = (wompi as any)?.error?.reason;
+      const responseBody = {
+        error: "wompi_unprocessable",
+        message: wompiReason || message,
+        received,
+        wompi,
       };
       try { console.log("[response to frontend]", JSON.stringify(responseBody, null, 2)); } catch (e) {}
       return res.status(422).json(responseBody);

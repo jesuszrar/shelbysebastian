@@ -128,7 +128,7 @@ const toProductRow = (product: Product): ProductRow => ({
   badge: product.badge ?? null,
   highlight: product.highlight ?? false,
   image: product.image,
-  stock: null,
+  stock: product.stock ?? 0,
   description: product.description,
   specs: product.specs,
 });
@@ -349,7 +349,7 @@ function ProductsAdmin() {
   const [editing, setEditing] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<ProductForm>(emptyProductForm());
-  const catalogRows = rows.length ? rows : products.map(toProductRow);
+  const catalogRows = products.map(toProductRow);
 
   const startEdit = (product: ProductRow) => {
     setEditing(product.id);
