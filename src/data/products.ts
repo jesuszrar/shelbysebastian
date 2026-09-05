@@ -5,8 +5,29 @@ import mp58 from "@/assets/products/mp58.jpg";
 import pt210 from "@/assets/products/pt210.jpg";
 import bateria from "@/assets/products/bateria.jpg";
 import rollo from "@/assets/products/rollo.jpg";
+import b1Labels50x30 from "@/assets/subproducts/b1-labels-50x30.jpg";
+import b1LabelsWhite30x45 from "@/assets/subproducts/b1-labels-white-30x45.jpg";
+import b1LabelsCircular50 from "@/assets/subproducts/b1-labels-circular-50.jpg";
+import b1LabelsTransparent20x40 from "@/assets/subproducts/b1-labels-transparent-20x40.jpg";
+import b1LabelsWhite20x40 from "@/assets/subproducts/b1-labels-white-20x40.jpg";
+import d11hKit from "@/assets/subproducts/d11h-kit.jpg";
+import d11hLabels30x15 from "@/assets/subproducts/d11h-labels-30x15.jpg";
+import d11hLabels12_5x109 from "@/assets/subproducts/d11h-labels-12-5x109.jpg";
+import d11hLabels40x12 from "@/assets/subproducts/d11h-labels-40x12.jpg";
 
 export type ProductCategory = "Adhesivas" | "Facturación" | "Más vendidos" | "Repuestos";
+
+export type Subproduct = {
+  id: string;
+  name: string;
+  image: string;
+  description: string;
+  price?: number;
+  stock?: number;
+  active?: boolean;
+  images?: string[];
+  sortOrder?: number;
+};
 
 export type Product = {
   id: string;
@@ -20,12 +41,21 @@ export type Product = {
   highlight?: boolean;
   description: string;
   specs: string[];
+  subproducts?: Subproduct[];
+  images?: string[];
 };
 
 export const products: Product[] = [
-  { id: "niimbot-b1", name: "Impresora NIIMBOT B1", category: "Adhesivas", image: niimbotB1, price: 169900, oldPrice: 260000, badge: "-35%", highlight: true,
+  { id: "niimbot-b1", name: "Etiquetadora B1", category: "Adhesivas", image: niimbotB1, price: 169900, oldPrice: 260000, badge: "-35%", highlight: true,
     description: "Impresora térmica portátil para etiquetas adhesivas. Ideal para emprendedores que necesitan rotular productos, paquetes o inventario sin enredos.",
-    specs: ["Conexión Bluetooth", "Compatible con iOS y Android", "Imprime etiquetas de 20–50 mm", "Batería recargable"] },
+    specs: ["Conexión Bluetooth", "Compatible con iOS y Android", "Imprime etiquetas de 20–50 mm", "Batería recargable"],
+    subproducts: [
+      { id: "b1-labels-50x30", name: "Rollo blanco 50 × 30 mm", image: b1Labels50x30, description: "Rollo rotulado de 50 × 30 mm con 230 etiquetas." },
+      { id: "b1-labels-white-30x45", name: "Etiquetas blancas 30 × 45 mm", image: b1LabelsWhite30x45, description: "Presentación blanca de 30 × 45 mm con 80 etiquetas." },
+      { id: "b1-labels-circular-50", name: "Etiquetas circulares transparentes", image: b1LabelsCircular50, description: "Etiquetas circulares transparentes de 50 mm con 150 unidades." },
+      { id: "b1-labels-transparent-20x40", name: "Etiquetas transparentes 20 × 40 mm", image: b1LabelsTransparent20x40, description: "Rollo transparente de 20 × 40 mm con 320 etiquetas." },
+      { id: "b1-labels-white-20x40", name: "Etiquetas blancas 20 × 40 mm", image: b1LabelsWhite20x40, description: "Rollo blanco de 20 × 40 mm con 320 etiquetas." },
+    ] },
   { id: "mp58", name: "Impresora MP58 – 01", category: "Facturación", image: mp58, price: 149900, oldPrice: 160000, badge: "-6%",
     description: "Impresora térmica de facturación 58 mm. Rápida, silenciosa y compatible con la mayoría de POS y apps de facturación electrónica.",
     specs: ["Ancho 58 mm", "Bluetooth + USB", "Hasta 90 mm/s", "Compatible con apps de facturación"] },
@@ -38,12 +68,18 @@ export const products: Product[] = [
   { id: "pt210", name: "Impresora Gooj PT-210", category: "Facturación", image: pt210, price: 130000, oldPrice: 160000, badge: "-19%",
     description: "Impresora portátil 58 mm con batería de larga duración. Perfecta para domicilios, mercados y ventas en la calle.",
     specs: ["Batería incluida", "Bluetooth", "Ancho 58 mm", "Tamaño compacto"] },
-  { id: "niimbot-d110", name: "Impresora NIIMBOT D110", category: "Adhesivas", image: niimbotD110, price: 119900, oldPrice: 160000, badge: "-25%",
-    description: "La etiquetadora más vendida de NIIMBOT. Diseño compacto, conexión por app y miles de plantillas listas.",
+  { id: "niimbot-d110", name: "Etiquetadora D110", category: "Adhesivas", image: niimbotD110, price: 119900, oldPrice: 160000, badge: "-25%",
+    description: "Diseño compacto, conexión por app y miles de plantillas listas para etiquetar productos y pedidos con rapidez.",
     specs: ["App con plantillas gratis", "Bluetooth", "Etiquetas 12–15 mm", "Recargable USB-C"] },
-  { id: "d11h", name: "Impresora NIIMBOT D11H", category: "Adhesivas", image: niimbotD110, price: 149900,
+  { id: "d11h", name: "Etiquetadora D11H", category: "Adhesivas", image: niimbotD110, price: 149900,
     description: "Etiquetadora compacta para imprimir stickers y etiquetas desde el celular con una experiencia simple y portátil.",
-    specs: ["Conexión Bluetooth", "Compatible con iOS y Android", "Etiquetas adhesivas", "Recargable por USB"] },
+    specs: ["Conexión Bluetooth", "Compatible con iOS y Android", "Etiquetas adhesivas", "Recargable por USB"],
+    subproducts: [
+      { id: "d11h-kit", name: "Kit de accesorios D11_H", image: d11hKit, description: "Contenido de empaque mostrado para la serie D11_H." },
+      { id: "d11h-labels-30x15", name: "Etiquetas blancas 30 × 15 mm", image: d11hLabels30x15, description: "Rollo de etiquetas blancas de 30 × 15 mm con 210 unidades." },
+      { id: "d11h-labels-12-5x109", name: "Etiquetas cola de ratón 12,5 × 109 mm", image: d11hLabels12_5x109, description: "Rollo blanco de etiquetas cola de ratón de 12,5 × 109 mm con 65 unidades." },
+      { id: "d11h-labels-40x12", name: "Etiquetas blancas 40 × 12 mm", image: d11hLabels40x12, description: "Rollo de etiquetas blancas de 40 × 12 mm con 160 unidades." },
+    ] },
   { id: "lector", name: "Lector de código de barras", category: "Más vendidos", image: lector, price: 55000, oldPrice: 90000, badge: "-39%",
     description: "Lector láser USB plug & play. Reconoce códigos 1D rápido y sin configuración. Compatible con Windows, macOS y Linux.",
     specs: ["Conexión USB", "Lectura láser 1D", "Plug & Play", "Soporte incluido"] },

@@ -3,7 +3,7 @@ import { Footer } from "@/components/shelby/Footer";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Button } from "@/components/ui/button";
 import { useProductsCatalog } from "@/context/ProductsContext";
-import { deleteData, fetchData, patchData, postData, uploadFile } from "@/integrations/api/client";
+import { deleteData, fetchData, invokeFunction, patchData, postData, uploadFile } from "@/integrations/api/client";
 import { formatCOP, products as defaultProducts, type Product } from "@/data/products";
 import { toast } from "sonner";
 import {
@@ -52,6 +52,9 @@ type ProductRow = {
   stock: number | null;
   description: string | null;
   specs: string[] | null;
+  subproducts?: Array<{ id: string; name: string; image: string; description: string; price?: number; stock?: number; active?: boolean; images?: string[] }> | null;
+  variants?: Array<{ id: string; name: string; image?: string | null; description?: string | null; price?: number; stock?: number; active?: boolean; sortOrder?: number; images?: Array<{ url?: string }> }> | null;
+  images?: Array<{ url?: string; sortOrder?: number; isPrimary?: boolean }> | null;
   created_at?: string;
 };
 
@@ -110,7 +113,9 @@ type ProductForm = {
   stock: string;
   description: string;
   specsText: string;
+  subproductsText: string;
   image: string;
+  imagesText: string;
 };
 
 type MonthlyStats = {
@@ -143,7 +148,9 @@ const emptyProductForm = (): ProductForm => ({
   stock: "0",
   description: "",
   specsText: "",
+  subproductsText: "",
   image: "",
+  imagesText: "",
 });
 
 const parseSpecs = (specsText: string) =>
@@ -151,6 +158,32 @@ const parseSpecs = (specsText: string) =>
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+
+const parseSubproducts = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return [] as Array<{ id: string; name: string; image: string; description: string; price?: number; stock?: number; priceConfigured?: boolean; stockConfigured?: boolean; active?: boolean; images?: string[] }>;
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item, index) => ({
+        id: String((item as { id?: string })?.id ?? `subproduct-${index + 1}`),
+        name: String((item as { name?: string })?.name ?? "Subproducto"),
+        image: String((item as { image?: string })?.image ?? ""),
+        description: String((item as { description?: string })?.description ?? ""),
+        price: Math.max(0, Number((item as { price?: number })?.price ?? 0)),
+        stock: Math.max(0, Number((item as { stock?: number })?.stock ?? 0)),
+        priceConfigured: typeof (item as { price?: unknown })?.price === "number",
+        stockConfigured: typeof (item as { stock?: unknown })?.stock === "number",
+        active: (item as { active?: boolean })?.active !== false,
+        images: Array.isArray((item as { images?: string[] })?.images) ? (item as { images?: string[] }).images : undefined,
+      }))
+      .filter((item) => item.name.trim());
+  } catch {
+    return [];
+  }
+};
 
 const isRevenueStatus = (status: string) => ADMIN_EMAIL_STATUSES.has(status.toLowerCase());
 
@@ -255,8 +288,8 @@ function OverviewPanel({ compact = false }: { compact?: boolean }) {
       if (ordersResult.error) console.error(ordersResult.error);
       if (usersResult.error) console.error(usersResult.error);
 
-      setOrders(ordersResult.data || []);
-      setUsers(usersResult.data || []);
+      setOrders((Array.isArray(ordersResult.data) ? ordersResult.data : []) as OrderRow[]);
+      setUsers((Array.isArray(usersResult.data) ? usersResult.data : []) as UserRow[]);
       setLoading(false);
     };
 
@@ -349,10 +382,14 @@ function ProductsAdmin() {
   const [editing, setEditing] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<ProductForm>(emptyProductForm());
-  const catalogRows = products.map(toProductRow);
+  const [draftSubproducts, setDraftSubproducts] = useState<Array<{ id: string; name: string; image: string; description: string; price: number; stock: number; priceConfigured: boolean; stockConfigured: boolean; active: boolean; images: string[]; sortOrder?: number }>>([]);
+  const [normalizing, setNormalizing] = useState(false);
+  const catalogRows = rows.length ? rows.map((row) => ({ ...row, subproducts: row.variants?.map((variant) => ({ ...variant, image: variant.image || "", description: variant.description || "", images: variant.images?.map((image) => String(image.url ?? "")).filter(Boolean) })) ?? products.find((product) => product.id === row.id)?.subproducts })) : products.map(toProductRow);
 
   const startEdit = (product: ProductRow) => {
     setEditing(product.id);
+    const variants = product.variants?.map((item) => ({ id: item.id, name: item.name, image: item.image || "", description: item.description || "", price: item.price ?? 0, stock: item.stock ?? 0, priceConfigured: item.price !== undefined, stockConfigured: item.stock !== undefined, active: item.active !== false, images: item.images?.map((image) => String(image.url ?? "")).filter(Boolean) ?? (item.image ? [item.image] : []) })) ?? parseSubproducts(product.subproducts ? JSON.stringify(product.subproducts) : "").map((item) => ({ ...item, price: item.price ?? 0, stock: item.stock ?? 0, priceConfigured: item.priceConfigured, stockConfigured: item.stockConfigured, active: item.active !== false, images: item.images ?? (item.image ? [item.image] : []) }));
+    setDraftSubproducts(variants);
     setForm({
       name: product.name,
       category: product.category,
@@ -363,12 +400,15 @@ function ProductsAdmin() {
       stock: String(product.stock ?? 0),
       description: product.description || "",
       specsText: (product.specs || []).join(", "),
+      subproductsText: product.subproducts && product.subproducts.length ? JSON.stringify(product.subproducts, null, 2) : "",
       image: product.image || "",
+      imagesText: (product as ProductRow & { images?: Array<{ url?: string }> }).images?.map((image) => image.url).filter(Boolean).join("\n") || "",
     });
   };
 
   const cancelEdit = () => {
     setEditing(null);
+    setDraftSubproducts([]);
     setForm(emptyProductForm());
   };
 
@@ -377,16 +417,41 @@ function ProductsAdmin() {
     const extension = file.name.split(".").pop() || "jpg";
     const path = `products/${editing}-${Date.now()}.${extension}`;
     const result = await uploadFile(path, file);
-    if (!result?.publicUrl) {
+    if (!result?.data?.publicUrl) {
       toast.error("No se pudo subir la imagen");
       throw new Error("No se pudo subir la imagen");
     }
-    setForm((current) => ({ ...current, image: result.publicUrl }));
+    setForm((current) => ({ ...current, image: result.data!.publicUrl }));
   };
+
+  const uploadSubproductImage = async (subproductId: string, file: File) => {
+    const extension = file.name.split(".").pop() || "jpg";
+    const result = await uploadFile(`products/${editing}-${subproductId}-${Date.now()}.${extension}`, file);
+    if (!result.data?.publicUrl) throw new Error("No se pudo subir la imagen");
+    setDraftSubproducts((current) => current.map((item) => item.id === subproductId ? { ...item, image: result.data!.publicUrl, images: [...item.images, result.data!.publicUrl] } : item));
+  };
+
+  const updateSubproduct = (id: string, field: "name" | "description" | "image" | "price" | "stock" | "active" | "images", value: string | number | boolean | string[]) => {
+    setDraftSubproducts((current) => current.map((item) => item.id === id ? { ...item, [field]: value, ...(field === "price" ? { priceConfigured: true } : {}), ...(field === "stock" ? { stockConfigured: true } : {}) } : item));
+  };
+
+  const addSubproduct = () => {
+    setDraftSubproducts((current) => [...current, { id: crypto.randomUUID(), name: "", image: "", description: "", price: 0, stock: 0, priceConfigured: false, stockConfigured: false, active: true, images: [] }]);
+  };
+
+  const imageUrls = form.imagesText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+  const setImageUrls = (urls: string[]) => setForm((current) => ({ ...current, imagesText: urls.join("\n"), image: urls[0] || current.image }));
 
   const save = async () => {
     if (!editing) return;
     setSaving(true);
+    const incomplete = draftSubproducts.find((item) => item.name.trim() && (!item.priceConfigured || !item.stockConfigured));
+    if (incomplete) {
+      toast.error(`Completa precio y stock reales para "${incomplete.name}" antes de guardar.`);
+      setSaving(false);
+      return;
+    }
+    const subproducts = draftSubproducts.map((item, index) => ({ ...item, image: item.images[0] || item.image, price: item.priceConfigured ? item.price : undefined, stock: item.stockConfigured ? item.stock : undefined, sortOrder: index }));
     const payload = {
       name: form.name.trim(),
       category: form.category.trim(),
@@ -398,7 +463,15 @@ function ProductsAdmin() {
       description: form.description.trim(),
       specs: parseSpecs(form.specsText),
       image: form.image.trim() || null,
+      images: form.imagesText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+      subproducts: subproducts.filter((item) => item.name.trim()),
     };
+
+    if (typeof window !== "undefined") {
+      const customSubproducts = JSON.parse(window.localStorage.getItem("shelby:custom_subproducts") || "{}") as Record<string, unknown>;
+      customSubproducts[editing] = subproducts;
+      window.localStorage.setItem("shelby:custom_subproducts", JSON.stringify(customSubproducts));
+    }
 
     const { error } = await postData("products", { id: editing, ...payload });
     if (error) {
@@ -482,6 +555,27 @@ function ProductsAdmin() {
     await refreshProducts();
   };
 
+  const normalizeLegacyVariants = async () => {
+    if (normalizing) return;
+    setNormalizing(true);
+    try {
+      const productsWithLegacy = defaultProducts.filter((product) => product.subproducts?.length).map((product) => ({ id: product.id, variants: product.subproducts }));
+      const preview = await invokeFunction<{ dryRun?: boolean; report?: { legacy?: number; existing?: number; created?: number; conflicts?: string[] } }>("normalize-legacy-variants", { dryRun: true, products: productsWithLegacy });
+      if (preview.error || !preview.data?.report) throw preview.error || new Error("No se pudo preparar la normalización");
+      const report = preview.data.report;
+      if ((report.conflicts?.length ?? 0) > 0) throw new Error(`Conflictos de IDs: ${report.conflicts?.join(", ")}`);
+      if (!confirm(`Se detectaron ${report.legacy ?? 0} subproductos legacy. Ya existentes: ${report.existing ?? 0}. Se crearán: ${report.legacy! - (report.existing ?? 0)}. ¿Continuar?`)) return;
+      const result = await invokeFunction("normalize-legacy-variants", { dryRun: false, products: productsWithLegacy });
+      if (result.error) throw result.error;
+      toast.success("Subproductos normalizados", { description: "Los datos legacy ahora están disponibles como variantes persistentes." });
+      await refreshProducts();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo normalizar");
+    } finally {
+      setNormalizing(false);
+    }
+  };
+
   return (
     <section className="space-y-6">
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -492,6 +586,9 @@ function ProductsAdmin() {
         <div className="flex items-center gap-2">
           <Button onClick={refreshProducts} variant="outline" className="gap-2">
             <RefreshCcw className="h-4 w-4" /> Refrescar
+          </Button>
+          <Button onClick={() => void normalizeLegacyVariants()} disabled={normalizing} variant="outline" className="gap-2">
+            <Repeat className="h-4 w-4" /> {normalizing ? "Normalizando..." : "Normalizar legacy"}
           </Button>
           <Button onClick={createNew} variant="secondary" className="gap-2">
             <Plus className="h-4 w-4" /> Nuevo producto
@@ -569,6 +666,28 @@ function ProductsAdmin() {
                       />
                     </div>
                     <div className="md:col-span-2">
+                      <label className="text-sm font-medium text-secondary block mb-1.5">Imágenes del producto</label>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {imageUrls.map((url, index) => (
+                          <div key={`${url}-${index}`} className="rounded-xl border border-border bg-white p-3">
+                            <img src={url} alt={`Imagen ${index + 1}`} className="mb-2 h-28 w-full rounded-lg object-contain bg-muted" />
+                            <p className="truncate text-xs text-muted-foreground">{index === 0 ? "Principal" : `Imagen ${index + 1}`}</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {index > 0 && <Button type="button" size="sm" variant="outline" onClick={() => { const next = [...imageUrls]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; setImageUrls(next); }}>Subir</Button>}
+                              {index < imageUrls.length - 1 && <Button type="button" size="sm" variant="outline" onClick={() => { const next = [...imageUrls]; [next[index], next[index + 1]] = [next[index + 1], next[index]]; setImageUrls(next); }}>Bajar</Button>}
+                              <Button type="button" size="sm" variant="destructive" onClick={() => setImageUrls(imageUrls.filter((_, imageIndex) => imageIndex !== index))}>Eliminar</Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-3">
+                        <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border bg-background px-4 py-2 hover:bg-accent"><Upload className="h-4 w-4" /> Agregar imagen
+                          <input type="file" accept="image/*" className="hidden" onChange={async (event) => { const file = event.target.files?.[0]; if (!file || !editing) return; const extension = file.name.split(".").pop() || "jpg"; const result = await uploadFile(`products/${editing}-gallery-${Date.now()}.${extension}`, file); if (result.data?.publicUrl) setImageUrls([...imageUrls, result.data.publicUrl]); }} />
+                        </label>
+                        <span className="text-xs text-muted-foreground">La primera imagen es la principal. Usa Subir/Bajar para ordenar.</span>
+                      </div>
+                    </div>
+                    <div className="md:col-span-2">
                       <label className="text-sm font-medium text-secondary block mb-1.5">Subir imagen</label>
                       <div className="flex flex-wrap items-center gap-3">
                         <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-border bg-background hover:bg-accent cursor-pointer">
@@ -607,6 +726,27 @@ function ProductsAdmin() {
                         onChange={(value) => setForm((current) => ({ ...current, specsText: value }))}
                         placeholder="Bluetooth, USB-C, batería recargable"
                       />
+                    </div>
+                    <div className="md:col-span-2">
+                      <div className="flex items-center justify-between gap-3"><label className="text-sm font-medium text-secondary">Subproductos / Variantes</label><Button type="button" size="sm" variant="outline" onClick={addSubproduct}><Plus className="mr-1 h-4 w-4" /> Agregar subproducto</Button></div>
+                      <div className="mt-3 space-y-3">
+                        {draftSubproducts.map((item, index) => (
+                            <div key={item.id} className="rounded-xl border border-border bg-white p-4">
+                            <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Variante {index + 1}</span><div className="flex gap-2">{index > 0 && <Button type="button" size="sm" variant="outline" onClick={() => setDraftSubproducts((current) => { const next = [...current]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; return next; })}>Subir</Button>}{index < draftSubproducts.length - 1 && <Button type="button" size="sm" variant="outline" onClick={() => setDraftSubproducts((current) => { const next = [...current]; [next[index], next[index + 1]] = [next[index + 1], next[index]]; return next; })}>Bajar</Button>}<Button type="button" size="sm" variant="destructive" onClick={() => setDraftSubproducts((current) => current.filter((candidate) => candidate.id !== item.id))}><Trash2 className="mr-1 h-3.5 w-3.5" /> Eliminar</Button></div></div>
+                            <div className="grid gap-3 md:grid-cols-2">
+                              <Field label="Nombre" value={item.name} onChange={(value) => updateSubproduct(item.id, "name", value)} />
+                              <Field label="Imagen URL" value={item.image} onChange={(value) => updateSubproduct(item.id, "image", value)} />
+                              <Field label="Precio" type="number" value={String(item.price)} onChange={(value) => updateSubproduct(item.id, "price", Math.max(0, Number(value) || 0))} />
+                              <Field label="Stock" type="number" value={String(item.stock)} onChange={(value) => updateSubproduct(item.id, "stock", Math.max(0, Number(value) || 0))} />
+                              <label className="flex items-center gap-2 text-sm text-secondary"><input type="checkbox" checked={item.active} onChange={(event) => updateSubproduct(item.id, "active", event.target.checked)} /> Activo</label>
+                              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm hover:bg-accent"><Upload className="h-4 w-4" /> Subir imagen<input type="file" accept="image/*" className="hidden" onChange={async (event) => { const file = event.target.files?.[0]; if (file) await uploadSubproductImage(item.id, file); }} /></label>
+                            </div>
+                            <label className="mt-3 block text-sm font-medium text-secondary">Descripción<textarea value={item.description} onChange={(event) => updateSubproduct(item.id, "description", event.target.value)} rows={2} className="mt-1.5 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/40" /></label>
+                            <div className="mt-3"><span className="text-sm font-medium text-secondary">Imágenes de la variante</span><div className="mt-2 flex flex-wrap gap-2">{item.images.map((url, imageIndex) => <div key={`${url}-${imageIndex}`} className="relative"><img src={url} alt={`${item.name || "Variante"} ${imageIndex + 1}`} className="h-16 w-16 rounded-lg object-cover" /><button type="button" aria-label="Eliminar imagen" className="absolute -right-1 -top-1 rounded-full bg-destructive px-1 text-xs text-white" onClick={() => updateSubproduct(item.id, "images", item.images.filter((_, candidate) => candidate !== imageIndex))}>×</button></div>)}</div><label className="mt-2 inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm hover:bg-accent"><Upload className="h-4 w-4" /> Agregar imagen<input type="file" accept="image/*" className="hidden" onChange={async (event) => { const file = event.target.files?.[0]; if (!file || !editing) return; const extension = file.name.split(".").pop() || "jpg"; const result = await uploadFile(`products/${editing}-${item.id}-${Date.now()}.${extension}`, file); if (result.data?.publicUrl) updateSubproduct(item.id, "images", [...item.images, result.data.publicUrl]); }} /></label></div>
+                          </div>
+                        ))}
+                        {!draftSubproducts.length && <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">No hay subproductos. Agrega una variante para habilitar su compra.</p>}
+                      </div>
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2 mt-4">
@@ -649,14 +789,14 @@ function CouponsAdmin() {
     setLoading(true);
     const { data, error } = await fetchData<CouponRow>("coupons", { orderBy: "createdAt", ascending: false });
     if (error) console.error(error);
-    setRows(data || []);
+    setRows((Array.isArray(data) ? data : []) as CouponRow[]);
     setLoading(false);
   };
 
   const loadAudit = async () => {
     const { data, error } = await fetchData<CouponAuditRow>("coupon_audit", { orderBy: "createdAt", ascending: false });
     if (error) console.error(error);
-    setAuditRows(data || []);
+    setAuditRows((Array.isArray(data) ? data : []) as CouponAuditRow[]);
   };
 
   const refreshAll = async () => {
@@ -988,7 +1128,7 @@ function OrdersAdmin() {
       ascending: false,
     });
     if (error) console.error(error);
-    setRows((data as OrderRow[]) || []);
+    setRows((Array.isArray(data) ? data : []) as OrderRow[]);
     setLoading(false);
   };
 
@@ -1106,7 +1246,7 @@ function UsersAdmin() {
     setLoading(true);
     const { data, error } = await fetchData<UserRow>("profiles");
     if (error) console.error(error);
-    setRows(data || []);
+    setRows((Array.isArray(data) ? data : []) as UserRow[]);
     setLoading(false);
   };
 

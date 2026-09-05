@@ -2,20 +2,20 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import { type Product } from "@/data/products";
 import { useProductsCatalog } from "@/context/ProductsContext";
 
-export type CartItem = { productId: string; quantity: number };
+export type CartItem = { productId: string; variantId?: string; quantity: number };
 
 type CartContextValue = {
   items: CartItem[];
-  detailedItems: Array<CartItem & { product: Product }>;
+  detailedItems: Array<CartItem & { product: Product; variant?: NonNullable<Product["subproducts"]>[number] }>;
   count: number;
   subtotal: number;
   shipping: number;
   total: number;
   city: string;
   setCity: (c: string) => void;
-  add: (productId: string, quantity?: number) => void;
-  remove: (productId: string) => void;
-  setQuantity: (productId: string, quantity: number) => void;
+  add: (productId: string, quantity?: number, variantId?: string) => void;
+  remove: (productId: string, variantId?: string) => void;
+  setQuantity: (productId: string, quantity: number, variantId?: string) => void;
   clear: () => void;
 };
 
@@ -33,8 +33,10 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   const [city, setCityState] = useState<string>("");
   const [hydrated, setHydrated] = useState(false);
 
-  const getStock = (productId: string) => {
+  const getStock = (productId: string, variantId?: string) => {
     const product = products.find((item) => item.id === productId);
+    const variant = product?.subproducts?.find((item) => item.id === variantId);
+    if (variantId && variant) return Math.max(0, Number(variant.stock ?? 0));
     return Math.max(0, Number(product?.stock ?? 0));
   };
 
@@ -51,30 +53,30 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
 
   const setCity = (c: string) => { setCityState(c); localStorage.setItem(CITY_KEY, c); };
 
-  const add = (productId: string, quantity = 1) =>
+  const add = (productId: string, quantity = 1, variantId?: string) =>
     setItems((prev) => {
-      const stock = getStock(productId);
+      const stock = getStock(productId, variantId);
       if (stock <= 0) return prev;
-      const ex = prev.find((i) => i.productId === productId);
+      const ex = prev.find((i) => i.productId === productId && i.variantId === variantId);
       const nextQuantity = ex ? Math.min(stock, ex.quantity + quantity) : Math.min(stock, quantity);
       if (nextQuantity <= 0) return prev;
-      return ex ? prev.map((i) => i.productId === productId ? { ...i, quantity: nextQuantity } : i) : [...prev, { productId, quantity: nextQuantity }];
+      return ex ? prev.map((i) => i.productId === productId && i.variantId === variantId ? { ...i, quantity: nextQuantity } : i) : [...prev, { productId, variantId, quantity: nextQuantity }];
     });
-  const remove = (productId: string) => setItems((p) => p.filter((i) => i.productId !== productId));
-  const setQuantity = (productId: string, quantity: number) => {
-    if (quantity <= 0) return remove(productId);
-    const stock = getStock(productId);
+  const remove = (productId: string, variantId?: string) => setItems((p) => p.filter((i) => !(i.productId === productId && i.variantId === variantId)));
+  const setQuantity = (productId: string, quantity: number, variantId?: string) => {
+    if (quantity <= 0) return remove(productId, variantId);
+    const stock = getStock(productId, variantId);
     if (stock <= 0) return remove(productId);
-    setItems((p) => p.map((i) => i.productId === productId ? { ...i, quantity: Math.min(stock, quantity) } : i));
+    setItems((p) => p.map((i) => i.productId === productId && i.variantId === variantId ? { ...i, quantity: Math.min(stock, quantity) } : i));
   };
   const clear = () => setItems([]);
 
   const value = useMemo<CartContextValue>(() => {
     const detailedItems = items
-      .map((i) => { const product = products.find((p) => p.id === i.productId); return product ? { ...i, product } : null; })
-      .filter((x): x is CartItem & { product: Product } => x !== null);
+      .map((i) => { const product = products.find((p) => p.id === i.productId); return product ? { ...i, product, variant: product.subproducts?.find((item) => item.id === i.variantId) } : null; })
+      .filter((x): x is CartItem & { product: Product; variant: NonNullable<Product["subproducts"]>[number] | undefined } => x !== null);
     const count = detailedItems.reduce((s, i) => s + i.quantity, 0);
-    const subtotal = detailedItems.reduce((s, i) => s + i.product.price * i.quantity, 0);
+    const subtotal = detailedItems.reduce((s, i) => s + Number(i.variant?.price ?? i.product.price) * i.quantity, 0);
     const isBogota = city.toLowerCase().includes("bogot");
     const baseShipping = isBogota ? SHIPPING_BOGOTA : SHIPPING_OTHER;
     const shipping = subtotal === 0 || subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : baseShipping;

@@ -1,0 +1,2 @@
+export const SHELBY_WHATSAPP_NUMBER = "573228426561";
+export const SHELBY_WHATSAPP_URL = `https://wa.me/${SHELBY_WHATSAPP_NUMBER}`;

@@ -38,9 +38,9 @@ const parseBoolean = (value: unknown): boolean => {
   return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "si" || normalized === "sí";
 };
 
-// Cookie defaults: secure in production; SameSite default to 'none' in production
-const cookieSecure = process.env.COOKIE_SECURE ? parseBoolean(process.env.COOKIE_SECURE) : process.env.NODE_ENV === "production";
-const cookieSameSite = (process.env.COOKIE_SAMESITE as any) ?? (process.env.NODE_ENV === "production" ? "none" : "lax");
+const isProduction = process.env.NODE_ENV === "production" || process.env.RENDER === "true";
+const cookieSecure = process.env.COOKIE_SECURE !== undefined ? parseBoolean(process.env.COOKIE_SECURE) : isProduction;
+const cookieSameSite = (process.env.COOKIE_SAMESITE as any) ?? (isProduction ? "none" : "lax");
 const REFRESH_TOKEN_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 const buildRefreshCookieOptions = () => ({ httpOnly: true, secure: cookieSecure, sameSite: cookieSameSite as any, path: "/", maxAge: REFRESH_TOKEN_MAX_AGE });
 
@@ -132,7 +132,7 @@ const serializeUser = (user: User | null) =>
       }
     : null;
 
-const serializeProduct = (product: Product) => wrap({ ...product, price: product.price });
+const serializeProduct = (product: Product & { variants?: unknown[]; images?: unknown[] }) => wrap({ ...product, price: product.price, variants: product.variants ?? [], images: product.images ?? [] });
 const serializeOrder = (order: Order) => wrap({
   ...order,
   total: order.total,
@@ -416,6 +416,14 @@ const issueSession = (user: User): StoredSession => {
       user_metadata: { name: user.name, cedula: user.cedula, is_admin: user.isAdmin },
     },
   };
+};
+
+const createAndSetRefreshToken = async (userId: string, res: express.Response) => {
+  const { generateRefreshToken, createRefreshToken } = await import("./lib/refreshTokens.js");
+  const token = generateRefreshToken();
+  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_MAX_AGE);
+  await createRefreshToken(userId, token, expiresAt);
+  res.cookie("refresh_token", token, buildRefreshCookieOptions());
 };
 
 const getAuthorizationHeader = (req: express.Request): string | undefined => {
@@ -865,15 +873,11 @@ app.post("/api/auth/register", async (req, res) => {
     create: { cedula: normalizedCedula, email: user.email, userId: user.id },
   }));
 
-  // create refresh token and set cookie
   try {
-    const { generateRefreshToken, createRefreshToken } = await import("./lib/refreshTokens.js");
-    const token = generateRefreshToken();
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    await createRefreshToken(user.id, token, expiresAt);
-    res.cookie("refresh_token", token, buildRefreshCookieOptions());
+    await createAndSetRefreshToken(user.id, res);
   } catch (err) {
     console.error("failed to create refresh token on register", err);
+    return res.status(500).json({ error: "No se pudo establecer la sesión renovable" });
   }
 
   return res.json({ session: issueSession(user), user: serializeUser(user) });
@@ -892,13 +896,10 @@ app.post("/api/auth/login", async (req, res) => {
   if (!valid) return res.status(401).json({ error: "Invalid login credentials" });
 
   try {
-    const { generateRefreshToken, createRefreshToken } = await import("./lib/refreshTokens.js");
-    const token = generateRefreshToken();
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    await createRefreshToken(user.id, token, expiresAt);
-    res.cookie("refresh_token", token, buildRefreshCookieOptions());
+    await createAndSetRefreshToken(user.id, res);
   } catch (err) {
     console.error("failed to create refresh token on login", err);
+    return res.status(500).json({ error: "No se pudo establecer la sesión renovable" });
   }
 
   return res.json({ session: issueSession(user), user: serializeUser(user) });
@@ -954,6 +955,12 @@ app.post("/api/auth/verify", async (req, res) => {
   if (!email) return res.status(400).json({ error: "email es requerido" });
   const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
   if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
+  try {
+    await createAndSetRefreshToken(user.id, res);
+  } catch (err) {
+    console.error("failed to create refresh token on verify", err);
+    return res.status(500).json({ error: "No se pudo establecer la sesión renovable" });
+  }
   return res.json({ session: issueSession(user), user: serializeUser(user) });
 });
 
@@ -1088,7 +1095,7 @@ app.get("/api/data/:table", async (req, res) => {
   const maybeSingle = req.query.maybeSingle === "true";
 
   let rows: Array<Record<string, unknown>> = [];
-  if (table === "products") rows = (await prisma.product.findMany()).map((row) => serializeProduct(row) as Record<string, unknown>);
+  if (table === "products") rows = (await prisma.product.findMany({ include: { variants: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }], include: { images: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }] } } }, images: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }] } } })).map((row) => serializeProduct(row) as Record<string, unknown>);
   else if (table === "orders") rows = (await prisma.order.findMany()).map((row) => serializeOrder(row) as Record<string, unknown>);
   else if (table === "profiles") rows = (await prisma.user.findMany()).map((row) => serializeUser(row) as Record<string, unknown>);
   else if (table === "coupons") rows = (await prisma.coupon.findMany()).map((row) => serializeCoupon(row) as Record<string, unknown>);
@@ -1112,10 +1119,19 @@ app.post("/api/data/:table", async (req, res) => {
   const { table } = req.params;
   const body = req.body as unknown;
   if (table === "products") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
     const rows = Array.isArray(body) ? body : [body];
     const saved = [] as Product[];
     for (const row of rows as Array<Record<string, unknown>>) {
       const id = String(row.id || crypto.randomUUID());
+      const variants = Array.isArray(row.variants) ? row.variants : Array.isArray(row.subproducts) ? row.subproducts : null;
+      if (variants) {
+        const incompleteVariant = (variants as Array<Record<string, unknown>>).find((variant) => variant.price === undefined || variant.price === null || variant.stock === undefined || variant.stock === null);
+        if (incompleteVariant) {
+          return res.status(422).json({ error: "Cada variante necesita precio y stock reales antes de guardarse", variantId: incompleteVariant.id ?? null });
+        }
+      }
       const product = await prisma.product.upsert({
         where: { id },
         update: {
@@ -1144,6 +1160,53 @@ app.post("/api/data/:table", async (req, res) => {
           specs: row.specs ?? [],
         },
       });
+      if (variants) {
+        const variantIds: string[] = [];
+        for (const [sortOrder, variantRow] of (variants as Array<Record<string, unknown>>).entries()) {
+          const variantId = String(variantRow.id || crypto.randomUUID());
+          variantIds.push(variantId);
+          const savedVariant = await prisma.productVariant.upsert({
+            where: { id: variantId },
+            update: {
+              productId: id,
+              name: String(variantRow.name ?? "Variante"),
+              description: variantRow.description ? String(variantRow.description) : null,
+              price: parseDecimal(variantRow.price) ?? new Prisma.Decimal(0),
+              stock: Math.max(0, Number(variantRow.stock ?? 0)),
+              image: variantRow.image ? String(variantRow.image) : null,
+              active: variantRow.active !== undefined ? Boolean(variantRow.active) : true,
+              sortOrder,
+            },
+            create: {
+              id: variantId,
+              productId: id,
+              name: String(variantRow.name ?? "Variante"),
+              description: variantRow.description ? String(variantRow.description) : null,
+              price: parseDecimal(variantRow.price) ?? new Prisma.Decimal(0),
+              stock: Math.max(0, Number(variantRow.stock ?? 0)),
+              image: variantRow.image ? String(variantRow.image) : null,
+              active: variantRow.active !== undefined ? Boolean(variantRow.active) : true,
+              sortOrder,
+            },
+          });
+          if (Array.isArray(variantRow.images)) {
+            await prisma.productImage.deleteMany({ where: { variantId: savedVariant.id } });
+            for (const [sortOrder, imageRow] of (variantRow.images as unknown[]).entries()) {
+              const url = typeof imageRow === "string" ? imageRow : String((imageRow as Record<string, unknown>)?.url ?? "").trim();
+              if (url) await prisma.productImage.create({ data: { productId: id, variantId: savedVariant.id, url, sortOrder, isPrimary: sortOrder === 0 } });
+            }
+          }
+        }
+        await prisma.productVariant.updateMany({ where: { productId: id, id: { notIn: variantIds } }, data: { active: false } });
+      }
+      if (Array.isArray(row.images)) {
+        await prisma.productImage.deleteMany({ where: { productId: id, variantId: null } });
+        for (const [sortOrder, imageRow] of (row.images as unknown[]).entries()) {
+          const url = typeof imageRow === "string" ? imageRow : String((imageRow as Record<string, unknown>)?.url ?? "").trim();
+          if (!url) continue;
+          await prisma.productImage.create({ data: { productId: id, url, sortOrder, isPrimary: sortOrder === 0 } });
+        }
+      }
       saved.push(product);
     }
     return res.json(saved.map(serializeProduct));
@@ -1168,14 +1231,59 @@ app.post("/api/data/:table", async (req, res) => {
 
       let order: Order;
       try {
-        order = await prisma.order.upsert({
-          where: { id: orderId },
-          update: normalizedOrderData,
-          create: {
-            id: orderId,
-            ...normalizedOrderData,
-          },
-        });
+        const existingOrder = await prisma.order.findUnique({ where: { id: orderId } });
+        if (existingOrder) {
+          order = await prisma.order.update({ where: { id: orderId }, data: normalizedOrderData });
+        } else {
+          const incomingItems = normalizedOrderData.items as Array<Record<string, unknown>>;
+          if (incomingItems.length === 0) {
+            order = await prisma.order.create({ data: { id: orderId, ...normalizedOrderData } });
+          } else {
+          const validatedItems: Array<Record<string, unknown>> = [];
+          let calculatedSubtotal = new Prisma.Decimal(0);
+
+          for (const item of incomingItems) {
+            const productId = String(item.productId ?? item.product_id ?? "").trim();
+            const variantId = item.variantId ?? item.variant_id ? String(item.variantId ?? item.variant_id) : null;
+            const quantity = Number(item.quantity ?? 0);
+            if (!productId || !Number.isInteger(quantity) || quantity <= 0) throw new Error("Línea de pedido inválida");
+
+            const product = await prisma.product.findUnique({ where: { id: productId } });
+            if (!product) throw new Error(`Producto no encontrado: ${productId}`);
+            const variant = variantId ? await prisma.productVariant.findUnique({ where: { id: variantId } }) : null;
+            if (variantId && (!variant || variant.productId !== productId || !variant.active)) throw new Error("Variante no disponible");
+            const price = variant ? variant.price : product.price;
+            const stock = variant ? variant.stock : product.stock;
+            if (stock < quantity) throw new Error(`Stock insuficiente para ${variant?.name ?? product.name}`);
+            calculatedSubtotal = calculatedSubtotal.add(price.mul(quantity));
+            validatedItems.push({
+              ...item,
+              productId,
+              variantId,
+              title: variant ? `${product.name} - ${variant.name}` : product.name,
+              unit_price: Number(price),
+              lineTotal: Number(price.mul(quantity)),
+            });
+          }
+
+          const expectedTotal = calculatedSubtotal.add(Number(normalizedOrderData.shipping || 0)).sub(Number(normalizedOrderData.discountAmount || 0));
+          if (expectedTotal.lt(0) || !expectedTotal.equals(Number(normalizedOrderData.total || 0))) throw new Error("El total del pedido no coincide con los precios actuales");
+
+          order = await prisma.$transaction(async (transaction) => {
+            for (const item of validatedItems) {
+              const quantity = Number(item.quantity);
+              if (item.variantId) {
+                const updated = await transaction.productVariant.updateMany({ where: { id: String(item.variantId), stock: { gte: quantity }, active: true }, data: { stock: { decrement: quantity } } });
+                if (updated.count !== 1) throw new Error("Stock insuficiente para la variante");
+              } else {
+                const updated = await transaction.product.updateMany({ where: { id: String(item.productId), stock: { gte: quantity } }, data: { stock: { decrement: quantity } } });
+                if (updated.count !== 1) throw new Error("Stock insuficiente para el producto");
+              }
+            }
+            return transaction.order.create({ data: { id: orderId, ...normalizedOrderData, items: validatedItems as Prisma.InputJsonValue } });
+          });
+          }
+        }
       } catch (error) {
         console.error("[orders] prisma.upsert failed", {
           message: error instanceof Error ? error.message : String(error),
@@ -1183,7 +1291,7 @@ app.post("/api/data/:table", async (req, res) => {
           code: (error as any)?.code,
           meta: (error as any)?.meta,
         });
-        return res.status(500).json({
+        return res.status(400).json({
           error: error instanceof Error ? error.message : String(error),
           code: (error as any)?.code,
           meta: (error as any)?.meta,
@@ -1283,6 +1391,8 @@ app.patch("/api/data/:table", async (req, res) => {
   const payload = req.body as Record<string, unknown>;
 
   if (table === "products") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
     const rows = await prisma.product.findMany();
     const matched = applyFilters(rows.map(serializeProduct) as Record<string, unknown>[], filters);
     const updated = [] as Product[];
@@ -1388,6 +1498,8 @@ app.delete("/api/data/:table", async (req, res) => {
   const filters = parseFilters(req.query.filters as string | undefined);
 
   if (table === "products") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
     const rows = await prisma.product.findMany();
     const matched = applyFilters(rows.map(serializeProduct) as Record<string, unknown>[], filters);
     for (const row of matched) await prisma.product.delete({ where: { id: String(row.id) } });
@@ -1523,6 +1635,47 @@ app.post("/api/functions/redeem-coupon", async (req, res) => {
     },
     discount: Math.min(discount, Number(subtotal) + Number(shipping)),
   });
+});
+
+app.post("/api/functions/normalize-legacy-variants", async (req, res) => {
+  const authUser = await requireAdmin(req, res);
+  if (!authUser) return;
+
+  const body = req.body as { dryRun?: boolean; products?: Array<{ id?: string; variants?: Array<{ id?: string; name?: string; description?: string; image?: string; images?: string[]; price?: number; stock?: number; active?: boolean; sortOrder?: number }> }> };
+  const legacyProducts = Array.isArray(body.products) ? body.products : [];
+  const report = { products: 0, legacy: 0, existing: 0, created: 0, missingValues: [] as string[], conflicts: [] as string[] };
+  const planned: Array<{ productId: string; variantId: string; name: string; description: string | null; image: string | null; price?: number; stock?: number; active?: boolean; sortOrder: number; action: "existing" | "create" }> = [];
+
+  for (const product of legacyProducts) {
+    const productId = String(product.id ?? "").trim();
+    if (!productId || !(await prisma.product.findUnique({ where: { id: productId }, select: { id: true } }))) continue;
+    report.products += 1;
+    for (const [index, legacy] of (Array.isArray(product.variants) ? product.variants : []).entries()) {
+      const variantId = String(legacy.id ?? "").trim();
+      if (!variantId) continue;
+      report.legacy += 1;
+      if (legacy.price === undefined || legacy.stock === undefined) report.missingValues.push(`${productId}/${variantId}`);
+      const existing = await prisma.productVariant.findUnique({ where: { id: variantId }, select: { id: true, productId: true } });
+      if (existing) {
+        report.existing += 1;
+        if (existing.productId !== productId) report.conflicts.push(`${variantId}: pertenece a ${existing.productId}, no a ${productId}`);
+      }
+      planned.push({ productId, variantId, name: String(legacy.name ?? "Subproducto"), description: legacy.description ? String(legacy.description) : null, image: legacy.image ? String(legacy.image) : null, price: legacy.price, stock: legacy.stock, active: legacy.active, sortOrder: Number(legacy.sortOrder ?? index), action: existing ? "existing" : "create" });
+    }
+  }
+
+  if (body.dryRun !== false) return res.json({ ok: true, dryRun: true, report, planned });
+  if (report.conflicts.length) return res.status(409).json({ error: "Hay IDs legacy en conflicto", report, planned });
+  if (report.missingValues.length) return res.status(422).json({ error: "Faltan precios o stocks reales para algunas variantes legacy", report, planned });
+
+  for (const item of planned) {
+    if (item.action === "existing") continue;
+    const variant = await prisma.productVariant.create({ data: { id: item.variantId, productId: item.productId, name: item.name, description: item.description, price: new Prisma.Decimal(item.price!), stock: item.stock!, image: item.image, active: item.active !== false, sortOrder: item.sortOrder } });
+    const images = item.image ? [item.image] : [];
+    for (const [sortOrder, url] of images.entries()) await prisma.productImage.create({ data: { productId: item.productId, variantId: variant.id, url, sortOrder, isPrimary: sortOrder === 0 } });
+    report.created += 1;
+  }
+  return res.json({ ok: true, dryRun: false, report });
 });
 
 app.post("/api/payments/create-wompi-payment", async (req, res) => {

@@ -12,10 +12,11 @@ import { CreditCard, Truck, MessageCircle, Lock, ShoppingBag, Copy, CheckCircle2
 import { SiVisa, SiMastercard } from "react-icons/si";
 import { trackInitiateCheckout } from "@/lib/metaPixel";
 import AddressList from "@/components/addresses/AddressList";
-import { getUserAddresses, createUserAddress } from "@/integrations/api/client";
+import { api, getUserAddresses, createUserAddress, invokeFunction, postData } from "@/integrations/api/client";
 import { getWompiErrorMessage } from "@/lib/payment";
+import { SHELBY_WHATSAPP_URL } from "@/lib/contact";
 
-type PaymentMethod = "card" | "pse" | "nequi" | "daviplata" | "transferencia";
+type PaymentMethod = "card" | "pse" | "nequi" | "daviplata" | "transferencia" | "contraentrega";
 const WOMPI_MINIMUM_TOTAL = 150000;
 
 const checkoutSchema = z.object({
@@ -26,14 +27,15 @@ const checkoutSchema = z.object({
   city: z.string().trim().min(2, "Ciudad requerida").max(60),
   address: z.string().trim().min(5, "Dirección requerida").max(200),
   notes: z.string().max(500).optional(),
-  payment: z.enum(["card", "pse", "nequi", "daviplata", "transferencia"]),
+  payment: z.enum(["card", "pse", "nequi", "daviplata", "transferencia", "contraentrega"]),
 });
 
 const PAYMENT_DETAILS = {
   transferencia: { label: "Transferencia bancaria", holder: "Shelby Importaciones SAS", account: "1234-5678-9012", bank: "Bancolombia · Cuenta de Ahorros" },
+  contraentrega: { label: "Pago contraentrega", holder: "Cliente", account: "Se paga al recibir el pedido", bank: "Disponible en ciudades principales" },
 } as const;
 
-const WOMPI_PAYMENT_LABELS: Record<Exclude<PaymentMethod, "transferencia">, string> = {
+const WOMPI_PAYMENT_LABELS: Record<Exclude<PaymentMethod, "transferencia" | "contraentrega">, string> = {
   card: "Tarjeta",
   pse: "PSE",
   nequi: "Nequi",
@@ -46,10 +48,11 @@ const PAYMENT_METHOD_NOTES: Record<PaymentMethod, string> = {
   nequi: "Nequi enviará un push al número indicado. Asegúrate de usar un número Nequi activo de 10 dígitos y no cerrar esta ventana.",
   daviplata: "Daviplata pedirá autorización desde la app. Revisa el teléfono y espera la confirmación en la app de Daviplata.",
   transferencia: "En transferencia no hay pago automático. Copia los datos y coordina el pago por WhatsApp. Confirma el pago manualmente.",
+  contraentrega: "Pago al recibir el pedido. Se registra la compra inmediatamente y quedará pendiente de confirmación en la entrega.",
 };
 
 const WOMPI_METHOD_OPTIONS: Array<{
-  value: Exclude<PaymentMethod, "transferencia">;
+  value: Exclude<PaymentMethod, "transferencia" | "contraentrega">;
   title: string;
   description: string;
   logo: React.ReactNode;
@@ -168,7 +171,9 @@ const Checkout = () => {
 
   const extractWompiPaymentLinkId = (res: unknown) => {
     const data = res as Record<string, unknown> | null;
-    return data?.paymentLinkId ?? data?.payment_link_id ?? data?.paymentLink?.id ?? null;
+    const paymentLink = data?.paymentLink as Record<string, unknown> | undefined;
+    const value = data?.paymentLinkId ?? data?.payment_link_id ?? paymentLink?.id;
+    return typeof value === "string" ? value : null;
   };
 
   const extractWompiTransactionId = (res: unknown) => {
@@ -202,10 +207,11 @@ const Checkout = () => {
       id: orderId,
       items: detailedItems.map((it) => ({
         productId: it.product.id,
-        title: it.product.name,
+        variantId: it.variant?.id ?? null,
+        title: it.variant ? `${it.product.name} - ${it.variant.name}` : it.product.name,
         quantity: it.quantity,
-        unit_price: it.product.price,
-        lineTotal: it.product.price * it.quantity,
+        unit_price: Number(it.variant?.price ?? it.product.price),
+        lineTotal: Number(it.variant?.price ?? it.product.price) * it.quantity,
       })),
       total: checkoutTotal,
       shipping,
@@ -295,13 +301,13 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
 
   if (detailedItems.length === 0 && step === "form") {
     return (
-      <div className="min-h-screen bg-background flex flex-col">
+      <div className="min-h-screen bg-[#f5f8f8]">
         <Navbar />
         <main className="flex-1 flex items-center justify-center pt-32 pb-16 px-4">
-          <div className="bg-card border border-border rounded-3xl p-12 text-center shadow-soft max-w-md">
-            <ShoppingBag className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-            <h1 className="font-display text-2xl text-secondary">Aún no hay productos</h1>
-            <p className="text-muted-foreground mt-2">Agrega algo al carrito antes de finalizar la compra.</p>
+          <div className="max-w-md rounded-[2rem] border border-border bg-white p-12 text-center shadow-elegant">
+            <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#edf3f3]"><ShoppingBag className="h-7 w-7 text-primary" /></div>
+            <h1 className="font-display text-3xl text-primary">Aún no hay productos</h1>
+            <p className="mt-3 text-muted-foreground">Agrega algo al carrito antes de finalizar la compra.</p>
             <Button asChild className="mt-6 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft"><Link to="/products">Ver catálogo</Link></Button>
           </div>
         </main>
@@ -323,7 +329,7 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
   };
 
   const buildWhatsAppMessage = (data: z.infer<typeof checkoutSchema>, paymentLabel: string) => {
-    const productLines = detailedItems.map((it) => `• ${it.quantity} × ${it.product.name} — ${formatCOP(it.product.price * it.quantity)}`).join("\n");
+    const productLines = detailedItems.map((it) => `• ${it.quantity} × ${it.variant ? `${it.product.name} - ${it.variant.name}` : it.product.name} — ${formatCOP(Number(it.variant?.price ?? it.product.price) * it.quantity)}`).join("\n");
     return encodeURIComponent(
       `¡Hola Shelby! Pedido *${orderId}*\n\n*Cliente:* ${data.name}\n*Correo:* ${data.email}\n*Teléfono:* ${data.phone}\n*Ciudad:* ${data.city}\n*Dirección:* ${data.address}\n*Pago:* ${paymentLabel}\n` +
       (data.notes ? `*Notas:* ${data.notes}\n` : "") +
@@ -338,9 +344,17 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
     console.log("[checkout] payment flow start", { paymentMethod: data.payment, timestamp: Date.now() });
     setLoading(true);
     try {
-      if (data.payment === "transferencia") {
+      if (data.payment === "transferencia" || data.payment === "contraentrega") {
         await saveOrder("payment_pending", data.payment, data);
-        setStep("manual");
+        if (data.payment === "transferencia") {
+          setStep("manual");
+        } else {
+          const message = buildWhatsAppMessage(data, PAYMENT_DETAILS.contraentrega.label);
+          toast.success("Pedido registrado", { description: "Tu compra quedó registrada con pago contraentrega." });
+          clear();
+          window.open(`${SHELBY_WHATSAPP_URL}?text=${message}`, "_blank", "noopener,noreferrer");
+          navigate(`/order-success?order=${orderId}&total=${checkoutTotal}&method=${encodeURIComponent("contraentrega")}&status=payment_pending`);
+        }
         setLoading(false);
         return;
       }
@@ -362,12 +376,13 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
         customerName: data.name,
         customerPhone: data.phone,
       });
-      const { data: res, error } = await createWompiPayment({
+      const { data: res, error } = await api.payments.createWompiPayment({
         products: detailedItems.map((it) => ({
           id: it.product.id,
-          name: it.product.name,
+          name: it.variant ? `${it.product.name} - ${it.variant.name}` : it.product.name,
           quantity: it.quantity,
-          unit_price: it.product.price,
+          unit_price: Number(it.variant?.price ?? it.product.price),
+          variantId: it.variant?.id ?? null,
         })),
         total: checkoutTotal,
         customerEmail: data.email,
@@ -377,7 +392,7 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
         customerName: data.name,
         customerPhone: data.phone,
       });
-      const paymentUrl = extractWompiPaymentUrl(res);
+      const paymentUrl = extractWompiPaymentUrl(res) as string | null;
       const paymentLinkId = extractWompiPaymentLinkId(res);
       const transactionId = extractWompiTransactionId(res);
       const success = isWompiResponseSuccessful(res);
@@ -503,8 +518,8 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
           customerName: data.name,
           customerPhone: data.phone,
         });
-        const { data: res, error } = await createWompiPayment({
-          products: detailedItems.map((it) => ({ id: it.product.id, name: it.product.name, quantity: it.quantity, unit_price: it.product.price })),
+        const { data: res, error } = await api.payments.createWompiPayment({
+          products: detailedItems.map((it) => ({ id: it.product.id, variantId: it.variant?.id ?? null, name: it.variant ? `${it.product.name} - ${it.variant.name}` : it.product.name, quantity: it.quantity, unit_price: Number(it.variant?.price ?? it.product.price) })),
           total: finalTotal,
           customerEmail: data.email,
           reference: orderId,
@@ -513,7 +528,7 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
           customerName: data.name,
           customerPhone: data.phone,
         });
-        const paymentUrl = extractWompiPaymentUrl(res);
+        const paymentUrl = extractWompiPaymentUrl(res) as string | null;
         const paymentLinkId = extractWompiPaymentLinkId(res);
         const transactionId = extractWompiTransactionId(res);
         const success = isWompiResponseSuccessful(res);
@@ -575,7 +590,7 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
       await new Promise((r) => setTimeout(r, 500));
       await clear();
       toast.success("¡Pago reportado!", { description: "Validaremos tu transferencia en minutos." });
-      window.open(`https://wa.me/573228426561?text=${message}`, "_blank");
+      window.open(`${SHELBY_WHATSAPP_URL}?text=${message}`, "_blank");
       navigate(`/order-success?order=${orderId}&total=${finalTotal}&method=${encodeURIComponent(paymentLabel)}&status=payment_pending`);
     } catch (error) {
       console.error(error);
@@ -588,9 +603,9 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
   const handleWhatsAppFallback = () => {
     const data = validate();
     if (!data) return;
-    const paymentLabel = data.payment === "transferencia" ? PAYMENT_DETAILS[data.payment].label : WOMPI_PAYMENT_LABELS[data.payment as Exclude<PaymentMethod, "transferencia">];
+    const paymentLabel = data.payment === "transferencia" || data.payment === "contraentrega" ? PAYMENT_DETAILS[data.payment].label : WOMPI_PAYMENT_LABELS[data.payment as Exclude<PaymentMethod, "transferencia" | "contraentrega">];
     void saveOrder("payment_pending", "whatsapp", data).catch((error) => console.error(error));
-    window.open(`https://wa.me/573228426561?text=${buildWhatsAppMessage(data, paymentLabel)}`, "_blank");
+    window.open(`${SHELBY_WHATSAPP_URL}?text=${buildWhatsAppMessage(data, paymentLabel)}`, "_blank");
   };
 
   if (step === "manual" && form.payment === "transferencia") {
@@ -601,13 +616,13 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
         <main className="flex-1 pt-32 pb-16">
           <div className="container-shelby max-w-2xl">
             <button onClick={() => setStep("form")} className="text-sm text-muted-foreground hover:text-secondary transition-smooth mb-4">← Volver a editar el pedido</button>
-            <div className="bg-card border border-border rounded-3xl p-8 shadow-elegant">
+            <div className="rounded-[2rem] border border-border bg-white p-8 shadow-elegant">
               <span className="text-primary text-xs uppercase tracking-[0.3em] font-semibold">Paso final</span>
               <h1 className="font-display text-3xl text-secondary mt-2">Realiza tu pago</h1>
               <p className="text-muted-foreground mt-2 text-sm">Pedido <span className="font-mono text-secondary">{orderId}</span> · Total <span className="font-display text-primary">{formatCOP(total)}</span></p>
               <div className="mt-6 grid gap-3">
                 <PaymentDetailRow label="Titular" value={details.holder} />
-                <PaymentDetailRow label={form.payment === "nequi" ? "Número" : "Cuenta"} value={details.account} copyable />
+                <PaymentDetailRow label="Cuenta" value={details.account} copyable />
                 <PaymentDetailRow label="Entidad" value={details.bank} />
                 <PaymentDetailRow label="Monto a pagar" value={formatCOP(total)} copyable highlight />
               </div>
@@ -626,13 +641,13 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
   }
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="min-h-screen bg-[#f5f8f8]">
       <Navbar />
       <main className="flex-1 pt-32 pb-16">
         <div className="container-shelby">
           <div className="mb-8">
             <span className="text-primary text-xs uppercase tracking-[0.3em] font-semibold">Casi listo</span>
-            <h1 className="font-display text-4xl sm:text-5xl text-secondary mt-2">Finaliza tu compra</h1>
+            <h1 className="mt-2 font-display text-4xl text-primary sm:text-5xl">Finaliza tu compra</h1>
             <p className="text-muted-foreground mt-2 text-sm"><Lock className="inline h-3.5 w-3.5 mr-1" /> Tus datos solo se usan para procesar el pedido.</p>
           </div>
           <form onSubmit={handleSubmit} className="grid lg:grid-cols-3 gap-8">
@@ -700,21 +715,23 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
                     />
                   ))}
                   <PaymentOption value="transferencia" selected={form.payment} onSelect={(v) => setForm((f) => ({ ...f, payment: v }))} icon={Building2} title="Transferencia bancaria" description="Bancolombia y otros bancos — confirmación manual" />
+                  <PaymentOption value="contraentrega" selected={form.payment} onSelect={(v) => setForm((f) => ({ ...f, payment: v }))} icon={Truck} title="Pago contraentrega" description="Paga al recibir tu pedido y dejamos el registro de la compra en el sistema" />
                 </div>
                 <p className="mt-4 rounded-2xl border border-border bg-background p-4 text-sm text-muted-foreground">{PAYMENT_METHOD_NOTES[form.payment]}</p>
               </Section>
             </div>
-            <aside className="lg:sticky lg:top-32 h-fit bg-card border border-border rounded-2xl p-6 shadow-elegant">
-              <h2 className="font-display text-2xl text-secondary">Tu pedido</h2>
+            <aside className="h-fit rounded-[2rem] border border-border bg-white p-6 shadow-elegant lg:sticky lg:top-32">
+              <h2 className="font-display text-3xl text-primary">Tu pedido</h2>
               <div className="mt-4 space-y-3 max-h-64 overflow-y-auto pr-1">
                 {detailedItems.map((it) => (
-                  <div key={it.productId} className="flex items-center gap-3 text-sm">
-                    <img src={it.product.image} alt={it.product.name} className="h-12 w-12 rounded-lg object-cover bg-muted flex-shrink-0" />
+                  <div key={`${it.productId}:${it.variantId || "base"}`} className="flex items-center gap-3 text-sm">
+                    <img src={it.variant?.image || it.product.image} alt={it.variant ? `${it.product.name} - ${it.variant.name}` : it.product.name} className="h-12 w-12 rounded-lg object-cover bg-muted flex-shrink-0" />
                     <div className="flex-1 min-w-0">
                       <div className="text-secondary truncate">{it.product.name}</div>
-                      <div className="text-xs text-muted-foreground">{it.quantity} × {formatCOP(it.product.price)}</div>
+                      {it.variant && <div className="text-xs font-medium text-primary truncate">Variante: {it.variant.name}</div>}
+                      <div className="text-xs text-muted-foreground">{it.quantity} × {formatCOP(Number(it.variant?.price ?? it.product.price))}</div>
                     </div>
-                    <div className="font-semibold text-secondary text-sm">{formatCOP(it.product.price * it.quantity)}</div>
+                    <div className="font-semibold text-secondary text-sm">{formatCOP(Number(it.variant?.price ?? it.product.price) * it.quantity)}</div>
                   </div>
                 ))}
               </div>
@@ -780,10 +797,10 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
 
 function Section({ icon: Icon, title, children }: { icon: React.ComponentType<{ className?: string }>; title: string; children: React.ReactNode }) {
   return (
-    <section className="bg-card border border-border rounded-2xl p-6 shadow-soft">
-      <header className="flex items-center gap-3 mb-5">
-        <div className="h-10 w-10 rounded-xl bg-primary flex items-center justify-center shadow-soft"><Icon className="h-5 w-5 text-primary-foreground" /></div>
-        <h2 className="font-display text-xl text-secondary tracking-wide">{title}</h2>
+    <section className="rounded-[1.8rem] border border-border bg-white p-6 shadow-soft">
+      <header className="mb-5 flex items-center gap-3">
+        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary shadow-soft"><Icon className="h-5 w-5 text-primary-foreground" /></div>
+        <h2 className="font-display text-2xl tracking-wide text-primary">{title}</h2>
       </header>
       {children}
     </section>
