@@ -21,8 +21,10 @@ dotenv.config();
 const prisma = new PrismaClient();
 const app = express();
 const port = Number(process.env.PORT || 3001);
-const jwtSecret = String(process.env.JWT_SECRET ?? "change-me").trim();
-console.log("JWT_SECRET length:", jwtSecret.length);
+const jwtSecret = String(process.env.JWT_SECRET ?? "").trim();
+if (!jwtSecret) {
+  throw new Error("JWT_SECRET must be configured before starting the backend");
+}
 const uploadsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "uploads");
 const revenueStatuses = new Set(["paid", "approved", "completed", "payment_approved"]);
 
@@ -30,6 +32,7 @@ type AuthPayload = { sub: string; email: string; name: string; cedula: string; i
 type StoredSession = { user: { id: string; email: string; user_metadata: Record<string, unknown> }; access_token: string } | null;
 
 const normalizeCedula = (value: string) => value.replace(/\D/g, "").trim();
+const createGeneratedPasswordHash = () => bcrypt.hash(crypto.randomUUID(), 10);
 
 const parseBoolean = (value: unknown): boolean => {
   if (typeof value === "boolean") return value;
@@ -812,7 +815,7 @@ const syncProfileAndCedula = async (payload: {
       name: userName,
       cedula: normalizedCedula,
       isAdmin: payload.user_is_admin,
-      password: await bcrypt.hash("temporary-password", 10),
+      password: await createGeneratedPasswordHash(),
     },
   });
 
@@ -1326,7 +1329,7 @@ app.post("/api/data/:table", async (req, res) => {
           id,
           name: String(row.name ?? "Cliente"),
           email: String(row.email ?? "").trim().toLowerCase(),
-          password: await bcrypt.hash("temporary-password", 10),
+          password: await createGeneratedPasswordHash(),
           cedula: normalizeCedula(String(row.cedula ?? "")),
           isAdmin: Boolean(row.is_admin ?? row.isAdmin),
         },
