@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "npm exec -- prisma generate && npm exec -- tsc -p tsconfig.json",
+    "postinstall": "npm run build",
     "start": "npm exec -- prisma migrate deploy && node dist/server.js",
     "start:prod": "npm exec -- prisma migrate deploy && node dist/server.js",
     "prisma:generate": "npm exec -- prisma generate",
