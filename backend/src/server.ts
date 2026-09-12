@@ -16,7 +16,24 @@ import { buildWompiAuthorizationHeader, extractWebhookSignature, extractWompiMer
 import { wrap } from "./lib/serialize.js";
 import cookieParser from "cookie-parser";
 
-dotenv.config();
+const productionEnvironment = process.env.NODE_ENV === "production";
+if (!productionEnvironment) {
+  dotenv.config();
+}
+
+const databaseUrl = String(process.env.DATABASE_URL ?? "").trim();
+if (!databaseUrl) {
+  throw new Error("DATABASE_URL must be configured before starting the backend");
+}
+
+try {
+  const parsedDatabaseUrl = new URL(databaseUrl);
+  if (parsedDatabaseUrl.protocol !== "mysql:" || !parsedDatabaseUrl.hostname || !parsedDatabaseUrl.pathname.slice(1)) {
+    throw new Error("DATABASE_URL must be a valid MySQL connection URL");
+  }
+} catch (error) {
+  throw new Error(error instanceof Error ? error.message : "DATABASE_URL must be a valid MySQL connection URL");
+}
 
 const prisma = new PrismaClient();
 const app = express();
