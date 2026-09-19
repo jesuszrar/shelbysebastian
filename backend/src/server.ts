@@ -6,7 +6,6 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
 import { mkdir, writeFile } from "fs/promises";
-import { spawn } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 import { resolvePreferredPaymentMethod } from "./lib/mercadopago.js";
@@ -2076,35 +2075,7 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
   return res.json({ id: data.id, init_point: data.init_point, sandbox_init_point: data.sandbox_init_point });
 });
 
-const runPrismaMigrations = () => new Promise<void>((resolve, reject) => {
-  const backendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const prismaCli = path.join(backendRoot, "node_modules", "prisma", "build", "index.js");
-  const migrationProcess = spawn(process.execPath, [prismaCli, "migrate", "deploy"], {
-    cwd: backendRoot,
-    stdio: "inherit",
-  });
-
-  migrationProcess.once("error", reject);
-  migrationProcess.once("close", (code) => {
-    if (code === 0) {
-      resolve();
-      return;
-    }
-    reject(new Error(`Prisma migrate deploy exited with code ${code ?? "unknown"}`));
-  });
+app.listen(port, async () => {
+  await mkdir(uploadsDir, { recursive: true });
+  console.log(`Shelby MySQL backend listening on http://localhost:${port}`);
 });
-
-const bootstrap = async () => {
-  try {
-    await runPrismaMigrations();
-    await mkdir(uploadsDir, { recursive: true });
-    app.listen(port, async () => {
-      console.log(`Shelby MySQL backend listening on http://localhost:${port}`);
-    });
-  } catch (error) {
-    console.error("Prisma migration failed; Express server will not start", error);
-    process.exit(1);
-  }
-};
-
-void bootstrap();
