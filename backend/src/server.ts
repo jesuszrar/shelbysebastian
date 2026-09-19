@@ -28,11 +28,11 @@ if (!databaseUrl) {
 
 try {
   const parsedDatabaseUrl = new URL(databaseUrl);
-  if (parsedDatabaseUrl.protocol !== "mysql:" || !parsedDatabaseUrl.hostname || !parsedDatabaseUrl.pathname.slice(1)) {
-    throw new Error("DATABASE_URL must be a valid MySQL connection URL");
+  if (!['postgresql:', 'postgres:'].includes(parsedDatabaseUrl.protocol) || !parsedDatabaseUrl.hostname || !parsedDatabaseUrl.pathname.slice(1)) {
+    throw new Error("DATABASE_URL must be a valid PostgreSQL connection URL");
   }
 } catch (error) {
-  throw new Error(error instanceof Error ? error.message : "DATABASE_URL must be a valid MySQL connection URL");
+  throw new Error(error instanceof Error ? error.message : "DATABASE_URL must be a valid PostgreSQL connection URL");
 }
 
 const prisma = new PrismaClient();
