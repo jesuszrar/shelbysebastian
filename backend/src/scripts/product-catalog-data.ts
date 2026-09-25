@@ -1,0 +1,148 @@
+export type ProductCatalogVariant = {
+  id: string;
+  name: string;
+  image: string;
+  description: string;
+  price?: number;
+  stock?: number;
+  active?: boolean;
+  images?: string[];
+  sortOrder?: number;
+};
+
+export type ProductCatalogItem = {
+  id: string;
+  name: string;
+  category: "Adhesivas" | "Facturación" | "Más vendidos" | "Repuestos";
+  image: string;
+  price: number;
+  stock?: number;
+  oldPrice?: number;
+  badge?: string;
+  highlight?: boolean;
+  description: string;
+  specs: string[];
+  subproducts?: ProductCatalogVariant[];
+  images?: string[];
+};
+
+export const products: ProductCatalogItem[] = [
+  {
+    id: "niimbot-b1",
+    name: "Etiquetadora B1",
+    category: "Adhesivas",
+    image: "/assets/products/niimbot-b1.jpg",
+    price: 169900,
+    oldPrice: 260000,
+    badge: "-35%",
+    highlight: true,
+    description: "Impresora térmica portátil para etiquetas adhesivas. Ideal para emprendedores que necesitan rotular productos, paquetes o inventario sin enredos.",
+    specs: ["Conexión Bluetooth", "Compatible con iOS y Android", "Imprime etiquetas de 20–50 mm", "Batería recargable"],
+    subproducts: [
+      { id: "b1-labels-50x30", name: "Rollo blanco 50 × 30 mm", image: "/assets/subproducts/b1-labels-50x30.jpg", description: "Rollo rotulado de 50 × 30 mm con 230 etiquetas." },
+      { id: "b1-labels-white-30x45", name: "Etiquetas blancas 30 × 45 mm", image: "/assets/subproducts/b1-labels-white-30x45.jpg", description: "Presentación blanca de 30 × 45 mm con 80 etiquetas." },
+      { id: "b1-labels-circular-50", name: "Etiquetas circulares transparentes", image: "/assets/subproducts/b1-labels-circular-50.jpg", description: "Etiquetas circulares transparentes de 50 mm con 150 unidades." },
+      { id: "b1-labels-transparent-20x40", name: "Etiquetas transparentes 20 × 40 mm", image: "/assets/subproducts/b1-labels-transparent-20x40.jpg", description: "Rollo transparente de 20 × 40 mm con 320 etiquetas." },
+      { id: "b1-labels-white-20x40", name: "Etiquetas blancas 20 × 40 mm", image: "/assets/subproducts/b1-labels-white-20x40.jpg", description: "Rollo blanco de 20 × 40 mm con 320 etiquetas." },
+    ],
+  },
+  {
+    id: "mp58",
+    name: "Impresora MP58 – 01",
+    category: "Facturación",
+    image: "/assets/products/mp58.jpg",
+    price: 149900,
+    oldPrice: 160000,
+    badge: "-6%",
+    description: "Impresora térmica de facturación 58 mm. Rápida, silenciosa y compatible con la mayoría de POS y apps de facturación electrónica.",
+    specs: ["Ancho 58 mm", "Bluetooth + USB", "Hasta 90 mm/s", "Compatible con apps de facturación"],
+  },
+  {
+    id: "mp80-02h",
+    name: "Impresora MP80-02H",
+    category: "Facturación",
+    image: "/assets/products/mp58.jpg",
+    price: 259900,
+    description: "Impresora térmica de 80 mm para facturación rápida y operaciones con mayor volumen. Una opción robusta para puntos de venta.",
+    specs: ["Ancho 80 mm", "Bluetooth + USB", "Impresión térmica", "Ideal para facturación"],
+  },
+  {
+    id: "mp80-04",
+    name: "Impresora MP80-04",
+    category: "Facturación",
+    image: "/assets/products/pt210.jpg",
+    price: 229900,
+    description: "Impresora térmica de 80 mm pensada para tickets, facturación y atención al cliente con un flujo de trabajo más ágil.",
+    specs: ["Ancho 80 mm", "Bluetooth + USB", "Impresión térmica", "Pensada para alto volumen"],
+  },
+  {
+    id: "pt210",
+    name: "Impresora Gooj PT-210",
+    category: "Facturación",
+    image: "/assets/products/pt210.jpg",
+    price: 130000,
+    oldPrice: 160000,
+    badge: "-19%",
+    description: "Impresora portátil 58 mm con batería de larga duración. Perfecta para domicilios, mercados y ventas en la calle.",
+    specs: ["Batería incluida", "Bluetooth", "Ancho 58 mm", "Tamaño compacto"],
+  },
+  {
+    id: "niimbot-d110",
+    name: "Etiquetadora D110",
+    category: "Adhesivas",
+    image: "/assets/products/niimbot-d110.jpg",
+    price: 119900,
+    oldPrice: 160000,
+    badge: "-25%",
+    description: "Diseño compacto, conexión por app y miles de plantillas listas para etiquetar productos y pedidos con rapidez.",
+    specs: ["App con plantillas gratis", "Bluetooth", "Etiquetas 12–15 mm", "Recargable USB-C"],
+  },
+  {
+    id: "d11h",
+    name: "Etiquetadora D11H",
+    category: "Adhesivas",
+    image: "/assets/products/niimbot-d110.jpg",
+    price: 149900,
+    description: "Etiquetadora compacta para imprimir stickers y etiquetas desde el celular con una experiencia simple y portátil.",
+    specs: ["Conexión Bluetooth", "Compatible con iOS y Android", "Etiquetas adhesivas", "Recargable por USB"],
+    subproducts: [
+      { id: "d11h-kit", name: "Kit de accesorios D11_H", image: "/assets/subproducts/d11h-kit.jpg", description: "Contenido de empaque mostrado para la serie D11_H." },
+      { id: "d11h-labels-30x15", name: "Etiquetas blancas 30 × 15 mm", image: "/assets/subproducts/d11h-labels-30x15.jpg", description: "Rollo de etiquetas blancas de 30 × 15 mm con 210 unidades." },
+      { id: "d11h-labels-12-5x109", name: "Etiquetas cola de ratón 12,5 × 109 mm", image: "/assets/subproducts/d11h-labels-12-5x109.jpg", description: "Rollo blanco de etiquetas cola de ratón de 12,5 × 109 mm con 65 unidades." },
+      { id: "d11h-labels-40x12", name: "Etiquetas blancas 40 × 12 mm", image: "/assets/subproducts/d11h-labels-40x12.jpg", description: "Rollo de etiquetas blancas de 40 × 12 mm con 160 unidades." },
+    ],
+  },
+  {
+    id: "lector",
+    name: "Lector de código de barras",
+    category: "Más vendidos",
+    image: "/assets/products/lector.jpg",
+    price: 55000,
+    oldPrice: 90000,
+    badge: "-39%",
+    description: "Lector láser USB plug & play. Reconoce códigos 1D rápido y sin configuración. Compatible con Windows, macOS y Linux.",
+    specs: ["Conexión USB", "Lectura láser 1D", "Plug & Play", "Soporte incluido"],
+  },
+  {
+    id: "bateria",
+    name: "Batería Gooj PT-210 / MTP-11",
+    category: "Repuestos",
+    image: "/assets/products/bateria.jpg",
+    price: 50000,
+    oldPrice: 60000,
+    badge: "-17%",
+    description: "Batería original de repuesto para impresoras Gooj PT-210 y MTP-11. Recupera la autonomía de tu equipo.",
+    specs: ["Compatible PT-210 y MTP-11", "Capacidad original", "Fácil instalación"],
+  },
+  {
+    id: "rollo",
+    name: "Rollo adhesivo 58 mm × 7 m",
+    category: "Repuestos",
+    image: "/assets/products/rollo.jpg",
+    price: 5000,
+    oldPrice: 22000,
+    badge: "-77%",
+    description: "Rollo de papel térmico adhesivo de 58 mm de ancho y 7 metros de largo. Perfecto para etiquetar productos y envíos.",
+    specs: ["Ancho 58 mm", "Largo 7 m", "Adhesivo permanente", "Térmico de alta calidad"],
+  },
+];

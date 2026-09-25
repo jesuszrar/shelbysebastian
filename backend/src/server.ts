@@ -15,6 +15,8 @@ import { isAdminUserRecord } from "./lib/auth.js";
 import { buildWompiAuthorizationHeader, extractWebhookSignature, extractWompiMerchantMethods, getWompiConfig, mapWompiStatusToOrderStatus, normalizePhoneNumber, normalizeWompiPaymentMethod, verifyWompiEventSignature } from "./lib/wompi.js";
 import { wrap } from "./lib/serialize.js";
 import cookieParser from "cookie-parser";
+import { products as staticProducts } from "./scripts/product-catalog-data.js";
+import { buildCatalogSyncPlan } from "./scripts/catalog-sync-plan.js";
 
 const productionEnvironment = process.env.NODE_ENV === "production";
 if (!productionEnvironment) {
@@ -793,6 +795,23 @@ const requireAdmin = async (req: express.Request, res: express.Response) => {
   res.status(403).json({ error: "Solo administradores" });
   return null;
 };
+
+if (process.env.CATALOG_DRY_RUN_ROUTE === "true") {
+  app.get("/internal/catalog-sync-dry-run", async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) return;
+    const user = await prisma.user.findUnique({ where: { id: auth.sub }, select: { cedula: true, isAdmin: true } });
+    if (!isAdminUserRecord(user)) return res.status(403).json({ error: "Solo administradores" });
+
+    try {
+      const plan = await buildCatalogSyncPlan(prisma, staticProducts);
+      return res.json(plan);
+    } catch (error) {
+      console.error("Catalog dry-run failed", error);
+      return res.status(500).json({ error: "catalog_dry_run_failed" });
+    }
+  });
+}
 
 const parseFilters = (filtersRaw?: string) => {
   if (!filtersRaw) return [] as Array<{ column: string; value: string | number | boolean }>;
