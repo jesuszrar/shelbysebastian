@@ -17,6 +17,7 @@ import { wrap } from "./lib/serialize.js";
 import cookieParser from "cookie-parser";
 import { products as staticProducts } from "./scripts/product-catalog-data.js";
 import { buildCatalogSyncPlan } from "./scripts/catalog-sync-plan.js";
+import { syncProductCatalog } from "./scripts/sync-product-catalog.js";
 
 const productionEnvironment = process.env.NODE_ENV === "production";
 if (!productionEnvironment) {
@@ -809,6 +810,29 @@ if (process.env.CATALOG_DRY_RUN_ROUTE === "true") {
     } catch (error) {
       console.error("Catalog dry-run failed", error);
       return res.status(500).json({ error: "catalog_dry_run_failed" });
+    }
+  });
+}
+
+let catalogSyncRunning = false;
+
+if (process.env.CATALOG_REAL_SYNC_ROUTE === "true") {
+  app.post("/internal/catalog-sync-run", async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) return;
+    const user = await prisma.user.findUnique({ where: { id: auth.sub }, select: { cedula: true, isAdmin: true } });
+    if (!isAdminUserRecord(user)) return res.status(403).json({ error: "Solo administradores" });
+    if (catalogSyncRunning) return res.status(409).json({ error: "catalog_sync_already_running" });
+
+    catalogSyncRunning = true;
+    try {
+      const summary = await syncProductCatalog(prisma);
+      return res.json(summary);
+    } catch (error) {
+      console.error("Catalog sync failed", error);
+      return res.status(500).json({ error: "catalog_sync_failed" });
+    } finally {
+      catalogSyncRunning = false;
     }
   });
 }

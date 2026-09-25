@@ -1,8 +1,5 @@
-import { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { products as staticProducts } from "./product-catalog-data.js";
-
-const dryRun = process.env.DRY_RUN === "true";
-const prisma = new PrismaClient();
 
 const numberOrUndefined = (value: unknown): number | undefined => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -173,7 +170,7 @@ const getVariantImageRecords = (productId: string, subproduct: NonNullable<(type
   }));
 };
 
-const readExpectedState = async () => {
+const readExpectedState = async (prisma: PrismaClient) => {
   const [existingProducts, existingVariants, existingProductImages] = await Promise.all([
     prisma.product.findMany({
       select: {
@@ -263,8 +260,8 @@ const compareVariantData = (
   );
 };
 
-const runSync = async () => {
-  const { existingProducts, existingVariants, existingProductImages } = await readExpectedState();
+export const syncProductCatalog = async (prisma: PrismaClient) => {
+  const { existingProducts, existingVariants, existingProductImages } = await readExpectedState(prisma);
 
   const plannedProducts = {
     create: [] as Array<{ type: "create"; product: (typeof staticProducts)[number]; summary: ReturnType<typeof buildProductSummary> }>,
@@ -326,7 +323,7 @@ const runSync = async () => {
   }
 
   const summary = {
-    dryRun,
+    dryRun: false,
     sourceProducts: staticProducts.length,
     products: {
       create: plannedProducts.create.length,
@@ -349,53 +346,6 @@ const runSync = async () => {
       preserveNiimbotB1Stock: true,
     },
   };
-
-  if (dryRun) {
-    console.log("[DRY RUN] Product catalog sync plan");
-    console.log(JSON.stringify(summary, null, 2));
-
-    if (plannedProducts.create.length > 0) {
-      console.log("\n[DRY RUN] Productos que se crearían:");
-      console.log(JSON.stringify(plannedProducts.create.map((item) => item.summary), null, 2));
-    }
-
-    if (plannedProducts.update.length > 0) {
-      console.log("\n[DRY RUN] Productos que se actualizarían:");
-      console.log(JSON.stringify(plannedProducts.update.map((item) => item.summary), null, 2));
-    }
-
-    if (plannedProducts.skip.length > 0) {
-      console.log("\n[DRY RUN] Productos omitidos porque ya están sincronizados:");
-      console.log(JSON.stringify(plannedProducts.skip.map((item) => item.summary), null, 2));
-    }
-
-    if (plannedVariants.create.length > 0) {
-      console.log("\n[DRY RUN] Variantes que se crearían:");
-      console.log(JSON.stringify(plannedVariants.create.map((item) => item.summary), null, 2));
-    }
-
-    if (plannedVariants.update.length > 0) {
-      console.log("\n[DRY RUN] Variantes que se actualizarían:");
-      console.log(JSON.stringify(plannedVariants.update.map((item) => item.summary), null, 2));
-    }
-
-    if (plannedVariants.skip.length > 0) {
-      console.log("\n[DRY RUN] Variantes omitidas porque ya están sincronizadas:");
-      console.log(JSON.stringify(plannedVariants.skip.map((item) => item.summary), null, 2));
-    }
-
-    if (plannedImages.create.length > 0) {
-      console.log("\n[DRY RUN] Imágenes que se crearían:");
-      console.log(JSON.stringify(plannedImages.create, null, 2));
-    }
-
-    if (plannedImages.skip.length > 0) {
-      console.log("\n[DRY RUN] Imágenes ya existentes / omitidas:");
-      console.log(JSON.stringify(plannedImages.skip, null, 2));
-    }
-
-    return;
-  }
 
   await prisma.$transaction(async (tx) => {
     for (const item of plannedProducts.create) {
@@ -430,20 +380,5 @@ const runSync = async () => {
     }
   });
 
-  console.log("[SYNC] Catalog synchronization completed.");
-  console.log(JSON.stringify(summary, null, 2));
+  return summary;
 };
-
-(async () => {
-  try {
-    console.log("Product catalog sync started.");
-    console.log(`DRY_RUN=${String(dryRun)}`);
-    await runSync();
-  } catch (error) {
-    console.error("Product catalog sync failed.");
-    console.error(error instanceof Error ? error.stack ?? error.message : error);
-    process.exitCode = 1;
-  } finally {
-    await prisma.$disconnect();
-  }
-})();
