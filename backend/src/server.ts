@@ -46,6 +46,7 @@ if (!jwtSecret) {
   throw new Error("JWT_SECRET must be configured before starting the backend");
 }
 const uploadsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "uploads");
+const assetsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public", "assets");
 const revenueStatuses = new Set(["paid", "approved", "completed", "payment_approved"]);
 
 type AuthPayload = { sub: string; email: string; name: string; cedula: string; isAdmin: boolean };
@@ -123,6 +124,7 @@ app.use(express.json({
 }));
 app.use(cookieParser());
 app.use("/uploads", express.static(uploadsDir));
+app.use("/assets", express.static(assetsDir, { fallthrough: false }));
 
 const parseDecimal = (value: unknown): Prisma.Decimal | null | undefined => {
   if (value === null) return null;

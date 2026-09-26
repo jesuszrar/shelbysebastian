@@ -47,6 +47,23 @@ const resolveApiBaseUrl = () => {
 };
 
 const API_BASE_URL = resolveApiBaseUrl();
+const API_IMAGE_BASE_URL = (API_BASE_URL || "https://api.shelbyimportacionessas.com").replace(
+  /^http:\/\/api\.shelbyimportacionessas\.com/i,
+  "https://api.shelbyimportacionessas.com",
+);
+
+export const resolveImageUrl = (value: string | null | undefined): string => {
+  const imageUrl = String(value ?? "").trim();
+  if (!imageUrl) return "";
+  if (/^https:\/\//i.test(imageUrl)) return imageUrl;
+  if (/^http:\/\/api\.shelbyimportacionessas\.com(?=\/|$)/i.test(imageUrl)) {
+    return imageUrl.replace(/^http:/i, "https:");
+  }
+  if (imageUrl.startsWith("/assets/") || imageUrl.startsWith("/uploads/")) {
+    return `${API_IMAGE_BASE_URL}${imageUrl}`;
+  }
+  return imageUrl;
+};
 export const SESSION_KEY = "shelby:session";
 const AUTH_LISTENERS = new Set<(event: string, session: StoredSession | null) => void>();
 export const SESSION_EXPIRED_EVENT = "SESSION_EXPIRED";

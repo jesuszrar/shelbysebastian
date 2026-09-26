@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { fetchData } from "@/integrations/api/client";
+import { fetchData, resolveImageUrl } from "@/integrations/api/client";
 import { products as defaultProducts, type Product, type Subproduct } from "@/data/products";
 
 const CUSTOM_SUBPRODUCTS_KEY = "shelby:custom_subproducts";
@@ -49,7 +49,7 @@ const mergeProduct = (base: Product, row?: ProductRow): Product => ({
   ...base,
   name: row?.name ?? base.name,
   category: (row?.category as Product["category"]) ?? base.category,
-  image: row?.image ?? base.image,
+  image: row?.image ? resolveImageUrl(row.image) : base.image,
   price: typeof row?.price === "number" ? row.price : base.price,
   oldPrice: row?.oldPrice !== undefined ? row.oldPrice : base.oldPrice,
   badge: row?.badge !== undefined ? row.badge : base.badge,
@@ -57,8 +57,8 @@ const mergeProduct = (base: Product, row?: ProductRow): Product => ({
   stock: typeof row?.stock === "number" ? row.stock : base.stock,
   description: row?.description ?? base.description,
   specs: row?.specs?.length ? row.specs : base.specs,
-  subproducts: Array.isArray(row?.variants) && row!.variants!.length > 0 ? row!.variants!.filter((variant) => variant.active !== false).sort((left, right) => Number(left.sortOrder ?? 0) - Number(right.sortOrder ?? 0)).map((variant) => ({ id: variant.id, name: variant.name, image: variant.image || base.image, description: variant.description || "", price: variant.price, stock: variant.stock, active: variant.active, sortOrder: variant.sortOrder, images: variant.images?.map((image) => String(image.url ?? "")).filter(Boolean) })) : Array.isArray(row?.subproducts) && row!.subproducts!.length > 0 ? row!.subproducts! : base.subproducts,
-  images: Array.isArray(row?.images) ? row!.images!.map((image) => String(image.url ?? "")).filter(Boolean) : base.images,
+  subproducts: Array.isArray(row?.variants) && row!.variants!.length > 0 ? row!.variants!.filter((variant) => variant.active !== false).sort((left, right) => Number(left.sortOrder ?? 0) - Number(right.sortOrder ?? 0)).map((variant) => ({ id: variant.id, name: variant.name, image: variant.image ? resolveImageUrl(variant.image) : base.image, description: variant.description || "", price: variant.price, stock: variant.stock, active: variant.active, sortOrder: variant.sortOrder, images: variant.images?.map((image) => resolveImageUrl(image.url)).filter(Boolean) })) : Array.isArray(row?.subproducts) && row!.subproducts!.length > 0 ? row!.subproducts! : base.subproducts,
+  images: Array.isArray(row?.images) ? row!.images!.map((image) => resolveImageUrl(image.url)).filter(Boolean) : base.images,
 });
 
 const rowToProduct = (row: ProductRow): Product => {
@@ -72,7 +72,7 @@ const rowToProduct = (row: ProductRow): Product => {
     id: row.id,
     name: row.name,
     category: (row.category as Product["category"]) || "Adhesivas",
-    image: row.image || defaultProducts[0]?.image || "",
+    image: row.image ? resolveImageUrl(row.image) : defaultProducts[0]?.image || "",
     price: typeof row.price === "number" ? row.price : 0,
     oldPrice: row.oldPrice ?? undefined,
     badge: row.badge ?? undefined,
@@ -80,8 +80,8 @@ const rowToProduct = (row: ProductRow): Product => {
     stock: typeof row.stock === "number" ? row.stock : 0,
     description: row.description || "",
     specs: row.specs?.length ? row.specs : [],
-    subproducts: Array.isArray(row.variants) && row.variants.length > 0 ? row.variants.filter((variant) => variant.active !== false).sort((left, right) => Number(left.sortOrder ?? 0) - Number(right.sortOrder ?? 0)).map((variant) => ({ id: variant.id, name: variant.name, image: variant.image || row.image || "", description: variant.description || "", price: variant.price, stock: variant.stock, active: variant.active, sortOrder: variant.sortOrder, images: variant.images?.map((image) => String(image.url ?? "")).filter(Boolean) })) : Array.isArray(row.subproducts) ? row.subproducts : undefined,
-    images: Array.isArray(row.images) ? row.images.map((image) => String(image.url ?? "")).filter(Boolean) : undefined,
+    subproducts: Array.isArray(row.variants) && row.variants.length > 0 ? row.variants.filter((variant) => variant.active !== false).sort((left, right) => Number(left.sortOrder ?? 0) - Number(right.sortOrder ?? 0)).map((variant) => ({ id: variant.id, name: variant.name, image: variant.image ? resolveImageUrl(variant.image) : row.image ? resolveImageUrl(row.image) : "", description: variant.description || "", price: variant.price, stock: variant.stock, active: variant.active, sortOrder: variant.sortOrder, images: variant.images?.map((image) => resolveImageUrl(image.url)).filter(Boolean) })) : Array.isArray(row.subproducts) ? row.subproducts : undefined,
+    images: Array.isArray(row.images) ? row.images.map((image) => resolveImageUrl(image.url)).filter(Boolean) : undefined,
   };
 };
 

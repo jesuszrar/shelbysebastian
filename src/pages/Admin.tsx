@@ -3,7 +3,7 @@ import { Footer } from "@/components/shelby/Footer";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Button } from "@/components/ui/button";
 import { useProductsCatalog } from "@/context/ProductsContext";
-import { deleteData, fetchData, invokeFunction, patchData, postData, uploadFile } from "@/integrations/api/client";
+import { deleteData, fetchData, invokeFunction, patchData, postData, resolveImageUrl, uploadFile } from "@/integrations/api/client";
 import { formatCOP, products as defaultProducts, type Product } from "@/data/products";
 import { toast } from "sonner";
 import {
@@ -604,7 +604,7 @@ function ProductsAdmin() {
             <div key={product.id} className="bg-card border border-border rounded-3xl p-4 shadow-soft">
               <div className="flex flex-col lg:flex-row gap-4 lg:items-center">
                 <img
-                  src={product.image || "/placeholder.png"}
+                  src={resolveImageUrl(product.image) || "/placeholder.png"}
                   alt={product.name}
                   className="h-24 w-24 rounded-2xl object-cover bg-muted flex-shrink-0"
                 />
@@ -670,7 +670,7 @@ function ProductsAdmin() {
                       <div className="grid gap-3 sm:grid-cols-2">
                         {imageUrls.map((url, index) => (
                           <div key={`${url}-${index}`} className="rounded-xl border border-border bg-white p-3">
-                            <img src={url} alt={`Imagen ${index + 1}`} className="mb-2 h-28 w-full rounded-lg object-contain bg-muted" />
+                            <img src={resolveImageUrl(url)} alt={`Imagen ${index + 1}`} className="mb-2 h-28 w-full rounded-lg object-contain bg-muted" />
                             <p className="truncate text-xs text-muted-foreground">{index === 0 ? "Principal" : `Imagen ${index + 1}`}</p>
                             <div className="mt-2 flex flex-wrap gap-2">
                               {index > 0 && <Button type="button" size="sm" variant="outline" onClick={() => { const next = [...imageUrls]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; setImageUrls(next); }}>Subir</Button>}
@@ -742,7 +742,7 @@ function ProductsAdmin() {
                               <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm hover:bg-accent"><Upload className="h-4 w-4" /> Subir imagen<input type="file" accept="image/*" className="hidden" onChange={async (event) => { const file = event.target.files?.[0]; if (file) await uploadSubproductImage(item.id, file); }} /></label>
                             </div>
                             <label className="mt-3 block text-sm font-medium text-secondary">Descripción<textarea value={item.description} onChange={(event) => updateSubproduct(item.id, "description", event.target.value)} rows={2} className="mt-1.5 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/40" /></label>
-                            <div className="mt-3"><span className="text-sm font-medium text-secondary">Imágenes de la variante</span><div className="mt-2 flex flex-wrap gap-2">{item.images.map((url, imageIndex) => <div key={`${url}-${imageIndex}`} className="relative"><img src={url} alt={`${item.name || "Variante"} ${imageIndex + 1}`} className="h-16 w-16 rounded-lg object-cover" /><button type="button" aria-label="Eliminar imagen" className="absolute -right-1 -top-1 rounded-full bg-destructive px-1 text-xs text-white" onClick={() => updateSubproduct(item.id, "images", item.images.filter((_, candidate) => candidate !== imageIndex))}>×</button></div>)}</div><label className="mt-2 inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm hover:bg-accent"><Upload className="h-4 w-4" /> Agregar imagen<input type="file" accept="image/*" className="hidden" onChange={async (event) => { const file = event.target.files?.[0]; if (!file || !editing) return; const extension = file.name.split(".").pop() || "jpg"; const result = await uploadFile(`products/${editing}-${item.id}-${Date.now()}.${extension}`, file); if (result.data?.publicUrl) updateSubproduct(item.id, "images", [...item.images, result.data.publicUrl]); }} /></label></div>
+                            <div className="mt-3"><span className="text-sm font-medium text-secondary">Imágenes de la variante</span><div className="mt-2 flex flex-wrap gap-2">{item.images.map((url, imageIndex) => <div key={`${url}-${imageIndex}`} className="relative"><img src={resolveImageUrl(url)} alt={`${item.name || "Variante"} ${imageIndex + 1}`} className="h-16 w-16 rounded-lg object-cover" /><button type="button" aria-label="Eliminar imagen" className="absolute -right-1 -top-1 rounded-full bg-destructive px-1 text-xs text-white" onClick={() => updateSubproduct(item.id, "images", item.images.filter((_, candidate) => candidate !== imageIndex))}>×</button></div>)}</div><label className="mt-2 inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm hover:bg-accent"><Upload className="h-4 w-4" /> Agregar imagen<input type="file" accept="image/*" className="hidden" onChange={async (event) => { const file = event.target.files?.[0]; if (!file || !editing) return; const extension = file.name.split(".").pop() || "jpg"; const result = await uploadFile(`products/${editing}-${item.id}-${Date.now()}.${extension}`, file); if (result.data?.publicUrl) updateSubproduct(item.id, "images", [...item.images, result.data.publicUrl]); }} /></label></div>
                           </div>
                         ))}
                         {!draftSubproducts.length && <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">No hay subproductos. Agrega una variante para habilitar su compra.</p>}
