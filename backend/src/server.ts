@@ -10,6 +10,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { resolvePreferredPaymentMethod } from "./lib/mercadopago.js";
 import { isAllowedCorsOrigin } from "./lib/cors.js";
+import { calculateOrderPricing, hasSameOrderLines, type OrderPricingRepository } from "./lib/order-pricing.js";
 import { buildMercadoPagoPreferencePayload } from "./lib/mercadopagoPreference.js";
 import { isAdminUserRecord } from "./lib/auth.js";
 import { buildWompiAuthorizationHeader, extractWebhookSignature, extractWompiMerchantMethods, getWompiConfig, mapWompiStatusToOrderStatus, normalizePhoneNumber, normalizeWompiPaymentMethod, verifyWompiEventSignature } from "./lib/wompi.js";
@@ -48,6 +49,19 @@ if (!jwtSecret) {
 const uploadsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "uploads");
 const assetsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public", "assets");
 const revenueStatuses = new Set(["paid", "approved", "completed", "payment_approved"]);
+const allowedOrderStatuses = new Set([
+  "payment_pending",
+  "payment_approved",
+  "payment_failed",
+  "pending",
+  "paid",
+  "approved",
+  "shipped",
+  "delivered",
+  "cancelled",
+  "failed",
+  "completed",
+]);
 
 type AuthPayload = { sub: string; email: string; name: string; cedula: string; isAdmin: boolean };
 type StoredSession = { user: { id: string; email: string; user_metadata: Record<string, unknown> }; access_token: string } | null;
@@ -86,8 +100,6 @@ const recordCouponAudit = async (data: {
 }) => {
   if (!data.couponCode) return;
   try {
-    // Coupon audit logging is intentionally disabled for this deployment because the
-    // Prisma schema currently does not include a CouponAudit model.
     console.debug("Coupon audit skipped", {
       couponCode: data.couponCode,
       action: data.action,
@@ -131,6 +143,39 @@ const parseDecimal = (value: unknown): Prisma.Decimal | null | undefined => {
   const normalized = String(value ?? "").trim();
   if (normalized === "") return undefined;
   return new Prisma.Decimal(normalized);
+};
+
+const computeWholesalePricing = ({
+  basePrice,
+  quantity,
+  activateWholesale,
+  wholesaleMinQty,
+  wholesaleDiscountPercent,
+}: {
+  basePrice: Prisma.Decimal | number;
+  quantity: number;
+  activateWholesale?: boolean | null;
+  wholesaleMinQty?: number | null;
+  wholesaleDiscountPercent?: number | null;
+}) => {
+  const decimalBasePrice = basePrice instanceof Prisma.Decimal ? basePrice : new Prisma.Decimal(Number(basePrice ?? 0));
+  const normalizedQuantity = Number(quantity) || 0;
+  const minQty = Number(wholesaleMinQty ?? 0) || 0;
+  const discountPercent = Number(wholesaleDiscountPercent ?? 0) || 0;
+  const isWholesale = Boolean(activateWholesale) && minQty > 0 && discountPercent > 0 && normalizedQuantity >= minQty;
+  const discountMultiplier = isWholesale ? new Prisma.Decimal(1).sub(new Prisma.Decimal(discountPercent).div(new Prisma.Decimal(100))) : new Prisma.Decimal(1);
+  const finalUnitPrice = decimalBasePrice.mul(discountMultiplier);
+  const lineTotal = finalUnitPrice.mul(normalizedQuantity);
+  const totalDiscount = decimalBasePrice.mul(normalizedQuantity).sub(lineTotal);
+
+  return {
+    isWholesale,
+    minQty,
+    discountPercent,
+    finalUnitPrice,
+    lineTotal,
+    totalDiscount,
+  };
 };
 
 const dbCallWithRetry = async <T>(fn: () => Promise<T>, attempts = 3, delayMs = 250): Promise<T> => {
@@ -259,12 +304,12 @@ const sendInvoiceEmail = async (order: Order) => {
 
 const normalizeOrderCreateData = (row: Record<string, unknown>) => ({
   items: Array.isArray(row.items) ? row.items : [],
-  total: new Prisma.Decimal(Number(row.total ?? 0)),
-  shipping: Number(row.shipping ?? 0),
+  total: new Prisma.Decimal(0),
+  shipping: 0,
   status: String(row.status ?? "pending"),
   paymentMethod: row.paymentMethod !== undefined ? String(row.paymentMethod) : row.payment_method !== undefined ? String(row.payment_method) : undefined,
-  couponCode: row.couponCode !== undefined ? String(row.couponCode).trim().toUpperCase() : row.coupon_code !== undefined ? String(row.coupon_code).trim().toUpperCase() : undefined,
-  discountAmount: row.discountAmount !== undefined ? parseDecimal(row.discountAmount) : row.discount_amount !== undefined ? parseDecimal(row.discount_amount) : undefined,
+  couponCode: null,
+  discountAmount: null,
   customerName: row.customerName !== undefined ? String(row.customerName) : row.customer_name !== undefined ? String(row.customer_name) : undefined,
   customerEmail: row.customerEmail !== undefined ? String(row.customerEmail).trim().toLowerCase() : row.customer_email !== undefined ? String(row.customer_email).trim().toLowerCase() : undefined,
   customerPhone: row.customerPhone !== undefined ? String(row.customerPhone) : row.customer_phone !== undefined ? String(row.customer_phone) : undefined,
@@ -1210,6 +1255,9 @@ app.post("/api/data/:table", async (req, res) => {
           image: row.image ? String(row.image) : null,
           description: row.description ? String(row.description) : null,
           specs: row.specs ?? [],
+          activateWholesale: row.activateWholesale !== undefined ? Boolean(row.activateWholesale) : undefined,
+          wholesaleMinQty: row.wholesaleMinQty !== undefined ? Math.max(0, Number(row.wholesaleMinQty ?? 0)) : undefined,
+          wholesaleDiscountPercent: row.wholesaleDiscountPercent !== undefined ? Math.max(0, Math.min(100, Number(row.wholesaleDiscountPercent ?? 0))) : undefined,
         },
         create: {
           id,
@@ -1223,6 +1271,9 @@ app.post("/api/data/:table", async (req, res) => {
           image: row.image ? String(row.image) : null,
           description: row.description ? String(row.description) : null,
           specs: row.specs ?? [],
+          activateWholesale: row.activateWholesale !== undefined ? Boolean(row.activateWholesale) : false,
+          wholesaleMinQty: Math.max(0, Number(row.wholesaleMinQty ?? 0)),
+          wholesaleDiscountPercent: Math.max(0, Math.min(100, Number(row.wholesaleDiscountPercent ?? 0))),
         },
       });
       if (variants) {
@@ -1296,59 +1347,59 @@ app.post("/api/data/:table", async (req, res) => {
 
       let order: Order;
       try {
-        const existingOrder = await prisma.order.findUnique({ where: { id: orderId } });
-        if (existingOrder) {
-          order = await prisma.order.update({ where: { id: orderId }, data: normalizedOrderData });
-        } else {
-          const incomingItems = normalizedOrderData.items as Array<Record<string, unknown>>;
-          if (incomingItems.length === 0) {
-            order = await prisma.order.create({ data: { id: orderId, ...normalizedOrderData } });
-          } else {
-          const validatedItems: Array<Record<string, unknown>> = [];
-          let calculatedSubtotal = new Prisma.Decimal(0);
-
-          for (const item of incomingItems) {
-            const productId = String(item.productId ?? item.product_id ?? "").trim();
-            const variantId = item.variantId ?? item.variant_id ? String(item.variantId ?? item.variant_id) : null;
-            const quantity = Number(item.quantity ?? 0);
-            if (!productId || !Number.isInteger(quantity) || quantity <= 0) throw new Error("Línea de pedido inválida");
-
-            const product = await prisma.product.findUnique({ where: { id: productId } });
-            if (!product) throw new Error(`Producto no encontrado: ${productId}`);
-            const variant = variantId ? await prisma.productVariant.findUnique({ where: { id: variantId } }) : null;
-            if (variantId && (!variant || variant.productId !== productId || !variant.active)) throw new Error("Variante no disponible");
-            const price = variant ? variant.price : product.price;
-            const stock = variant ? variant.stock : product.stock;
-            if (stock < quantity) throw new Error(`Stock insuficiente para ${variant?.name ?? product.name}`);
-            calculatedSubtotal = calculatedSubtotal.add(price.mul(quantity));
-            validatedItems.push({
-              ...item,
-              productId,
-              variantId,
-              title: variant ? `${product.name} - ${variant.name}` : product.name,
-              unit_price: Number(price),
-              lineTotal: Number(price.mul(quantity)),
-            });
-          }
-
-          const expectedTotal = calculatedSubtotal.add(Number(normalizedOrderData.shipping || 0)).sub(Number(normalizedOrderData.discountAmount || 0));
-          if (expectedTotal.lt(0) || !expectedTotal.equals(Number(normalizedOrderData.total || 0))) throw new Error("El total del pedido no coincide con los precios actuales");
-
-          order = await prisma.$transaction(async (transaction) => {
-            for (const item of validatedItems) {
-              const quantity = Number(item.quantity);
-              if (item.variantId) {
-                const updated = await transaction.productVariant.updateMany({ where: { id: String(item.variantId), stock: { gte: quantity }, active: true }, data: { stock: { decrement: quantity } } });
-                if (updated.count !== 1) throw new Error("Stock insuficiente para la variante");
-              } else {
-                const updated = await transaction.product.updateMany({ where: { id: String(item.productId), stock: { gte: quantity } }, data: { stock: { decrement: quantity } } });
-                if (updated.count !== 1) throw new Error("Stock insuficiente para el producto");
-              }
-            }
-            return transaction.order.create({ data: { id: orderId, ...normalizedOrderData, items: validatedItems as Prisma.InputJsonValue } });
-          });
-          }
+        const requestedStatus = String(row.status ?? "pending");
+        if (requestedStatus !== "pending" && requestedStatus !== "payment_pending") {
+          throw new Error("El estado inicial del pedido no es válido");
         }
+
+        order = await prisma.$transaction(async (transaction) => {
+          const existingOrder = await transaction.order.findUnique({ where: { id: orderId } });
+          const pricing = await calculateOrderPricing({
+            items: normalizedOrderData.items,
+            couponCode: row.couponCode !== undefined ? row.couponCode : row.coupon_code,
+            clientShipping: row.shipping,
+            clientDiscountAmount: row.discountAmount !== undefined ? row.discountAmount : row.discount_amount,
+            clientTotal: row.total,
+            reservedItems: existingOrder?.items,
+          }, {
+            findProduct: async (id) => (await transaction.product.findUnique({ where: { id } })) as unknown as Awaited<ReturnType<OrderPricingRepository["findProduct"]>>,
+            findVariant: async (id) => (await transaction.productVariant.findUnique({ where: { id } })) as unknown as Awaited<ReturnType<OrderPricingRepository["findVariant"]>>,
+            findCoupon: async (code) => (await transaction.coupon.findUnique({ where: { code } })) as unknown as Awaited<ReturnType<OrderPricingRepository["findCoupon"]>>,
+          });
+
+          if (existingOrder) {
+            if (existingOrder.status !== "pending" && existingOrder.status !== "payment_pending") {
+              throw new Error("No se puede modificar un pedido que ya avanzó en el pago");
+            }
+            if (!hasSameOrderLines(existingOrder.items, pricing.items)) {
+              throw new Error("No se pueden cambiar las líneas de un pedido existente");
+            }
+          }
+
+          const pricingData = {
+            items: pricing.items as Prisma.InputJsonValue,
+            total: pricing.total,
+            shipping: Number(pricing.shipping),
+            discountAmount: pricing.discountAmount.isZero() ? null : pricing.discountAmount,
+            couponCode: pricing.couponCode,
+          };
+
+          if (existingOrder) {
+            return transaction.order.update({ where: { id: orderId }, data: pricingData });
+          }
+
+          for (const item of pricing.items) {
+            const quantity = Number(item.quantity);
+            if (item.variantId) {
+              const updated = await transaction.productVariant.updateMany({ where: { id: String(item.variantId), stock: { gte: quantity }, active: true }, data: { stock: { decrement: quantity } } });
+              if (updated.count !== 1) throw new Error("Stock insuficiente para la variante");
+            } else {
+              const updated = await transaction.product.updateMany({ where: { id: String(item.productId), stock: { gte: quantity } }, data: { stock: { decrement: quantity } } });
+              if (updated.count !== 1) throw new Error("Stock insuficiente para el producto");
+            }
+          }
+          return transaction.order.create({ data: { id: orderId, ...normalizedOrderData, status: requestedStatus, ...pricingData } });
+        });
       } catch (error) {
         console.error("[orders] prisma.upsert failed", {
           message: error instanceof Error ? error.message : String(error),
@@ -1470,6 +1521,9 @@ app.patch("/api/data/:table", async (req, res) => {
           oldPrice: payload.oldPrice !== undefined ? parseDecimal(payload.oldPrice) ?? undefined : undefined,
           highlight: payload.highlight !== undefined ? Boolean(payload.highlight) : undefined,
           badge: payload.badge !== undefined ? (payload.badge ? String(payload.badge) : null) : undefined,
+          activateWholesale: payload.activateWholesale !== undefined ? Boolean(payload.activateWholesale) : undefined,
+          wholesaleMinQty: payload.wholesaleMinQty !== undefined ? Math.max(0, Number(payload.wholesaleMinQty ?? 0)) : undefined,
+          wholesaleDiscountPercent: payload.wholesaleDiscountPercent !== undefined ? Math.max(0, Math.min(100, Number(payload.wholesaleDiscountPercent ?? 0))) : undefined,
         },
       });
       updated.push(next);
@@ -1478,6 +1532,15 @@ app.patch("/api/data/:table", async (req, res) => {
   }
 
   if (table === "orders") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
+    if (Object.keys(payload).some((key) => key !== "status") || payload.status === undefined) {
+      return res.status(400).json({ error: "Esta ruta solo permite actualizar el estado del pedido" });
+    }
+    if (typeof payload.status !== "string" || !allowedOrderStatuses.has(payload.status)) {
+      return res.status(400).json({ error: "Estado de pedido no válido" });
+    }
+
     const rows = await prisma.order.findMany();
     const matched = applyFilters(rows.map(serializeOrder) as Record<string, unknown>[], filters);
     const updated = [] as Order[];
