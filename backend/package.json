@@ -3,11 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx watch src/main.ts",
     "build": "npm exec -- prisma generate && npm exec -- tsc -p tsconfig.json",
-    "postinstall": "npm run build && npm exec -- prisma migrate deploy",
-    "start": "npm exec -- prisma migrate deploy && node dist/server.js",
-    "start:prod": "npm exec -- prisma migrate deploy && node dist/server.js",
+    "test:catalog-exclusions": "tsx --test src/lib/productCatalogLock.test.ts src/lib/product-exclusions.test.ts src/lib/product-variant-persistence.test.ts src/scripts/sync-product-catalog.test.ts",
+    "test:security": "tsx --test src/server.security.test.ts",
+    "start": "node dist/main.js",
+    "start:prod": "node dist/main.js",
     "prisma:generate": "npm exec -- prisma generate",
     "prisma:migrate": "npm exec -- prisma migrate deploy",
     "prisma:studio": "npm exec -- prisma studio"

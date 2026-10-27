@@ -1,7 +1,6 @@
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
-import { PrismaClient, type Product, type Order, type User, type Coupon, type CedulaEmail, type UserAddress, Prisma } from "@prisma/client";
+import { Prisma, type PrismaClient, type Product, type Order, type User, type Coupon, type CedulaEmail, type UserAddress } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
@@ -11,43 +10,49 @@ import { fileURLToPath } from "url";
 import { resolvePreferredPaymentMethod } from "./lib/mercadopago.js";
 import { isAllowedCorsOrigin } from "./lib/cors.js";
 import { calculateOrderPricing, hasSameOrderLines, type OrderPricingRepository } from "./lib/order-pricing.js";
+import { decrementOrderInventory } from "./lib/order-inventory.js";
 import { buildMercadoPagoPreferencePayload } from "./lib/mercadopagoPreference.js";
 import { isAdminUserRecord } from "./lib/auth.js";
+import { canLookupCedulaEmail, canManagePrivateData, canSyncProfile, hasAdminRoleMutation, resolveDataReadAccess } from "./lib/access-control.js";
 import { buildWompiAuthorizationHeader, extractWebhookSignature, extractWompiMerchantMethods, getWompiConfig, mapWompiStatusToOrderStatus, normalizePhoneNumber, normalizeWompiPaymentMethod, verifyWompiEventSignature } from "./lib/wompi.js";
 import { wrap } from "./lib/serialize.js";
+import { createLegacyVariantUnlessExcluded, deleteProductsWithExclusions } from "./lib/product-exclusions.js";
+import { lockProductCatalogIds } from "./lib/productCatalogLock.js";
+import { deleteOmittedProductVariants, findStockSnapshotConflict, readProductWithCatalogRelations, readProductsWithCatalogRelations, removeExcludedProductVariants, replaceProductImagesIfChanged, replaceVariantImagesIfChanged, resolveAdminStock, resolveProductPatchTarget, resolveProductVariants, resolveVariantImageUrls, validateProductPatch, withProductCatalogBatchTransaction, type ProductCatalogRecord } from "./lib/product-variant-persistence.js";
 import cookieParser from "cookie-parser";
 import { products as staticProducts } from "./scripts/product-catalog-data.js";
 import { buildCatalogSyncPlan } from "./scripts/catalog-sync-plan.js";
 import { syncProductCatalog } from "./scripts/sync-product-catalog.js";
 
-const productionEnvironment = process.env.NODE_ENV === "production";
-if (!productionEnvironment) {
-  dotenv.config();
-}
+export type ServerDependencies = {
+  prisma: PrismaClient;
+  jwtSecret: string;
+  createRefreshToken?: (userId: string, expiresAt: Date) => Promise<string>;
+};
 
-const databaseUrl = String(process.env.DATABASE_URL ?? "").trim();
-if (!databaseUrl) {
-  throw new Error("DATABASE_URL must be configured before starting the backend");
-}
-
-try {
-  const parsedDatabaseUrl = new URL(databaseUrl);
-  if (!['postgresql:', 'postgres:'].includes(parsedDatabaseUrl.protocol) || !parsedDatabaseUrl.hostname || !parsedDatabaseUrl.pathname.slice(1)) {
-    throw new Error("DATABASE_URL must be a valid PostgreSQL connection URL");
-  }
-} catch (error) {
-  throw new Error(error instanceof Error ? error.message : "DATABASE_URL must be a valid PostgreSQL connection URL");
-}
-
-const prisma = new PrismaClient();
+export const createApp = (dependencies: ServerDependencies) => {
+const { prisma, jwtSecret } = dependencies;
+if (!jwtSecret.trim()) throw new Error("JWT_SECRET must be configured before starting the backend");
+const niimbotPageImageStore = (prisma as unknown as { niimbotPageImage: NiimbotPageImageStore }).niimbotPageImage;
 const app = express();
-const port = Number(process.env.PORT || 3001);
-const jwtSecret = String(process.env.JWT_SECRET ?? "").trim();
-if (!jwtSecret) {
-  throw new Error("JWT_SECRET must be configured before starting the backend");
-}
 const uploadsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "uploads");
 const assetsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public", "assets");
+const NIIMBOT_PAGE_IMAGE_KEYS = new Set([
+  "hero_desktop",
+  "hero_mobile",
+  "hardware_b1",
+  "hardware_d110",
+  "hardware_d11h",
+  "consumables",
+  "solution_comercio",
+  "solution_inventario",
+  "solution_organizacion",
+  "solution_identificacion",
+  "trust",
+]);
+const NIIMBOT_STORAGE_PREFIX = "niimbot-editorial";
+const NIIMBOT_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const NIIMBOT_ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const revenueStatuses = new Set(["paid", "approved", "completed", "payment_approved"]);
 const allowedOrderStatuses = new Set([
   "payment_pending",
@@ -65,6 +70,17 @@ const allowedOrderStatuses = new Set([
 
 type AuthPayload = { sub: string; email: string; name: string; cedula: string; isAdmin: boolean };
 type StoredSession = { user: { id: string; email: string; user_metadata: Record<string, unknown> }; access_token: string } | null;
+type NiimbotPageImageRecord = { id: string; key: string; path: string; alt: string | null; createdAt: Date; updatedAt: Date };
+class ProductBatchAbort extends Error {
+  constructor(readonly statusCode: number, readonly responseBody: Record<string, unknown>) {
+    super(String(responseBody.error ?? "No se pudo guardar el lote de productos"));
+  }
+}
+type NiimbotPageImageStore = {
+  findMany: (args: { orderBy: { key: "asc" } }) => Promise<NiimbotPageImageRecord[]>;
+  findUnique: (args: { where: { key: string } }) => Promise<NiimbotPageImageRecord | null>;
+  upsert: (args: { where: { key: string }; create: { key: string; path: string; alt?: string | null }; update: { path?: string; alt?: string | null } }) => Promise<NiimbotPageImageRecord>;
+};
 
 const normalizeCedula = (value: string) => value.replace(/\D/g, "").trim();
 const createGeneratedPasswordHash = () => bcrypt.hash(crypto.randomUUID(), 10);
@@ -202,7 +218,14 @@ const serializeUser = (user: User | null) =>
       }
     : null;
 
-const serializeProduct = (product: Product & { variants?: unknown[]; images?: unknown[] }) => wrap({ ...product, price: product.price, variants: product.variants ?? [], images: product.images ?? [] });
+const serializeProduct = (product: Product & { variants?: unknown[]; categories?: unknown[]; images?: unknown[] }) => {
+  const categories = (product.categories ?? []).map((item) =>
+    item && typeof item === "object" && "category" in item
+      ? (item as { category: unknown }).category
+      : item,
+  );
+  return wrap({ ...product, price: product.price, categories, variants: product.variants ?? [], images: product.images ?? [] });
+};
 const serializeOrder = (order: Order) => wrap({
   ...order,
   total: order.total,
@@ -489,10 +512,15 @@ const issueSession = (user: User): StoredSession => {
 };
 
 const createAndSetRefreshToken = async (userId: string, res: express.Response) => {
-  const { generateRefreshToken, createRefreshToken } = await import("./lib/refreshTokens.js");
-  const token = generateRefreshToken();
   const expiresAt = new Date(Date.now() + REFRESH_TOKEN_MAX_AGE);
-  await createRefreshToken(userId, token, expiresAt);
+  let token: string;
+  if (dependencies.createRefreshToken) {
+    token = await dependencies.createRefreshToken(userId, expiresAt);
+  } else {
+    const refreshTokens = await import("./lib/refreshTokens.js");
+    token = refreshTokens.generateRefreshToken();
+    await refreshTokens.createRefreshToken(userId, token, expiresAt);
+  }
   res.cookie("refresh_token", token, buildRefreshCookieOptions());
 };
 
@@ -825,24 +853,183 @@ const requireAdmin = async (req: express.Request, res: express.Response) => {
   const user = await prisma.user.findUnique({ where: { id: auth.sub } });
   const isAdminByRecord = isAdminUserRecord(user);
   await logAdminDecision(req, auth, user);
-  if (isAdminByRecord) {
-    return user ?? ({ id: auth.sub, name: auth.name, email: auth.email, cedula: auth.cedula, password: "", isAdmin: true } as User);
-  }
-
-  if (user && auth.isAdmin) {
-    console.warn("[auth] requireAdmin upgrading database user to admin because JWT contains admin claim", { userId: user.id, email: user.email });
-    const updatedUser = await prisma.user.update({ where: { id: user.id }, data: { isAdmin: true } });
-    return updatedUser;
-  }
-
-  if (!user && auth.isAdmin) {
-    console.warn("[auth] requireAdmin allowed admin access from JWT claim while user row is missing", { authSub: auth.sub, authEmail: auth.email });
-    return { id: auth.sub, name: auth.name, email: auth.email, cedula: auth.cedula, password: "", isAdmin: true } as User;
-  }
+  if (user && isAdminByRecord && canManagePrivateData({ id: user.id, isAdmin: isAdminByRecord })) return user;
 
   res.status(403).json({ error: "Solo administradores" });
   return null;
 };
+
+const readNiimbotStorageConfig = () => {
+  const supabaseUrl = String(process.env.SUPABASE_URL ?? "").trim().replace(/\/$/, "");
+  const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY ?? "").trim();
+  const bucket = String(process.env.SUPABASE_STORAGE_BUCKET ?? "").trim();
+  if (!supabaseUrl || !serviceRoleKey || !bucket) {
+    throw new Error("NIIMBOT storage is not configured");
+  }
+  return { supabaseUrl, serviceRoleKey, bucket };
+};
+
+const isAllowedNiimbotPageImageKey = (key: string) => NIIMBOT_PAGE_IMAGE_KEYS.has(key);
+
+const isSafeNiimbotPageImagePath = (key: string, value: string) => {
+  const expectedPrefix = `${NIIMBOT_STORAGE_PREFIX}/${key}/`;
+  if (!value.startsWith(expectedPrefix) || value.includes("%") || value.includes("\\") || value.includes("//")) return false;
+  const segments = value.split("/");
+  return segments.length === 3 && segments[0] === NIIMBOT_STORAGE_PREFIX && segments[1] === key && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segments[2]);
+};
+
+const decodeStrictBase64 = (value: unknown) => {
+  if (typeof value !== "string" || !value || /\s/.test(value)) return null;
+  if (value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return null;
+  const decoded = Buffer.from(value, "base64");
+  if (!decoded.length || decoded.toString("base64") !== value) return null;
+  return decoded;
+};
+
+const detectNiimbotImageType = (content: Buffer) => {
+  const isJpeg = content.length >= 3 && content[0] === 0xff && content[1] === 0xd8 && content[2] === 0xff;
+  const isPng = content.length >= 8 && Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).equals(content.subarray(0, 8));
+  const isWebp = content.length >= 12 && content.toString("ascii", 0, 4) === "RIFF" && content.toString("ascii", 8, 12) === "WEBP";
+  if (isJpeg) return { mimeType: "image/jpeg", extension: "jpg" };
+  if (isPng) return { mimeType: "image/png", extension: "png" };
+  if (isWebp) return { mimeType: "image/webp", extension: "webp" };
+  return null;
+};
+
+const serializeNiimbotPageImage = (record: NiimbotPageImageRecord, includeUpdatedAt = false) => ({
+  key: record.key,
+  path: record.path,
+  alt: record.alt,
+  ...(includeUpdatedAt ? { updatedAt: record.updatedAt.toISOString() } : {}),
+});
+
+const uploadNiimbotStorageObject = async (objectPath: string, content: Buffer, mimeType: string) => {
+  const { supabaseUrl, serviceRoleKey, bucket } = readNiimbotStorageConfig();
+  const encodedPath = objectPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+  const response = await fetch(`${supabaseUrl}/storage/v1/object/${encodeURIComponent(bucket)}/${encodedPath}`, {
+    method: "POST",
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": mimeType,
+      "x-upsert": "false",
+    },
+    body: Uint8Array.from(content),
+  });
+  if (!response.ok) {
+    throw new Error("Supabase Storage upload failed");
+  }
+};
+
+const createNiimbotSignedUrl = async (objectPath: string, expiresIn: number) => {
+  const { supabaseUrl, serviceRoleKey, bucket } = readNiimbotStorageConfig();
+  const encodedPath = objectPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+  const response = await fetch(`${supabaseUrl}/storage/v1/object/sign/${encodeURIComponent(bucket)}/${encodedPath}`, {
+    method: "POST",
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ expiresIn }),
+  });
+  if (!response.ok) throw new Error("Supabase Storage signed URL failed");
+  const payload = await response.json() as { signedURL?: string };
+  if (!payload.signedURL) throw new Error("Supabase Storage returned no signed URL");
+  return new URL(payload.signedURL, `${supabaseUrl}/`).toString();
+};
+
+app.get("/api/niimbot/page-images", async (_req, res) => {
+  try {
+    const records = await niimbotPageImageStore.findMany({ orderBy: { key: "asc" } });
+    return res.json(records.map((record) => serializeNiimbotPageImage(record)));
+  } catch (error) {
+    console.error("NIIMBOT page images read failed", error instanceof Error ? error.message : "unknown error");
+    return res.status(500).json({ error: "No se pudieron cargar las imágenes de NIIMBOT" });
+  }
+});
+
+app.get("/api/niimbot/page-images/:key/url", async (req, res) => {
+  const key = String(req.params.key ?? "").trim();
+  if (!isAllowedNiimbotPageImageKey(key)) return res.status(400).json({ error: "Clave de imagen no permitida" });
+
+  try {
+    const record = await niimbotPageImageStore.findUnique({ where: { key } });
+    if (!record || !isSafeNiimbotPageImagePath(key, record.path)) return res.status(404).json({ error: "Imagen de NIIMBOT no configurada" });
+
+    const expiresIn = 60 * 60;
+    const url = await createNiimbotSignedUrl(record.path, expiresIn);
+    return res.json({ url, expiresIn });
+  } catch (error) {
+    console.error("NIIMBOT signed URL failed", error instanceof Error ? error.message : "unknown error");
+    return res.status(502).json({ error: "No se pudo resolver la imagen de NIIMBOT" });
+  }
+});
+
+app.put("/api/niimbot/page-images/:key", async (req, res) => {
+  const authUser = await requireAdmin(req, res);
+  if (!authUser) return;
+
+  const key = String(req.params.key ?? "").trim();
+  const body = req.body as { path?: string; alt?: string | null };
+  const imagePath = String(body.path ?? "").trim();
+  if (!isAllowedNiimbotPageImageKey(key)) return res.status(400).json({ error: "Clave de imagen no permitida" });
+  if (!isSafeNiimbotPageImagePath(key, imagePath)) return res.status(400).json({ error: "Ruta de imagen no permitida" });
+  if (body.alt !== undefined && body.alt !== null && String(body.alt).length > 200) return res.status(400).json({ error: "Texto alternativo demasiado largo" });
+
+  try {
+    const record = await niimbotPageImageStore.upsert({
+      where: { key },
+      create: { key, path: imagePath, alt: body.alt ? String(body.alt).trim() : null },
+      update: { path: imagePath, alt: body.alt ? String(body.alt).trim() : null },
+    });
+    return res.json(serializeNiimbotPageImage(record, true));
+  } catch (error) {
+    console.error("NIIMBOT page image update failed", error instanceof Error ? error.message : "unknown error");
+    return res.status(500).json({ error: "No se pudo guardar la imagen de NIIMBOT" });
+  }
+});
+
+app.post("/api/niimbot/page-images/upload", async (req, res) => {
+  const authUser = await requireAdmin(req, res);
+  if (!authUser) return;
+
+  const body = req.body as { key?: string; contentBase64?: string; mimeType?: string; alt?: string | null };
+  const key = String(body.key ?? "").trim();
+  const declaredMimeType = String(body.mimeType ?? "").trim().toLowerCase();
+  const encodedContent = body.contentBase64;
+  if (!isAllowedNiimbotPageImageKey(key)) return res.status(400).json({ error: "Clave de imagen no permitida" });
+  if (!NIIMBOT_ALLOWED_MIME_TYPES.has(declaredMimeType)) return res.status(415).json({ error: "Tipo de imagen no permitido" });
+  if (body.alt !== undefined && body.alt !== null && String(body.alt).length > 200) return res.status(400).json({ error: "Texto alternativo demasiado largo" });
+  if (typeof encodedContent !== "string" || !encodedContent) return res.status(400).json({ error: "Contenido de imagen inválido" });
+
+  let base64 = encodedContent;
+  if (encodedContent.startsWith("data:")) {
+    const dataUrlMatch = encodedContent.match(/^data:([^;,]+);base64,([A-Za-z0-9+/]*={0,2})$/);
+    if (!dataUrlMatch || dataUrlMatch[1].toLowerCase() !== declaredMimeType) return res.status(400).json({ error: "Contenido de imagen inválido" });
+    base64 = dataUrlMatch[2];
+  }
+  const content = decodeStrictBase64(base64);
+  if (!content) return res.status(400).json({ error: "Contenido de imagen inválido" });
+  if (!content.length || content.length > NIIMBOT_MAX_IMAGE_BYTES) return res.status(413).json({ error: "La imagen supera el tamaño permitido" });
+
+  const detectedType = detectNiimbotImageType(content);
+  if (!detectedType || detectedType.mimeType !== declaredMimeType) return res.status(415).json({ error: "El contenido no coincide con el tipo de imagen declarado" });
+  const extension = detectedType.extension;
+  const imagePath = `${NIIMBOT_STORAGE_PREFIX}/${key}/${crypto.randomUUID()}.${extension}`;
+  try {
+    await uploadNiimbotStorageObject(imagePath, content, detectedType.mimeType);
+    const record = await niimbotPageImageStore.upsert({
+      where: { key },
+      create: { key, path: imagePath, alt: body.alt ? String(body.alt).trim() : null },
+      update: { path: imagePath, alt: body.alt ? String(body.alt).trim() : null },
+    });
+    return res.status(201).json(serializeNiimbotPageImage(record, true));
+  } catch (error) {
+    console.error("NIIMBOT page image upload failed", error instanceof Error ? error.message : "unknown error");
+    return res.status(502).json({ error: "No se pudo almacenar la imagen de NIIMBOT" });
+  }
+});
 
 if (process.env.CATALOG_DRY_RUN_ROUTE === "true") {
   app.get("/internal/catalog-sync-dry-run", async (req, res) => {
@@ -894,43 +1081,90 @@ const parseFilters = (filtersRaw?: string) => {
   }
 };
 
+type ProductDeleteFilter = { column: string; value: string | number | boolean };
+
+const productDeleteFilterTypes = new Map<string, "string" | "number" | "boolean">([
+  ["id", "string"],
+  ["name", "string"],
+  ["category", "string"],
+  ["price", "number"],
+  ["stock", "number"],
+  ["image", "string"],
+  ["description", "string"],
+  ["badge", "string"],
+  ["highlight", "boolean"],
+  ["oldPrice", "number"],
+  ["activateWholesale", "boolean"],
+  ["wholesaleMinQty", "number"],
+  ["wholesaleDiscountPercent", "number"],
+  ["createdAt", "string"],
+  ["updatedAt", "string"],
+]);
+
+const parseProductDeleteFilters = (filtersRaw: unknown): ProductDeleteFilter[] | null => {
+  if (typeof filtersRaw !== "string" || !filtersRaw.trim()) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(filtersRaw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return null;
+
+  const seenColumns = new Set<string>();
+  const filters: ProductDeleteFilter[] = [];
+  for (const candidate of parsed) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+    const keys = Object.keys(candidate);
+    if (keys.length !== 2 || !keys.includes("column") || !keys.includes("value")) return null;
+
+    const filter = candidate as Record<string, unknown>;
+    if (typeof filter.column !== "string" || seenColumns.has(filter.column)) return null;
+    const expectedType = productDeleteFilterTypes.get(filter.column);
+    if (!expectedType) return null;
+    const value = filter.value;
+    if (expectedType === "string" && (typeof value !== "string" || value.trim() === "")) return null;
+    if (expectedType === "number" && (typeof value !== "number" || !Number.isFinite(value))) return null;
+    if (expectedType === "boolean" && typeof value !== "boolean") return null;
+
+    seenColumns.add(filter.column);
+    filters.push({ column: filter.column, value: value as string | number | boolean });
+  }
+  return filters;
+};
+
 const applyFilters = <T extends Record<string, unknown>>(rows: T[], filters: Array<{ column: string; value: string | number | boolean }>) =>
   filters.reduce((filtered, filter) => filtered.filter((row) => String(row[filter.column]) === String(filter.value)), rows);
 
-const syncProfileAndCedula = async (payload: {
-  user_id: string;
-  user_email: string;
-  user_name: string;
-  user_cedula: string;
-  user_is_admin: boolean;
-}) => {
-  const normalizedCedula = normalizeCedula(payload.user_cedula);
-  const userEmail = payload.user_email.trim().toLowerCase();
-  const userName = payload.user_name.trim() || "Cliente";
+const updateProfileName = async (
+  auth: AuthPayload,
+  req: express.Request,
+  res: express.Response,
+  payload: { user_id?: unknown; user_name?: unknown },
+) => {
+  const userId = typeof payload.user_id === "string" ? payload.user_id.trim() : "";
+  const name = typeof payload.user_name === "string" ? payload.user_name.trim() : "";
+  if (!userId || !name) {
+    res.status(400).json({ error: "user_id y user_name son requeridos" });
+    return null;
+  }
 
-  await prisma.user.upsert({
-    where: { id: payload.user_id },
-    update: {
-      email: userEmail,
-      name: userName,
-      cedula: normalizedCedula,
-      isAdmin: payload.user_is_admin,
-    },
-    create: {
-      id: payload.user_id,
-      email: userEmail,
-      name: userName,
-      cedula: normalizedCedula,
-      isAdmin: payload.user_is_admin,
-      password: await createGeneratedPasswordHash(),
-    },
-  });
+  const administrator = userId === auth.sub ? null : await requireAdmin(req, res);
+  if (userId !== auth.sub && !administrator) return null;
+  const principal = { id: auth.sub, isAdmin: Boolean(administrator) };
+  if (!canSyncProfile(principal, userId)) {
+    res.status(403).json({ error: "No autorizado para sincronizar este perfil" });
+    return null;
+  }
 
-  await prisma.cedulaEmail.upsert({
-    where: { cedula: normalizedCedula },
-    update: { email: userEmail, userId: payload.user_id },
-    create: { cedula: normalizedCedula, email: userEmail, userId: payload.user_id },
-  });
+  const existingUser = await prisma.user.findUnique({ where: { id: userId } });
+  if (!existingUser) {
+    res.status(404).json({ error: "Usuario no encontrado" });
+    return null;
+  }
+
+  return prisma.user.update({ where: { id: userId }, data: { name } });
 };
 
 const findEmailByCedula = async (cedula: string) => {
@@ -973,7 +1207,7 @@ app.post("/api/auth/register", async (req, res) => {
       email: email.trim().toLowerCase(),
       password: hashed,
       cedula: normalizedCedula,
-      isAdmin: normalizedCedula === "1108758522",
+      isAdmin: false,
     },
   }));
 
@@ -994,16 +1228,37 @@ app.post("/api/auth/register", async (req, res) => {
 });
 
 app.post("/api/auth/login", async (req, res) => {
-  const { email, password } = req.body as { email?: string; password?: string };
-  if (!email || !password) {
-    return res.status(400).json({ error: "email y password son requeridos" });
+  const { email, cedula, password } = req.body as { email?: string; cedula?: string; password?: string };
+  if ((!email && !cedula) || !password) {
+    return res.status(400).json({ error: "correo o cédula y password son requeridos" });
   }
 
-  const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
-  if (!user) return res.status(401).json({ error: "Invalid login credentials" });
+  let user: User | null = null;
+  if (cedula) {
+    const normalizedCedula = normalizeCedula(cedula);
+    if (!normalizedCedula) return res.status(401).json({ error: "Cédula o contraseña incorrectas" });
+
+    const cedulaMapping = await prisma.cedulaEmail.findUnique({ where: { cedula: normalizedCedula } });
+    if (cedulaMapping?.userId) {
+      user = await prisma.user.findUnique({ where: { id: cedulaMapping.userId } });
+      if (user && normalizeCedula(user.cedula) !== normalizedCedula) {
+        return res.status(401).json({ error: "Cédula o contraseña incorrectas" });
+      }
+    }
+    if (!user && cedulaMapping?.email) {
+      const mappedUser = await prisma.user.findUnique({ where: { email: cedulaMapping.email } });
+      if (mappedUser && normalizeCedula(mappedUser.cedula) === normalizedCedula) user = mappedUser;
+    }
+    if (!user) {
+      user = await prisma.user.findFirst({ where: { cedula: normalizedCedula } });
+    }
+  } else {
+    user = await prisma.user.findUnique({ where: { email: email!.trim().toLowerCase() } });
+  }
+  if (!user) return res.status(401).json({ error: "Cédula o contraseña incorrectas" });
 
   const valid = await bcrypt.compare(password, user.password);
-  if (!valid) return res.status(401).json({ error: "Invalid login credentials" });
+  if (!valid) return res.status(401).json({ error: "Cédula o contraseña incorrectas" });
 
   try {
     await createAndSetRefreshToken(user.id, res);
@@ -1074,13 +1329,6 @@ app.post("/api/auth/verify", async (req, res) => {
   return res.json({ session: issueSession(user), user: serializeUser(user) });
 });
 
-app.get("/api/users/email-by-cedula", async (req, res) => {
-  const cedula = String(req.query.cedula ?? "").trim();
-  if (!cedula) return res.status(400).json({ error: "cedula es requerida" });
-  const email = await findEmailByCedula(cedula);
-  return res.json({ email });
-});
-
 app.post("/api/users/cedula-email", async (req, res) => {
   const auth = requireAuth(req, res);
   if (!auth) return;
@@ -1088,13 +1336,25 @@ app.post("/api/users/cedula-email", async (req, res) => {
   const { cedula, email } = req.body as { cedula?: string; email?: string };
   if (!cedula || !email) return res.status(400).json({ error: "cedula y email son requeridos" });
 
+  const user = await prisma.user.findUnique({ where: { id: auth.sub } });
+  if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
   const normalizedCedula = normalizeCedula(cedula);
   const normalizedEmail = String(email).trim().toLowerCase();
+  const userCedula = normalizeCedula(user.cedula);
+  const userEmail = user.email.trim().toLowerCase();
+  if (normalizedCedula !== userCedula || normalizedEmail !== userEmail) {
+    return res.status(403).json({ error: "Solo puedes asociar la cédula y el correo de tu propia cuenta" });
+  }
+
+  const existingMapping = await prisma.cedulaEmail.findUnique({ where: { cedula: userCedula } });
+  if (existingMapping?.userId && existingMapping.userId !== user.id) {
+    return res.status(409).json({ error: "La cédula ya está asociada a otra cuenta" });
+  }
 
   await prisma.cedulaEmail.upsert({
-    where: { cedula: normalizedCedula },
-    update: { email: normalizedEmail, userId: auth.sub },
-    create: { cedula: normalizedCedula, email: normalizedEmail, userId: auth.sub },
+    where: { cedula: userCedula },
+    update: { email: userEmail, userId: user.id },
+    create: { cedula: userCedula, email: userEmail, userId: user.id },
   });
 
   return res.json({ ok: true });
@@ -1104,30 +1364,8 @@ app.post("/api/profile/sync", async (req, res) => {
   const auth = requireAuth(req, res);
   if (!auth) return;
 
-  const { user_id, user_email, user_name, user_cedula, user_is_admin } = req.body as {
-    user_id?: string;
-    user_email?: string;
-    user_name?: string;
-    user_cedula?: string;
-    user_is_admin?: boolean;
-  };
-
-  if (!user_id || !user_email || !user_name || !user_cedula) {
-    return res.status(400).json({ error: "user_id, user_email, user_name y user_cedula son requeridos" });
-  }
-
-  if (auth.sub !== user_id && !auth.isAdmin) {
-    return res.status(403).json({ error: "No autorizado para sincronizar este perfil" });
-  }
-
-  await syncProfileAndCedula({
-    user_id,
-    user_email,
-    user_name,
-    user_cedula,
-    user_is_admin: Boolean(user_is_admin),
-  });
-
+  const user = await updateProfileName(auth, req, res, req.body as { user_id?: unknown; user_name?: unknown });
+  if (!user) return;
   return res.json({ ok: true });
 });
 
@@ -1143,28 +1381,12 @@ app.get("/api/profile", async (req, res) => {
 
 app.post("/api/rpc/:name", async (req, res) => {
   const { name } = req.params;
+  const auth = requireAuth(req, res);
+  if (!auth) return;
 
   if (name === "sync_profile") {
-    const { user_id, user_email, user_name, user_cedula, user_is_admin } = req.body as {
-      user_id?: string;
-      user_email?: string;
-      user_name?: string;
-      user_cedula?: string;
-      user_is_admin?: boolean;
-    };
-
-    if (!user_id || !user_email || !user_name || !user_cedula) {
-      return res.status(400).json({ error: "user_id, user_email, user_name y user_cedula son requeridos" });
-    }
-
-    await syncProfileAndCedula({
-      user_id,
-      user_email,
-      user_name,
-      user_cedula,
-      user_is_admin: Boolean(user_is_admin),
-    });
-
+    const user = await updateProfileName(auth, req, res, req.body as { user_id?: unknown; user_name?: unknown });
+    if (!user) return;
     return res.json({ data: null, error: null });
   }
 
@@ -1174,7 +1396,14 @@ app.post("/api/rpc/:name", async (req, res) => {
       return res.status(400).json({ error: "lookup_cedula es requerido" });
     }
 
-    const email = await findEmailByCedula(lookup_cedula);
+    const requester = await prisma.user.findUnique({ where: { id: auth.sub } });
+    if (!requester) return res.status(401).json({ error: "No autorizado" });
+    const normalizedLookupCedula = normalizeCedula(lookup_cedula);
+    const principal = { id: requester.id, isAdmin: isAdminUserRecord(requester) };
+    if (!canLookupCedulaEmail(principal, normalizeCedula(requester.cedula), normalizedLookupCedula)) {
+      return res.status(403).json({ error: "No autorizado para consultar ese correo" });
+    }
+    const email = await findEmailByCedula(normalizedLookupCedula);
     return res.json(email ?? null);
   }
 
@@ -1184,14 +1413,13 @@ app.post("/api/rpc/:name", async (req, res) => {
 app.patch("/api/auth/me", async (req, res) => {
   const auth = requireAuth(req, res);
   if (!auth) return;
-  const incoming = (req.body as { data?: { is_admin?: boolean; isAdmin?: boolean } }).data ?? {};
-  const user = await prisma.user.update({
-    where: { id: auth.sub },
-    data: {
-      ...(incoming.is_admin !== undefined ? { isAdmin: incoming.is_admin } : {}),
-      ...(incoming.isAdmin !== undefined ? { isAdmin: incoming.isAdmin } : {}),
-    },
-  });
+  const body = req.body as { data?: Record<string, unknown> } & Record<string, unknown>;
+  const incoming = body.data && typeof body.data === "object" ? body.data : body;
+  if (hasAdminRoleMutation(incoming)) {
+    return res.status(403).json({ error: "El rol de administrador no se puede modificar desde el perfil propio" });
+  }
+  const user = await prisma.user.findUnique({ where: { id: auth.sub } });
+  if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
   return res.json({ user: serializeUser(user) });
 });
 
@@ -1203,10 +1431,60 @@ app.get("/api/data/:table", async (req, res) => {
   const orderBy = req.query.orderBy as string | undefined;
   const single = req.query.single === "true";
   const maybeSingle = req.query.maybeSingle === "true";
+  const exactOrderId = filters.length === 1 && filters[0].column === "id" && typeof filters[0].value === "string"
+    ? String(filters[0].value)
+    : null;
+
+  if (table === "orders") {
+    const tokenAuth = readAuth(getAuthorizationHeader(req));
+    const user = tokenAuth ? await prisma.user.findUnique({ where: { id: tokenAuth.sub } }) : null;
+    if (tokenAuth && !user) return res.status(401).json({ error: "No autorizado" });
+    const principal = user
+      ? { id: user.id, isAdmin: isAdminUserRecord(user) }
+      : null;
+    const access = resolveDataReadAccess(table, principal, Boolean(exactOrderId));
+    if (access === "denied") {
+      if (!tokenAuth) return res.status(401).json({ error: "No autorizado" });
+      return res.status(403).json({ error: "No autorizado para consultar pedidos" });
+    }
+
+    if (access === "public-order-status" && exactOrderId) {
+      const order = await prisma.order.findUnique({
+        where: { id: exactOrderId },
+        select: { id: true, status: true },
+      });
+      const result = order ? wrap(order) : null;
+      if (single || maybeSingle) return res.json(result);
+      return res.json(result ? [result] : []);
+    }
+
+    const orderRows = await prisma.order.findMany({
+      ...(access === "owner-orders" ? { where: { userId: principal!.id } } : {}),
+    });
+    const filteredOrders = applyFilters(orderRows.map(serializeOrder) as Record<string, unknown>[], filters);
+    const orderedOrders = orderBy ? [...filteredOrders].sort((a, b) => {
+      const left = String(a[orderBy] ?? "");
+      const right = String(b[orderBy] ?? "");
+      return ascending ? left.localeCompare(right) : right.localeCompare(left);
+    }) : filteredOrders;
+    const slicedOrders = typeof limit === "number" ? orderedOrders.slice(0, limit) : orderedOrders;
+    if (single || maybeSingle) return res.json(slicedOrders[0] ?? null);
+    return res.json(slicedOrders);
+  }
+
+  if (["profiles", "coupons", "coupon_audit", "cedula_emails"].includes(table)) {
+    const auth = requireAuth(req, res);
+    if (!auth) return;
+    const user = await prisma.user.findUnique({ where: { id: auth.sub } });
+    const principal = user ? { id: user.id, isAdmin: isAdminUserRecord(user) } : null;
+    if (resolveDataReadAccess(table, principal) !== "admin") {
+      return res.status(403).json({ error: "Solo administradores" });
+    }
+  }
 
   let rows: Array<Record<string, unknown>> = [];
-  if (table === "products") rows = (await prisma.product.findMany({ include: { variants: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }], include: { images: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }] } } }, images: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }] } } })).map((row) => serializeProduct(row) as Record<string, unknown>);
-  else if (table === "orders") rows = (await prisma.order.findMany()).map((row) => serializeOrder(row) as Record<string, unknown>);
+  if (table === "products") rows = (await readProductsWithCatalogRelations(prisma)).map((row) => serializeProduct(row) as Record<string, unknown>);
+  else if (table === "categories") rows = (await prisma.category.findMany({ orderBy: [{ name: "asc" }, { id: "asc" }] })).map((row) => wrap(row) as Record<string, unknown>);
   else if (table === "profiles") rows = (await prisma.user.findMany()).map((row) => serializeUser(row) as Record<string, unknown>);
   else if (table === "coupons") rows = (await prisma.coupon.findMany()).map((row) => serializeCoupon(row) as Record<string, unknown>);
   else if (table === "coupon_audit") rows = [];
@@ -1228,102 +1506,259 @@ app.get("/api/data/:table", async (req, res) => {
 app.post("/api/data/:table", async (req, res) => {
   const { table } = req.params;
   const body = req.body as unknown;
+  if (table === "categories") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
+    const rows = Array.isArray(body) ? body as Array<Record<string, unknown>> : [body as Record<string, unknown>];
+    const categoryInputs = rows.map((row) => ({ name: String(row.name ?? "").trim(), slug: String(row.slug ?? "").trim().toLowerCase() }));
+    if (categoryInputs.some((category) => !category.name || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(category.slug))) {
+      return res.status(422).json({ error: "Cada categoría necesita nombre y slug válido" });
+    }
+    try {
+      const saved = await prisma.$transaction(categoryInputs.map((category) => prisma.category.create({ data: category })));
+      return res.json(saved.map((category) => wrap(category)));
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        return res.status(409).json({ error: "Ya existe una categoría con ese slug" });
+      }
+      throw error;
+    }
+  }
   if (table === "products") {
     const authUser = await requireAdmin(req, res);
     if (!authUser) return;
     const rows = Array.isArray(body) ? body : [body];
-    const saved = [] as Product[];
-    for (const row of rows as Array<Record<string, unknown>>) {
-      const id = String(row.id || crypto.randomUUID());
-      const variants = Array.isArray(row.variants) ? row.variants : Array.isArray(row.subproducts) ? row.subproducts : null;
-      if (variants) {
-        const incompleteVariant = (variants as Array<Record<string, unknown>>).find((variant) => variant.price === undefined || variant.price === null || variant.stock === undefined || variant.stock === null);
-        if (incompleteVariant) {
-          return res.status(422).json({ error: "Cada variante necesita precio y stock reales antes de guardarse", variantId: incompleteVariant.id ?? null });
+    const productRows = rows as Array<Record<string, unknown>>;
+    const stockInputs = new Map<Record<string, unknown>, { productStock: number | undefined; variantStocks: Map<Record<string, unknown>, number | undefined> }>();
+    for (const row of productRows) {
+      const variants = resolveProductVariants(row);
+      try {
+        const productStock = resolveAdminStock(row.stock);
+        if (Object.prototype.hasOwnProperty.call(row, "expectedStock")) resolveAdminStock(row.expectedStock);
+        const variantStocks = new Map<Record<string, unknown>, number | undefined>();
+        for (const variant of variants ?? []) {
+          variantStocks.set(variant, resolveAdminStock(variant.stock));
+          if (Object.prototype.hasOwnProperty.call(variant, "expectedStock")) resolveAdminStock(variant.expectedStock);
         }
+        stockInputs.set(row, { productStock, variantStocks });
+      } catch (error) {
+        return res.status(422).json({ error: error instanceof Error ? error.message : "El stock no es válido" });
       }
-      const product = await prisma.product.upsert({
-        where: { id },
-        update: {
-          name: String(row.name ?? ""),
-          category: String(row.category ?? ""),
-          price: parseDecimal(row.price) ?? new Prisma.Decimal(0),
-          oldPrice: parseDecimal(row.oldPrice),
-          badge: row.badge ? String(row.badge) : null,
-          highlight: row.highlight !== undefined ? Boolean(row.highlight) : undefined,
-          stock: Number(row.stock ?? 0),
-          image: row.image ? String(row.image) : null,
-          description: row.description ? String(row.description) : null,
-          specs: row.specs ?? [],
-          activateWholesale: row.activateWholesale !== undefined ? Boolean(row.activateWholesale) : undefined,
-          wholesaleMinQty: row.wholesaleMinQty !== undefined ? Math.max(0, Number(row.wholesaleMinQty ?? 0)) : undefined,
-          wholesaleDiscountPercent: row.wholesaleDiscountPercent !== undefined ? Math.max(0, Math.min(100, Number(row.wholesaleDiscountPercent ?? 0))) : undefined,
-        },
-        create: {
-          id,
-          name: String(row.name ?? ""),
-          category: String(row.category ?? ""),
-          price: parseDecimal(row.price) ?? new Prisma.Decimal(0),
-          oldPrice: parseDecimal(row.oldPrice),
-          badge: row.badge ? String(row.badge) : null,
-          highlight: row.highlight !== undefined ? Boolean(row.highlight) : false,
-          stock: Number(row.stock ?? 0),
-          image: row.image ? String(row.image) : null,
-          description: row.description ? String(row.description) : null,
-          specs: row.specs ?? [],
-          activateWholesale: row.activateWholesale !== undefined ? Boolean(row.activateWholesale) : false,
-          wholesaleMinQty: Math.max(0, Number(row.wholesaleMinQty ?? 0)),
-          wholesaleDiscountPercent: Math.max(0, Math.min(100, Number(row.wholesaleDiscountPercent ?? 0))),
-        },
-      });
-      if (variants) {
-        const variantIds: string[] = [];
-        for (const [sortOrder, variantRow] of (variants as Array<Record<string, unknown>>).entries()) {
-          const variantId = String(variantRow.id || crypto.randomUUID());
-          variantIds.push(variantId);
-          const savedVariant = await prisma.productVariant.upsert({
-            where: { id: variantId },
-            update: {
-              productId: id,
-              name: String(variantRow.name ?? "Variante"),
-              description: variantRow.description ? String(variantRow.description) : null,
-              price: parseDecimal(variantRow.price) ?? new Prisma.Decimal(0),
-              stock: Math.max(0, Number(variantRow.stock ?? 0)),
-              image: variantRow.image ? String(variantRow.image) : null,
-              active: variantRow.active !== undefined ? Boolean(variantRow.active) : true,
-              sortOrder,
-            },
-            create: {
-              id: variantId,
-              productId: id,
-              name: String(variantRow.name ?? "Variante"),
-              description: variantRow.description ? String(variantRow.description) : null,
-              price: parseDecimal(variantRow.price) ?? new Prisma.Decimal(0),
-              stock: Math.max(0, Number(variantRow.stock ?? 0)),
-              image: variantRow.image ? String(variantRow.image) : null,
-              active: variantRow.active !== undefined ? Boolean(variantRow.active) : true,
-              sortOrder,
-            },
-          });
-          if (Array.isArray(variantRow.images)) {
-            await prisma.productImage.deleteMany({ where: { variantId: savedVariant.id } });
-            for (const [sortOrder, imageRow] of (variantRow.images as unknown[]).entries()) {
-              const url = typeof imageRow === "string" ? imageRow : String((imageRow as Record<string, unknown>)?.url ?? "").trim();
-              if (url) await prisma.productImage.create({ data: { productId: id, variantId: savedVariant.id, url, sortOrder, isPrimary: sortOrder === 0 } });
+    }
+
+    const productIds = productRows.map((row) => String(row.id || crypto.randomUUID()));
+    const saved = [] as Array<Product & { categories?: unknown[] }>;
+    try {
+      await withProductCatalogBatchTransaction(prisma, productIds, async (transaction) => {
+        for (const [index, row] of productRows.entries()) {
+          const id = productIds[index];
+          const variants = resolveProductVariants(row);
+          const rowStockInputs = stockInputs.get(row);
+          if (!rowStockInputs) throw new Error("No se pudieron validar los valores de stock del producto");
+          const categoryIds = Array.isArray(row.categories)
+            ? Array.from(new Set(row.categories.map((category) => String(category ?? "").trim())))
+            : null;
+          if (categoryIds?.some((categoryId) => !categoryId)) {
+            throw new ProductBatchAbort(422, { error: "Las categorías asignadas deben tener un ID válido" });
+          }
+          if (variants !== null) {
+            const incompleteVariant = variants.find((variant) => variant.price === undefined || variant.price === null);
+            if (incompleteVariant) {
+              throw new ProductBatchAbort(422, {
+                error: "Cada variante necesita un precio válido antes de guardarse",
+                variantId: incompleteVariant.id ?? null,
+              });
             }
           }
+
+          const productExclusion = await transaction.productExclusion.findUnique({
+            where: { productId: id },
+            select: { productId: true },
+          });
+          if (productExclusion) {
+            throw new ProductBatchAbort(409, {
+              error: "El producto está excluido por una eliminación anterior y requiere restauración explícita",
+              productId: productExclusion.productId,
+            });
+          }
+          const currentProduct = await transaction.product.findUnique({ where: { id }, select: { stock: true } });
+          const productStockConflict = findStockSnapshotConflict(
+            "product",
+            id,
+            row.expectedStock,
+            currentProduct?.stock,
+            rowStockInputs.productStock !== undefined,
+          );
+          if (productStockConflict) {
+            const error = productStockConflict.reason === "snapshot-required"
+              ? `Se requiere expectedStock para actualizar el stock del ${productStockConflict.entity}`
+              : productStockConflict.reason === "missing"
+                ? `El ${productStockConflict.entity} ${productStockConflict.id} ya no existe`
+                : `El stock del ${productStockConflict.entity} ${productStockConflict.id} cambió desde que se cargó`;
+            throw new ProductBatchAbort(409, { error, ...productStockConflict });
+          }
+
+          let variantsToSave = variants;
+          if (categoryIds !== null && categoryIds.length > 0) {
+            const existingCategories = await transaction.category.findMany({
+              where: { id: { in: categoryIds } },
+              select: { id: true },
+            });
+            const existingCategoryIds = new Set(existingCategories.map((category) => category.id));
+            const invalidCategoryIds = categoryIds.filter((categoryId) => !existingCategoryIds.has(categoryId));
+            if (invalidCategoryIds.length > 0) {
+              throw new ProductBatchAbort(422, { error: "Una o más categorías no existen", categoryIds: invalidCategoryIds });
+            }
+          }
+          if (variants !== null) {
+            const variantIdsToCheck = variants.map((variant) => String(variant.id ?? "").trim()).filter(Boolean);
+            const existingVariants = variantIdsToCheck.length > 0
+              ? await transaction.productVariant.findMany({
+                where: { id: { in: variantIdsToCheck } },
+                select: { id: true, productId: true, stock: true },
+              })
+              : [];
+            const foreignVariant = existingVariants.find((variant) => variant.productId !== id);
+            if (foreignVariant) {
+              throw new ProductBatchAbort(409, {
+                error: "La variante no pertenece al producto que se está guardando",
+                variantId: foreignVariant.id,
+              });
+            }
+            const excludedVariants = variantIdsToCheck.length > 0
+              ? await transaction.productVariantExclusion.findMany({
+                where: { variantId: { in: variantIdsToCheck } },
+                select: { variantId: true, productId: true },
+              })
+              : [];
+            const excludedForAnotherProduct = excludedVariants.find((variant) => variant.productId !== id);
+            if (excludedForAnotherProduct) {
+              throw new ProductBatchAbort(409, {
+                error: "La variante no pertenece al producto que se está guardando",
+                variantId: excludedForAnotherProduct.variantId,
+              });
+            }
+            const excludedVariantIds = new Set(excludedVariants.map((variant) => variant.variantId));
+            variantsToSave = removeExcludedProductVariants(variants, excludedVariantIds);
+            const existingVariantsById = new Map(existingVariants.map((variant) => [variant.id, variant]));
+            for (const variant of variantsToSave) {
+              const variantId = String(variant.id ?? "").trim();
+              const existingVariant = existingVariantsById.get(variantId);
+              const stockConflict = findStockSnapshotConflict(
+                "variant",
+                variantId,
+                variant.expectedStock,
+                existingVariant?.productId === id ? existingVariant.stock : undefined,
+                rowStockInputs.variantStocks.get(variant) !== undefined,
+              );
+              if (stockConflict) {
+                const error = stockConflict.reason === "snapshot-required"
+                  ? `Se requiere expectedStock para actualizar el stock del ${stockConflict.entity}`
+                  : stockConflict.reason === "missing"
+                    ? `El ${stockConflict.entity} ${stockConflict.id} ya no existe`
+                    : `El stock del ${stockConflict.entity} ${stockConflict.id} cambió desde que se cargó`;
+                throw new ProductBatchAbort(409, { error, ...stockConflict });
+              }
+            }
+          }
+
+          await transaction.product.upsert({
+            where: { id },
+            update: {
+              name: String(row.name ?? ""),
+              category: String(row.category ?? ""),
+              price: parseDecimal(row.price) ?? new Prisma.Decimal(0),
+              oldPrice: parseDecimal(row.oldPrice),
+              badge: row.badge ? String(row.badge) : null,
+              highlight: row.highlight !== undefined ? Boolean(row.highlight) : undefined,
+              ...(rowStockInputs.productStock !== undefined ? { stock: rowStockInputs.productStock } : {}),
+              image: row.image ? String(row.image) : null,
+              description: row.description ? String(row.description) : null,
+              specs: row.specs ?? [],
+              activateWholesale: row.activateWholesale !== undefined ? Boolean(row.activateWholesale) : undefined,
+              wholesaleMinQty: row.wholesaleMinQty !== undefined ? Math.max(0, Number(row.wholesaleMinQty ?? 0)) : undefined,
+              wholesaleDiscountPercent: row.wholesaleDiscountPercent !== undefined ? Math.max(0, Math.min(100, Number(row.wholesaleDiscountPercent ?? 0))) : undefined,
+            },
+            create: {
+              id,
+              name: String(row.name ?? ""),
+              category: String(row.category ?? ""),
+              price: parseDecimal(row.price) ?? new Prisma.Decimal(0),
+              oldPrice: parseDecimal(row.oldPrice),
+              badge: row.badge ? String(row.badge) : null,
+              highlight: row.highlight !== undefined ? Boolean(row.highlight) : false,
+              stock: rowStockInputs.productStock ?? 0,
+              image: row.image ? String(row.image) : null,
+              description: row.description ? String(row.description) : null,
+              specs: row.specs ?? [],
+              activateWholesale: row.activateWholesale !== undefined ? Boolean(row.activateWholesale) : false,
+              wholesaleMinQty: Math.max(0, Number(row.wholesaleMinQty ?? 0)),
+              wholesaleDiscountPercent: Math.max(0, Math.min(100, Number(row.wholesaleDiscountPercent ?? 0))),
+            },
+          });
+          if (categoryIds !== null) {
+            await transaction.productCategory.deleteMany({ where: { productId: id } });
+            if (categoryIds.length > 0) {
+              await transaction.productCategory.createMany({ data: categoryIds.map((categoryId) => ({ productId: id, categoryId })) });
+            }
+          }
+          if (variantsToSave !== null) {
+            const variantIds: string[] = [];
+            for (const [sortOrder, variantRow] of variantsToSave.entries()) {
+              const variantId = String(variantRow.id || crypto.randomUUID());
+              variantIds.push(variantId);
+              const variantImageUrls = resolveVariantImageUrls(variantRow);
+              const variantImage = variantImageUrls !== null ? variantImageUrls[0] ?? null : variantRow.image ? String(variantRow.image) : null;
+              const savedVariant = await transaction.productVariant.upsert({
+                where: { id: variantId, productId: id },
+                update: {
+                  name: String(variantRow.name ?? "Variante"),
+                  description: variantRow.description ? String(variantRow.description) : null,
+                  price: parseDecimal(variantRow.price) ?? new Prisma.Decimal(0),
+                  ...(rowStockInputs.variantStocks.get(variantRow) !== undefined ? { stock: rowStockInputs.variantStocks.get(variantRow) } : {}),
+                  image: variantImage,
+                  active: variantRow.active !== undefined ? Boolean(variantRow.active) : true,
+                  sortOrder,
+                },
+                create: {
+                  id: variantId,
+                  productId: id,
+                  name: String(variantRow.name ?? "Variante"),
+                  description: variantRow.description ? String(variantRow.description) : null,
+                  price: parseDecimal(variantRow.price) ?? new Prisma.Decimal(0),
+                  stock: rowStockInputs.variantStocks.get(variantRow) ?? 0,
+                  image: variantImage,
+                  active: variantRow.active !== undefined ? Boolean(variantRow.active) : true,
+                  sortOrder,
+                },
+              });
+              if (variantImageUrls !== null) {
+                await replaceVariantImagesIfChanged(transaction, id, savedVariant.id, variantImageUrls);
+              }
+            }
+            await deleteOmittedProductVariants(transaction, id, variantIds);
+          }
+          if (Array.isArray(row.images)) {
+            const productImageUrls: string[] = [];
+            for (const imageRow of row.images as unknown[]) {
+              const url = typeof imageRow === "string" ? imageRow : String((imageRow as Record<string, unknown>)?.url ?? "").trim();
+              if (url) productImageUrls.push(url);
+            }
+            await replaceProductImagesIfChanged(transaction, id, productImageUrls);
+          }
+          const savedProduct = await readProductWithCatalogRelations(transaction, id);
+          if (!savedProduct) throw new Error(`No se pudo releer el producto ${id} después de guardarlo`);
+          saved.push(savedProduct);
         }
-        await prisma.productVariant.updateMany({ where: { productId: id, id: { notIn: variantIds } }, data: { active: false } });
+      });
+    } catch (error) {
+      if (error instanceof ProductBatchAbort) {
+        return res.status(error.statusCode).json(error.responseBody);
       }
-      if (Array.isArray(row.images)) {
-        await prisma.productImage.deleteMany({ where: { productId: id, variantId: null } });
-        for (const [sortOrder, imageRow] of (row.images as unknown[]).entries()) {
-          const url = typeof imageRow === "string" ? imageRow : String((imageRow as Record<string, unknown>)?.url ?? "").trim();
-          if (!url) continue;
-          await prisma.productImage.create({ data: { productId: id, url, sortOrder, isPrimary: sortOrder === 0 } });
-        }
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        return res.status(409).json({ error: "Conflicto de unicidad al guardar el producto o sus variantes" });
       }
-      saved.push(product);
+      throw error;
     }
     return res.json(saved.map(serializeProduct));
   }
@@ -1388,16 +1823,11 @@ app.post("/api/data/:table", async (req, res) => {
             return transaction.order.update({ where: { id: orderId }, data: pricingData });
           }
 
-          for (const item of pricing.items) {
-            const quantity = Number(item.quantity);
-            if (item.variantId) {
-              const updated = await transaction.productVariant.updateMany({ where: { id: String(item.variantId), stock: { gte: quantity }, active: true }, data: { stock: { decrement: quantity } } });
-              if (updated.count !== 1) throw new Error("Stock insuficiente para la variante");
-            } else {
-              const updated = await transaction.product.updateMany({ where: { id: String(item.productId), stock: { gte: quantity } }, data: { stock: { decrement: quantity } } });
-              if (updated.count !== 1) throw new Error("Stock insuficiente para el producto");
-            }
-          }
+          await decrementOrderInventory(transaction, pricing.items.map((item) => ({
+            productId: String(item.productId),
+            variantId: item.variantId ? String(item.variantId) : null,
+            quantity: Number(item.quantity),
+          })));
           return transaction.order.create({ data: { id: orderId, ...normalizedOrderData, status: requestedStatus, ...pricingData } });
         });
       } catch (error) {
@@ -1426,6 +1856,8 @@ app.post("/api/data/:table", async (req, res) => {
   }
 
   if (table === "profiles") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
     const rows = Array.isArray(body) ? body : [body];
     const saved = [] as User[];
     for (const row of rows as Array<Record<string, unknown>>) {
@@ -1485,6 +1917,8 @@ app.post("/api/data/:table", async (req, res) => {
   }
 
   if (table === "cedula_emails") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
     const rows = Array.isArray(body) ? body : [body];
     const saved = [] as CedulaEmail[];
     for (const row of rows as Array<Record<string, unknown>>) {
@@ -1506,29 +1940,87 @@ app.patch("/api/data/:table", async (req, res) => {
   const filters = parseFilters(req.query.filters as string | undefined);
   const payload = req.body as Record<string, unknown>;
 
+  if (table === "categories") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
+    if (filters.length === 0) return res.status(400).json({ error: "Se requiere un filtro para actualizar categorías" });
+    const name = payload.name !== undefined ? String(payload.name).trim() : undefined;
+    const slug = payload.slug !== undefined ? String(payload.slug).trim().toLowerCase() : undefined;
+    if (name === "" || (slug !== undefined && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))) {
+      return res.status(422).json({ error: "Nombre o slug de categoría no válido" });
+    }
+    const rows = await prisma.category.findMany();
+    const matched = applyFilters(rows.map((row) => wrap(row) as Record<string, unknown>), filters);
+    try {
+      const updated = await prisma.$transaction(matched.map((row) => prisma.category.update({
+        where: { id: String(row.id) },
+        data: { name, slug },
+      })));
+      return res.json(updated.map((category) => wrap(category)));
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        return res.status(409).json({ error: "Ya existe una categoría con ese slug" });
+      }
+      throw error;
+    }
+  }
+
   if (table === "products") {
     const authUser = await requireAdmin(req, res);
     if (!authUser) return;
-    const rows = await prisma.product.findMany();
-    const matched = applyFilters(rows.map(serializeProduct) as Record<string, unknown>[], filters);
-    const updated = [] as Product[];
-    for (const row of matched) {
-      const next = await prisma.product.update({
-        where: { id: String(row.id) },
-        data: {
-          ...payload,
-          price: payload.price !== undefined ? parseDecimal(payload.price) ?? undefined : undefined,
-          oldPrice: payload.oldPrice !== undefined ? parseDecimal(payload.oldPrice) ?? undefined : undefined,
-          highlight: payload.highlight !== undefined ? Boolean(payload.highlight) : undefined,
-          badge: payload.badge !== undefined ? (payload.badge ? String(payload.badge) : null) : undefined,
-          activateWholesale: payload.activateWholesale !== undefined ? Boolean(payload.activateWholesale) : undefined,
-          wholesaleMinQty: payload.wholesaleMinQty !== undefined ? Math.max(0, Number(payload.wholesaleMinQty ?? 0)) : undefined,
-          wholesaleDiscountPercent: payload.wholesaleDiscountPercent !== undefined ? Math.max(0, Math.min(100, Number(payload.wholesaleDiscountPercent ?? 0))) : undefined,
-        },
-      });
-      updated.push(next);
+    const hasExpectedStock = Object.prototype.hasOwnProperty.call(payload, "expectedStock");
+    const patchPayload = { ...payload };
+    delete patchPayload.expectedStock;
+    if (hasExpectedStock && !Object.prototype.hasOwnProperty.call(patchPayload, "stock")) {
+      return res.status(400).json({ error: "expectedStock solo se permite cuando se actualiza stock" });
     }
-    return res.json(updated.map(serializeProduct));
+    if (Object.prototype.hasOwnProperty.call(patchPayload, "stock") && !hasExpectedStock) {
+      return res.status(400).json({ error: "Se requiere expectedStock para actualizar stock" });
+    }
+    let expectedStock: number | undefined;
+    if (hasExpectedStock) {
+      try {
+        expectedStock = resolveAdminStock(payload.expectedStock);
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? `expectedStock ${error.message}` : "expectedStock no es válido" });
+      }
+      if (expectedStock === undefined) {
+        return res.status(400).json({ error: "expectedStock debe ser un entero válido" });
+      }
+    }
+    const patchValidation = validateProductPatch(patchPayload, filters);
+    if ("error" in patchValidation) return res.status(400).json(patchValidation);
+    const productId = patchValidation.filters[0].value;
+    const patchResult = await prisma.$transaction(async (transaction) => {
+      await lockProductCatalogIds(transaction, [productId]);
+      const currentRows = await transaction.product.findMany({ where: { id: productId } });
+      const currentMatches = applyFilters(currentRows.map(serializeProduct) as Record<string, unknown>[], patchValidation.filters);
+      const target = resolveProductPatchTarget(currentMatches);
+      if (target.kind !== "found") return target;
+      const stockConflict = findStockSnapshotConflict(
+        "product",
+        productId,
+        expectedStock,
+        typeof target.product.stock === "number" ? target.product.stock : undefined,
+        Object.prototype.hasOwnProperty.call(patchPayload, "stock"),
+      );
+      if (stockConflict) return { kind: "stock-conflict", conflict: stockConflict } as const;
+      const product = await transaction.product.update({ where: { id: productId }, data: patchValidation.data });
+      return { kind: "updated", product } as const;
+    });
+    if (patchResult.kind === "not-found") {
+      return res.status(404).json({ error: "No existe un producto con el ID indicado", productId });
+    }
+    if (patchResult.kind === "non-unique") {
+      throw new Error(`El filtro ID devolvió más de un producto: ${productId}`);
+    }
+    if (patchResult.kind === "stock-conflict") {
+      return res.status(409).json({
+        error: "El stock del producto cambió desde que se cargó",
+        ...patchResult.conflict,
+      });
+    }
+    return res.json([serializeProduct(patchResult.product)]);
   }
 
   if (table === "orders") {
@@ -1564,6 +2056,9 @@ app.patch("/api/data/:table", async (req, res) => {
   }
 
   if (table === "profiles") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
+    if (filters.length === 0) return res.status(400).json({ error: "Se requiere un filtro para actualizar perfiles" });
     const rows = await prisma.user.findMany();
     const matched = applyFilters(rows.map(serializeUser) as Record<string, unknown>[], filters);
     const updated = [] as User[];
@@ -1625,16 +2120,59 @@ app.delete("/api/data/:table", async (req, res) => {
   const { table } = req.params;
   const filters = parseFilters(req.query.filters as string | undefined);
 
+  if (table === "categories") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
+    if (filters.length === 0) return res.status(400).json({ error: "Se requiere un filtro para eliminar categorías" });
+    const rows = await prisma.category.findMany();
+    const matched = applyFilters(rows.map((row) => wrap(row) as Record<string, unknown>), filters);
+    const categoryIds = matched.map((row) => String(row.id));
+    const deletion = categoryIds.length
+      ? await prisma.$transaction(async (transaction) => {
+        const lockedCategories = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT "id"
+          FROM "public"."Category"
+          WHERE "id" IN (${Prisma.join(categoryIds)})
+          FOR UPDATE
+        `);
+        const lockedCategoryIds = lockedCategories.map((category) => category.id);
+        const assignmentCount = lockedCategoryIds.length
+          ? await transaction.productCategory.count({ where: { categoryId: { in: lockedCategoryIds } } })
+          : 0;
+        if (assignmentCount > 0) return { conflict: true, deleted: 0 };
+        const deleted = lockedCategoryIds.length
+          ? await transaction.category.deleteMany({ where: { id: { in: lockedCategoryIds } } })
+          : { count: 0 };
+        return { conflict: false, deleted: deleted.count };
+      })
+      : { conflict: false, deleted: 0 };
+    if (deletion.conflict) {
+      return res.status(409).json({ error: "No se puede eliminar una categoría que está asignada a productos" });
+    }
+    return res.json({ deleted: deletion.deleted });
+  }
+
   if (table === "products") {
     const authUser = await requireAdmin(req, res);
     if (!authUser) return;
+    const productDeleteFilters = parseProductDeleteFilters(req.query.filters);
+    if (!productDeleteFilters) return res.status(400).json({ error: "Se requieren filtros de producto válidos para eliminar" });
     const rows = await prisma.product.findMany();
-    const matched = applyFilters(rows.map(serializeProduct) as Record<string, unknown>[], filters);
-    for (const row of matched) await prisma.product.delete({ where: { id: String(row.id) } });
-    return res.json({ deleted: matched.length });
+    const matched = applyFilters(rows.map(serializeProduct) as Record<string, unknown>[], productDeleteFilters);
+    const matchedProductIds = matched.map((row) => String(row.id));
+    const explicitlyRequestedIds = productDeleteFilters.length === 1 && productDeleteFilters[0].column === "id"
+      ? [productDeleteFilters[0].value as string]
+      : [];
+    const productIds = Array.from(new Set([...matchedProductIds, ...explicitlyRequestedIds]));
+    if (productIds.length === 0) return res.json({ deleted: 0 });
+    const deletedCount = await prisma.$transaction((transaction) => deleteProductsWithExclusions(transaction, productIds));
+    return res.json({ deleted: deletedCount });
   }
 
   if (table === "orders") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
+    if (filters.length === 0) return res.status(400).json({ error: "Se requiere un filtro para eliminar pedidos" });
     const rows = await prisma.order.findMany();
     const matched = applyFilters(rows.map(serializeOrder) as Record<string, unknown>[], filters);
     for (const row of matched) await prisma.order.delete({ where: { id: String(row.id) } });
@@ -1642,6 +2180,9 @@ app.delete("/api/data/:table", async (req, res) => {
   }
 
   if (table === "profiles") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
+    if (filters.length === 0) return res.status(400).json({ error: "Se requiere un filtro para eliminar perfiles" });
     const rows = await prisma.user.findMany();
     const matched = applyFilters(rows.map(serializeUser) as Record<string, unknown>[], filters);
     for (const row of matched) await prisma.user.delete({ where: { id: String(row.id) } });
@@ -1668,6 +2209,9 @@ app.delete("/api/data/:table", async (req, res) => {
   }
 
   if (table === "cedula_emails") {
+    const authUser = await requireAdmin(req, res);
+    if (!authUser) return;
+    if (filters.length === 0) return res.status(400).json({ error: "Se requiere un filtro para eliminar asociaciones de cédula" });
     const rows = await prisma.cedulaEmail.findMany();
     const matched = applyFilters(rows.map(serializeCedulaEmail) as Record<string, unknown>[], filters);
     for (const row of matched) await prisma.cedulaEmail.delete({ where: { cedula: String(row.cedula) } });
@@ -1771,17 +2315,29 @@ app.post("/api/functions/normalize-legacy-variants", async (req, res) => {
 
   const body = req.body as { dryRun?: boolean; products?: Array<{ id?: string; variants?: Array<{ id?: string; name?: string; description?: string; image?: string; images?: string[]; price?: number; stock?: number; active?: boolean; sortOrder?: number }> }> };
   const legacyProducts = Array.isArray(body.products) ? body.products : [];
-  const report = { products: 0, legacy: 0, existing: 0, created: 0, missingValues: [] as string[], conflicts: [] as string[] };
-  const planned: Array<{ productId: string; variantId: string; name: string; description: string | null; image: string | null; price?: number; stock?: number; active?: boolean; sortOrder: number; action: "existing" | "create" }> = [];
+  const report = { products: 0, legacy: 0, existing: 0, excluded: 0, excludedProducts: 0, created: 0, missingValues: [] as string[], conflicts: [] as string[] };
+  const planned: Array<{ productId: string; variantId: string; name: string; description: string | null; image: string | null; price?: number; stock?: number; active?: boolean; sortOrder: number; action: "existing" | "create" | "excluded" }> = [];
 
   for (const product of legacyProducts) {
     const productId = String(product.id ?? "").trim();
-    if (!productId || !(await prisma.product.findUnique({ where: { id: productId }, select: { id: true } }))) continue;
+    if (!productId) continue;
+    if (await prisma.productExclusion.findUnique({ where: { productId }, select: { productId: true } })) {
+      report.excludedProducts += 1;
+      continue;
+    }
+    if (!(await prisma.product.findUnique({ where: { id: productId }, select: { id: true } }))) continue;
     report.products += 1;
     for (const [index, legacy] of (Array.isArray(product.variants) ? product.variants : []).entries()) {
       const variantId = String(legacy.id ?? "").trim();
       if (!variantId) continue;
       report.legacy += 1;
+      const exclusion = await prisma.productVariantExclusion.findUnique({ where: { variantId }, select: { productId: true } });
+      if (exclusion) {
+        report.excluded += 1;
+        planned.push({ productId, variantId, name: String(legacy.name ?? "Subproducto"), description: legacy.description ? String(legacy.description) : null, image: legacy.image ? String(legacy.image) : null, price: legacy.price, stock: legacy.stock, active: legacy.active, sortOrder: Number(legacy.sortOrder ?? index), action: "excluded" });
+        if (exclusion.productId !== productId) report.conflicts.push(`${variantId}: está excluida para ${exclusion.productId}, no para ${productId}`);
+        continue;
+      }
       if (legacy.price === undefined || legacy.stock === undefined) report.missingValues.push(`${productId}/${variantId}`);
       const existing = await prisma.productVariant.findUnique({ where: { id: variantId }, select: { id: true, productId: true } });
       if (existing) {
@@ -1798,10 +2354,21 @@ app.post("/api/functions/normalize-legacy-variants", async (req, res) => {
 
   for (const item of planned) {
     if (item.action === "existing") continue;
-    const variant = await prisma.productVariant.create({ data: { id: item.variantId, productId: item.productId, name: item.name, description: item.description, price: new Prisma.Decimal(item.price!), stock: item.stock!, image: item.image, active: item.active !== false, sortOrder: item.sortOrder } });
-    const images = item.image ? [item.image] : [];
-    for (const [sortOrder, url] of images.entries()) await prisma.productImage.create({ data: { productId: item.productId, variantId: variant.id, url, sortOrder, isPrimary: sortOrder === 0 } });
-    report.created += 1;
+    if (item.action === "excluded") continue;
+    const result = await prisma.$transaction((transaction) => createLegacyVariantUnlessExcluded(transaction, {
+      productId: item.productId,
+      variantId: item.variantId,
+      name: item.name,
+      description: item.description,
+      image: item.image,
+      price: item.price!,
+      stock: item.stock!,
+      active: item.active,
+      sortOrder: item.sortOrder,
+    }));
+    if (result === "created") report.created += 1;
+    if (result === "excluded-variant") report.excluded += 1;
+    if (result === "excluded-product") report.excludedProducts += 1;
   }
   return res.json({ ok: true, dryRun: false, report });
 });
@@ -2183,7 +2750,5 @@ app.post("/api/functions/create-mp-preference", async (req, res) => {
   return res.json({ id: data.id, init_point: data.init_point, sandbox_init_point: data.sandbox_init_point });
 });
 
-app.listen(port, async () => {
-  await mkdir(uploadsDir, { recursive: true });
-  console.log(`Shelby MySQL backend listening on http://localhost:${port}`);
-});
+return app;
+};
