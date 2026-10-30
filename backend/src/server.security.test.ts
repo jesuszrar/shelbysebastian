@@ -42,7 +42,9 @@ type TestState = {
   users: TestUser[];
   orders: TestOrder[];
   cedulaEmails: TestCedulaEmail[];
+  refreshTokens: Array<{ userId: string; tokenHash: string; expiresAt: Date }>;
   writes: string[];
+  failRefreshTokenCreation?: boolean;
 };
 
 const createState = (): TestState => ({
@@ -51,6 +53,7 @@ const createState = (): TestState => ({
     { id: "order-customer-1", userId: "customer-1", status: "paid", total: 100 },
     { id: "order-customer-2", userId: "customer-2", status: "pending", total: 200 },
   ],
+  refreshTokens: [],
   cedulaEmails: [
     { cedula: "111222333", email: "customer@example.test", userId: "customer-1" },
     { cedula: "444555666", email: "other@example.test", userId: "customer-2" },
@@ -69,6 +72,12 @@ const createFakePrisma = (state: TestState) => ({
     findFirst: async ({ where }: { where: { cedula?: string } }) =>
       state.users.find((user) => where.cedula !== undefined && user.cedula === where.cedula) ?? null,
     findMany: async () => [...state.users],
+    create: async ({ data }: { data: Omit<TestUser, "id"> }) => {
+      const user = { id: `user-${state.users.length + 1}`, ...data };
+      state.users.push(user);
+      state.writes.push(`user.create:${user.id}`);
+      return user;
+    },
     update: async ({ where, data }: { where: { id: string }; data: Partial<TestUser> }) => {
       const user = state.users.find((candidate) => candidate.id === where.id);
       if (!user) throw new Error("test user not found");
@@ -104,12 +113,27 @@ const createFakePrisma = (state: TestState) => ({
     findUnique: async ({ where }: { where: { cedula: string } }) =>
       state.cedulaEmails.find((entry) => entry.cedula === where.cedula) ?? null,
     findMany: async () => [...state.cedulaEmails],
+    upsert: async ({ where, create }: { where: { cedula: string }; create: TestCedulaEmail; update: Partial<TestCedulaEmail> }) => {
+      const existing = state.cedulaEmails.find((entry) => entry.cedula === where.cedula);
+      if (existing) return existing;
+      state.cedulaEmails.push(create);
+      state.writes.push(`cedulaEmail.upsert:${create.cedula}`);
+      return create;
+    },
     delete: async ({ where }: { where: { cedula: string } }) => {
       const index = state.cedulaEmails.findIndex((entry) => entry.cedula === where.cedula);
       if (index < 0) throw new Error("test cédula association not found");
       const [deleted] = state.cedulaEmails.splice(index, 1);
       state.writes.push(`cedulaEmail.delete:${where.cedula}`);
       return deleted;
+    },
+  },
+  refreshToken: {
+    create: async ({ data }: { data: { userId: string; tokenHash: string; expiresAt: Date } }) => {
+      if (state.failRefreshTokenCreation) throw new Error("simulated refresh-token persistence failure");
+      state.refreshTokens.push(data);
+      state.writes.push(`refreshToken.create:${data.userId}`);
+      return { id: `refresh-${state.refreshTokens.length}`, ...data };
     },
   },
 });
@@ -132,10 +156,32 @@ const withHttpApp = async (
 ) => {
   const state = createState();
   const fakePrisma = createFakePrisma(state);
+  const prisma = {
+    ...fakePrisma,
+    $transaction: async <T>(callback: (transaction: typeof fakePrisma) => Promise<T>) => {
+      const snapshot = structuredClone(state);
+      try {
+        return await callback(fakePrisma);
+      } catch (error) {
+        state.users.splice(0, state.users.length, ...snapshot.users);
+        state.cedulaEmails.splice(0, state.cedulaEmails.length, ...snapshot.cedulaEmails);
+        state.refreshTokens.splice(0, state.refreshTokens.length, ...snapshot.refreshTokens);
+        state.writes.splice(0, state.writes.length, ...snapshot.writes);
+        throw error;
+      }
+    },
+  };
   const app = createApp({
-    prisma: fakePrisma as unknown as PrismaClient,
+    prisma: prisma as unknown as PrismaClient,
     jwtSecret: testJwtSecret,
-    createRefreshToken: async () => "isolated-test-refresh-token",
+    createRefreshToken: async (userId, expiresAt, transaction) => {
+      if (transaction) {
+        await transaction.refreshToken.create({
+          data: { userId, tokenHash: "isolated-test-refresh-token-hash", expiresAt },
+        });
+      }
+      return "isolated-test-refresh-token";
+    },
   });
   const server: Server = createServer(app);
   await new Promise<void>((resolve, reject) => {
@@ -184,6 +230,50 @@ const jsonRequest = (method: string, body?: unknown, token?: string): RequestIni
 
 const filterQuery = (column: string, value: string) =>
   `?filters=${encodeURIComponent(JSON.stringify([{ column, value }]))}`;
+
+test("registration commits the user, cédula mapping and refresh token together", async () => {
+  await withHttpApp(async ({ request, state }) => {
+    const response = await request("/api/auth/register", jsonRequest("POST", {
+      email: "new@example.test",
+      password: "a-secure-test-password",
+      data: { name: "New Customer", cedula: "123-456-789" },
+    }));
+
+    assert.equal(response.status, 200);
+    const body = await response.json() as { session: { access_token: string }; user: { id: string; email: string } };
+    assert.ok(body.session.access_token);
+    assert.equal(body.user.email, "new@example.test");
+    assert.equal(state.users.length, 4);
+    assert.equal(state.cedulaEmails.at(-1)?.cedula, "123456789");
+    assert.equal(state.refreshTokens.length, 1);
+    assert.equal(state.refreshTokens[0].userId, body.user.id);
+  });
+});
+
+test("registration rolls back its user and cédula mapping when refresh-token persistence fails", async () => {
+  await withHttpApp(async ({ request, state }) => {
+    state.failRefreshTokenCreation = true;
+    const response = await request("/api/auth/register", jsonRequest("POST", {
+      email: "failed@example.test",
+      password: "a-secure-test-password",
+      data: { name: "Failed Customer", cedula: "987-654-321" },
+    }));
+
+    assert.equal(response.status, 500);
+    assert.equal(state.users.some((user) => user.email === "failed@example.test"), false);
+    assert.equal(state.cedulaEmails.some((entry) => entry.cedula === "987654321"), false);
+    assert.equal(state.refreshTokens.length, 0);
+    assert.deepEqual(state.writes, []);
+  });
+});
+
+test("health endpoint identifies the PostgreSQL backend", async () => {
+  await withHttpApp(async ({ request }) => {
+    const response = await request("/health");
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, service: "shelby-postgresql-backend" });
+  });
+});
 
 test("anonymous requests cannot access profiles, all orders, profile writes, RPC, or private deletes", async () => {
   await withHttpApp(async ({ request, state }) => {

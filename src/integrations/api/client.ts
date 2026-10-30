@@ -1,4 +1,4 @@
-﻿type ApiError = { message: string; code?: string };
+﻿type ApiError = { message: string; code?: string; businessCode?: string };
 type ApiResult<T> = Promise<{ data: T | null; error: ApiError | null }>;
 
 export type SessionUser = {
@@ -15,19 +15,19 @@ export type SessionUser = {
 };
 
 export type StoredSession = { access_token: string; user: SessionUser } | null;
+export type NiimbotPageImage = { key: string; path: string; alt: string | null; updatedAt?: string };
 
 const resolveApiBaseUrl = () => {
   // Primary source: VITE_API_URL (build-time). Do NOT fall back silently to old Render URLs.
   const configuredUrl = String(import.meta.env.VITE_API_URL ?? import.meta.env.VITE_BACKEND_URL ?? "").trim();
   const placeholderBackend = "tu-backend-en-render.com";
-  const oldRenderHost = "shelby-backend.onrender.com";
   const localBackend = "http://localhost:3001";
 
   const normalize = (value: string) => {
     const normalized = String(value ?? "").trim().replace(/\/$/, "");
     if (!normalized) return "";
-    // Explicitly reject known deprecated hosts to avoid accidental fallback to Render
-    if (normalized.includes(placeholderBackend) || normalized.includes(oldRenderHost)) return "";
+    // Reject only the placeholder; the configured production host is authoritative.
+    if (normalized.includes(placeholderBackend)) return "";
     return normalized;
   };
 
@@ -64,6 +64,7 @@ export const resolveImageUrl = (value: string | null | undefined): string => {
   }
   return imageUrl;
 };
+
 export const SESSION_KEY = "shelby:session";
 const AUTH_LISTENERS = new Set<(event: string, session: StoredSession | null) => void>();
 export const SESSION_EXPIRED_EVENT = "SESSION_EXPIRED";
@@ -92,28 +93,6 @@ export const saveSession = (session: StoredSession) => writeSession(session);
 export const clearSession = () => writeSession(null);
 
 const buildApiUrl = (path: string) => (API_BASE_URL ? `${API_BASE_URL}${path}` : path);
-
-export const getEmailByCedula = async (cedula: string): Promise<string | null> => {
-  const url = buildApiUrl(`/api/users/email-by-cedula?cedula=${encodeURIComponent(cedula)}`);
-  const response = await fetch(url, { method: "GET" });
-  const data = (await response.json().catch(() => null)) as { email?: string | null } | null;
-  if (!response.ok) return null;
-  return data?.email ?? null;
-};
-
-export const persistCedulaEmail = async (cedula: string, email: string, accessToken?: string): Promise<boolean> => {
-  const url = buildApiUrl("/api/users/cedula-email");
-  const response = await fetch(url, {
-    method: "POST",
-    headers: buildRequestHeaders(undefined, accessToken),
-    body: JSON.stringify({ cedula, email }),
-  });
-  if (!response.ok) {
-    console.error("Error persisting cedula email", await response.text().catch(() => ""));
-    return false;
-  }
-  return true;
-};
 
 export const syncProfile = async (sessionUser: SessionUser, cedula: string, name?: string, accessToken?: string): Promise<boolean> => {
   const url = buildApiUrl("/api/profile/sync");
@@ -213,7 +192,7 @@ const emitAuthChange = (event: string, session: StoredSession | null) => {
 
 export const onAuthStateChange = (listener: (event: string, session: StoredSession | null) => void) => {
   AUTH_LISTENERS.add(listener);
-  return { unsubscribe: () => AUTH_LISTENERS.delete(listener) };
+  return { unsubscribe: () => { AUTH_LISTENERS.delete(listener); } };
 };
 
 export const buildRequestHeaders = (headersInit: HeadersInit | undefined, accessToken?: string) => {
@@ -253,12 +232,16 @@ export const isTokenExpired = (token: string | undefined | null) => {
   return exp ? exp * 1000 < Date.now() : true;
 };
 
-export const isTokenExpiringSoon = (token: string | undefined | null, minutes = 30) => {
+export const shouldAttemptSessionRefresh = (token: string | undefined | null, minutes = 30) => {
   const payload = decodeJwt(token);
   const exp = payload && typeof payload.exp === "number" ? payload.exp : null;
   if (!exp) return true;
   const thresholdMs = minutes * 60 * 1000;
   return exp * 1000 < Date.now() + thresholdMs;
+};
+
+export const isTokenExpiringSoon = (token: string | undefined | null, minutes = 30) => {
+  return shouldAttemptSessionRefresh(token, minutes);
 };
 
 export const refreshSession = async (): Promise<StoredSession | null> => {
@@ -285,13 +268,60 @@ export const refreshSession = async (): Promise<StoredSession | null> => {
   return refreshPromise;
 };
 
+const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result || ""));
+  reader.onerror = () => reject(new Error("No se pudo leer la imagen"));
+  reader.readAsDataURL(file);
+});
+
+export const fetchNiimbotPageImages = () => request<NiimbotPageImage[]>("/api/niimbot/page-images");
+
+export const fetchNiimbotPageImageUrl = (key: string) =>
+  request<{ url: string; expiresIn: number }>(`/api/niimbot/page-images/${encodeURIComponent(key)}/url`);
+
+export const uploadNiimbotPageImage = async (key: string, file: File) => {
+  const contentBase64 = await readFileAsDataUrl(file);
+  return request<NiimbotPageImage>("/api/niimbot/page-images/upload", {
+    method: "POST",
+    body: JSON.stringify({ key, mimeType: file.type, contentBase64 }),
+  });
+};
+
+export const updateNiimbotPageImageAlt = (key: string, path: string, alt: string) =>
+  request<NiimbotPageImage>(`/api/niimbot/page-images/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    body: JSON.stringify({ path, alt }),
+  });
+
 const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
   if (!API_BASE_URL) {
     return { data: null, error: { message: "VITE_API_URL o VITE_BACKEND_URL no está configurado." } };
   }
 
+  const method = String(init?.method ?? "GET").toUpperCase();
+  const [pathname, queryString = ""] = path.split("?", 2);
+  const isPublicCatalogRead = method === "GET" && pathname === "/api/data/products";
+  const orderStatusParams = new URLSearchParams(queryString);
+  let orderFilters: unknown = null;
+  try {
+    orderFilters = JSON.parse(orderStatusParams.get("filters") ?? "null");
+  } catch {
+    orderFilters = null;
+  }
+  const isGuestOrderStatusRead =
+    method === "GET" &&
+    pathname === "/api/data/orders" &&
+    (orderStatusParams.get("single") === "true" || orderStatusParams.get("maybeSingle") === "true") &&
+    Array.isArray(orderFilters) &&
+    orderFilters.length === 1 &&
+    orderFilters[0]?.column === "id" &&
+    typeof orderFilters[0]?.value === "string" &&
+    orderFilters[0].value.trim() !== "";
+  const isGuestOrderCreate = method === "POST" && pathname === "/api/data/orders";
   const requiresAuth =
-    path.startsWith("/api/data/") ||
+    (path.startsWith("/api/data/") && !isPublicCatalogRead && !isGuestOrderStatusRead && !isGuestOrderCreate) ||
+    (path.startsWith("/api/niimbot/page-images/") && method !== "GET") ||
     path.startsWith("/api/rpc/") ||
     path.startsWith("/api/auth/me") ||
     path.startsWith("/api/functions/redeem-coupon") ||
@@ -312,25 +342,11 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
     const isAuthEndpoint = path.startsWith("/api/auth");
 
     if (storedSession?.access_token && !isAuthEndpoint) {
-      if (isTokenExpired(storedSession.access_token)) {
-        clearSession();
-        emitAuthChange(SESSION_EXPIRED_EVENT, null);
-        if (typeof window !== "undefined") {
-          try {
-            window.alert("La sesión expiró, inicia sesión nuevamente");
-            window.location.href = "/login";
-          } catch {
-            // ignore
-          }
-        }
-        return { data: null, error: { message: "La sesión expiró, inicia sesión nuevamente", code: "401" } };
-      }
-
-      if (isTokenExpiringSoon(storedSession.access_token, 30)) {
+      if (shouldAttemptSessionRefresh(storedSession.access_token, 30)) {
         const refreshedSession = await refreshSession();
         if (refreshedSession) {
           storedSession = refreshedSession;
-        } else {
+        } else if (isTokenExpired(storedSession.access_token)) {
           clearSession();
           emitAuthChange(SESSION_EXPIRED_EVENT, null);
           if (typeof window !== "undefined") {
@@ -378,7 +394,7 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
     const response = await fetch(url, {
       ...init,
       headers,
-      credentials: (init && (init as any).credentials) || "include",
+      credentials: init?.credentials ?? "include",
     });
     if (path === "/api/payments/create-wompi-payment") {
       console.log("[api] wompi endpoint called", {
@@ -398,9 +414,13 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
           path,
         });
       }
-      const responseMessage = (data as { message?: string; error?: string } | null)?.message ?? (data as { error?: string } | null)?.error ?? response.statusText;
+      const responseMessage = (data as { message?: string; error?: string; code?: string } | null)?.message ?? (data as { error?: string; code?: string } | null)?.error ?? response.statusText;
+      const businessCode = typeof (data as { code?: unknown } | null)?.code === "string" ? String((data as { code?: unknown } | null)?.code) : undefined;
       const normalizedMessage = String(responseMessage ?? "").toLowerCase();
-      const isExpiredJwt = response.status === 401 && normalizedMessage.includes("jwt expired");
+      const isExpiredJwt =
+        path !== "/api/payments/create-wompi-payment" &&
+        response.status === 401 &&
+        normalizedMessage.includes("jwt expired");
       if (isExpiredJwt) {
         // Attempt to refresh once and retry original request
         const refreshed = await refreshSession();
@@ -409,6 +429,7 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
           const newHeaders = buildRequestHeaders(init?.headers, refreshed.access_token);
           const retryResp = await fetch(url, { ...init, headers: newHeaders, credentials: "include" });
           const retryData = (await retryResp.json().catch(() => null)) as T | null;
+          const retryBusinessCode = typeof (retryData as { code?: unknown } | null)?.code === "string" ? String((retryData as { code?: unknown } | null)?.code) : undefined;
           if (!retryResp.ok) {
             // failed after refresh
             clearSession();
@@ -418,10 +439,13 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
                 window.alert("La sesión expiró, inicia sesión nuevamente");
                 window.location.href = "/login";
               } catch {
-                // ignore
+                console.warn("No se pudo redirigir después de expirar la sesión");
               }
             }
-            return { data: null, error: { message: (retryData as any)?.error ?? retryResp.statusText, code: String(retryResp.status) } };
+            const retryError = retryData && typeof retryData === "object" && "error" in retryData
+              ? retryData.error
+              : undefined;
+            return { data: null, error: { message: typeof retryError === "string" ? retryError : retryResp.statusText, code: String(retryResp.status), businessCode: retryBusinessCode } };
           }
           return { data: retryData, error: null };
         }
@@ -433,18 +457,18 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
             window.alert("La sesión expiró, inicia sesión nuevamente");
             window.location.href = "/login";
           } catch {
-            // ignore
+            console.warn("No se pudo redirigir después de expirar la sesión");
           }
         }
         return {
           data: null,
-          error: { message: "La sesión expiró, inicia sesión nuevamente", code: String(response.status) },
+          error: { message: "La sesión expiró, inicia sesión nuevamente", code: String(response.status), businessCode },
         };
       }
 
       return {
         data: null,
-        error: { message: responseMessage, code: String(response.status) },
+        error: { message: responseMessage, code: String(response.status), businessCode },
       };
     }
     return { data, error: null };

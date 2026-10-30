@@ -6,7 +6,6 @@ import { Payments } from "@/components/shelby/Payments";
 import { Testimonials } from "@/components/shelby/Testimonials";
 import { CTA } from "@/components/shelby/CTA";
 import { Footer } from "@/components/shelby/Footer";
-import { WhatsAppButton } from "@/components/shelby/WhatsAppButton";
 
 const Index = () => (
   <div className="min-h-screen bg-background">
@@ -19,9 +18,7 @@ const Index = () => (
       <Testimonials />
       <CTA />
     </main>
-    <Footer />
-    <WhatsAppButton />
-  </div>
+    <Footer />\n  </div>
 );
 
 export default Index;

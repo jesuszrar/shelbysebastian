@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { formatCOP, type Product } from "@/data/products";
+import type { Product } from "@/data/products";
+import { formatCOP } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { useCart } from "@/context/CartContext";
 import { toast } from "sonner";
@@ -91,7 +92,7 @@ export const ProductCard = ({ p }: { p: Product }) => {
 };
 
 export const Products = () => {
-  const { products: liveProducts } = useProductsCatalog();
+  const { products: liveProducts, loading, error } = useProductsCatalog();
   const [active, setActive] = useState<(typeof categories)[number]>("Todos");
   const list = useMemo(() => active === "Todos" ? liveProducts : liveProducts.filter((p) => p.category === active), [active, liveProducts]);
 
@@ -127,7 +128,7 @@ export const Products = () => {
           ))}
         </div>
 
-        <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">{list.map((p) => <ProductCard key={p.id} p={p} />)}</div>
+        {loading ? <p className="text-sm text-muted-foreground">Cargando productos...</p> : error ? <p className="text-sm text-destructive">No se pudo cargar el catálogo: {error}</p> : list.length === 0 ? <p className="text-sm text-muted-foreground">No hay productos disponibles.</p> : <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">{list.map((p) => <ProductCard key={p.id} p={p} />)}</div>}
       </div>
     </section>
   );

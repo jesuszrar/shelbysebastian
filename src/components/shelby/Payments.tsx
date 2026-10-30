@@ -65,12 +65,13 @@ const methods: PaymentMethod[] = [
   },
 ];
 export const Payments = () => (
-  <section id="pagos" className="py-24 bg-primary text-secondary-foreground relative overflow-hidden">
+  <section id="pagos" className="relative overflow-hidden bg-primary py-24 text-secondary-foreground">
+    <div className="absolute -right-32 top-0 h-96 w-96 rounded-full border border-white/10" />
     <div className="container-shelby relative">
-      <div className="grid lg:grid-cols-2 gap-12 items-center">
+      <div className="grid items-center gap-12 lg:grid-cols-2">
         <div>
-          <span className="text-white text-xs uppercase tracking-[0.3em] font-semibold">Pagos seguros</span>
-          <h2 className="font-display text-4xl sm:text-5xl mt-3 leading-tight">Paga como te quede más fácil</h2>
+          <span className="eyebrow-shelby text-white/70">Compra sin fricción</span>
+          <h2 className="mt-3 font-display text-4xl leading-none sm:text-5xl">Tu forma de pagar también debe ser simple.</h2>
           <p className="mt-4 text-secondary-foreground/80 leading-relaxed max-w-lg">
             Aceptamos los métodos más usados en Colombia. Tu plata viaja segura, tu compra llega rápido, y si algo no cuadra, te respondemos por WhatsApp en minutos.
           </p>
@@ -80,10 +81,10 @@ export const Payments = () => (
             ))}
           </ul>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
           {methods.map((m) => (
-            <div key={m.name} className="bg-white/10 backdrop-blur-sm border border-white/10 rounded-2xl p-5 hover:border-white/25 hover:-translate-y-1 transition-smooth">
-              <div className={`h-12 w-12 rounded-xl ${m.badgeClassName} flex items-center justify-center shadow-elegant overflow-hidden`}>
+            <div key={m.name} className="border border-white/10 bg-white/10 p-5 backdrop-blur-sm transition-smooth hover:-translate-y-1 hover:border-[#d9f24b]/60">
+              <div className={`flex h-12 w-12 items-center justify-center ${m.badgeClassName} overflow-hidden shadow-elegant`}>
                 {m.logo}
               </div>
               <div className="font-display text-lg mt-3 tracking-wide">{m.label}</div>

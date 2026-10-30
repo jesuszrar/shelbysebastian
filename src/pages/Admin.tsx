@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Footer } from "@/components/shelby/Footer";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Button } from "@/components/ui/button";
 import { useProductsCatalog } from "@/context/ProductsContext";
-import { deleteData, fetchData, invokeFunction, patchData, postData, resolveImageUrl, uploadFile } from "@/integrations/api/client";
-import { formatCOP, products as defaultProducts, type Product } from "@/data/products";
+import { deleteData, fetchData, fetchNiimbotPageImageUrl, fetchNiimbotPageImages, patchData, postData, resolveImageUrl, updateNiimbotPageImageAlt, uploadFile, uploadNiimbotPageImage, type NiimbotPageImage } from "@/integrations/api/client";
+import { formatCOP } from "@/lib/format";
 import { toast } from "sonner";
 import {
   Bar,
@@ -19,10 +19,12 @@ import {
 import {
   AlertTriangle,
   BarChart3,
+  CheckCircle2,
   Clock3,
   ClipboardCopy,
   ImagePlus,
   Package,
+  Pencil,
   Plus,
   RefreshCcw,
   Repeat,
@@ -40,6 +42,27 @@ const ADMIN_EMAIL_STATUSES = new Set(["paid", "approved", "completed", "payment_
 const LOW_STOCK_LIMIT = 3;
 const ORDER_STATUS_OPTIONS = ["payment_pending", "payment_approved", "payment_failed", "pending", "paid", "approved", "shipped", "delivered", "cancelled", "failed"] as const;
 
+const NIIMBOT_PAGE_IMAGE_SLOTS = [
+  ["hero_desktop", "Hero escritorio"],
+  ["hero_mobile", "Hero móvil"],
+  ["hardware_b1", "Hardware B1"],
+  ["hardware_d110", "Hardware D110"],
+  ["hardware_d11h", "Hardware D11H"],
+  ["consumables", "Consumibles"],
+  ["solution_comercio", "Solución Comercio"],
+  ["solution_inventario", "Solución Inventario"],
+  ["solution_organizacion", "Solución Organización"],
+  ["solution_identificacion", "Solución Identificación"],
+  ["trust", "Confianza / Certificación"],
+] as const;
+
+type NiimbotPageImageSlot = NiimbotPageImage & { previewUrl?: string; altDraft: string; localPreviewUrl?: string; uploading?: boolean; savingAlt?: boolean };
+
+const normalizeSubproductImages = (images: Array<string | { url?: string }> | undefined, fallbackImage?: string) => {
+  const uniqueImages = Array.from(new Set((images ?? []).map((image) => (typeof image === "string" ? image : image.url ?? "").trim()).filter(Boolean)));
+  return uniqueImages.length ? uniqueImages : fallbackImage?.trim() ? [fallbackImage.trim()] : [];
+};
+
 type ProductRow = {
   id: string;
   name: string;
@@ -48,14 +71,24 @@ type ProductRow = {
   oldPrice?: number | null;
   badge?: string | null;
   highlight?: boolean | null;
+  activateWholesale?: boolean | null;
+  wholesaleMinQty?: number | null;
+  wholesaleDiscountPercent?: number | null;
+  categories?: CategoryRow[] | null;
   image: string | null;
   stock: number | null;
   description: string | null;
   specs: string[] | null;
   subproducts?: Array<{ id: string; name: string; image: string; description: string; price?: number; stock?: number; active?: boolean; images?: string[] }> | null;
-  variants?: Array<{ id: string; name: string; image?: string | null; description?: string | null; price?: number; stock?: number; active?: boolean; sortOrder?: number; images?: Array<{ url?: string }> }> | null;
+  variants?: Array<{ id: string; name: string; image?: string | null; description?: string | null; price?: number; stock?: number; active?: boolean; sortOrder?: number; images?: Array<{ url?: string } | string> }> | null;
   images?: Array<{ url?: string; sortOrder?: number; isPrimary?: boolean }> | null;
   created_at?: string;
+};
+
+type CategoryRow = {
+  id: string;
+  name: string;
+  slug: string;
 };
 
 type OrderRow = {
@@ -110,6 +143,9 @@ type ProductForm = {
   oldPrice: string;
   badge: string;
   highlight: boolean;
+  activateWholesale: boolean;
+  wholesaleMinQty: string;
+  wholesaleDiscountPercent: string;
   stock: string;
   description: string;
   specsText: string;
@@ -124,20 +160,6 @@ type MonthlyStats = {
   orders: number;
 };
 
-const toProductRow = (product: Product): ProductRow => ({
-  id: product.id,
-  name: product.name,
-  category: product.category,
-  price: product.price,
-  oldPrice: product.oldPrice ?? null,
-  badge: product.badge ?? null,
-  highlight: product.highlight ?? false,
-  image: product.image,
-  stock: product.stock ?? 0,
-  description: product.description,
-  specs: product.specs,
-});
-
 const emptyProductForm = (): ProductForm => ({
   name: "",
   category: "Adhesivas",
@@ -145,6 +167,9 @@ const emptyProductForm = (): ProductForm => ({
   oldPrice: "",
   badge: "",
   highlight: false,
+  activateWholesale: false,
+  wholesaleMinQty: "0",
+  wholesaleDiscountPercent: "0",
   stock: "0",
   description: "",
   specsText: "",
@@ -226,7 +251,7 @@ const buildCsv = (headers: string[], rows: Array<Array<string | number | null | 
   [headers.map(escapeCsvValue).join(","), ...rows.map((row) => row.map(escapeCsvValue).join(","))].join("\n");
 
 const Admin = () => {
-  const [tab, setTab] = useState<"overview" | "products" | "orders" | "users" | "marketing">("overview");
+  const [tab, setTab] = useState<"overview" | "products" | "orders" | "users" | "marketing" | "niimbot">("overview");
 
   return (
     <div className="min-h-screen bg-background">
@@ -254,6 +279,7 @@ const Admin = () => {
             <TabButton active={tab === "orders"} onClick={() => setTab("orders")} icon={ShoppingCart} label="Ventas" />
             <TabButton active={tab === "users"} onClick={() => setTab("users")} icon={Users} label="Usuarios" />
             <TabButton active={tab === "marketing"} onClick={() => setTab("marketing")} icon={Tag} label="Marketing" />
+            <TabButton active={tab === "niimbot"} onClick={() => setTab("niimbot")} icon={ImagePlus} label="NIIMBOT" />
           </div>
 
           {tab === "overview" && <OverviewPanel />}
@@ -261,6 +287,7 @@ const Admin = () => {
           {tab === "orders" && <OrdersAdmin />}
           {tab === "users" && <UsersAdmin />}
           {tab === "marketing" && <CouponsAdmin />}
+          {tab === "niimbot" && <NiimbotPageImagesAdmin />}
         </div>
       </main>
       <Footer />
@@ -272,8 +299,274 @@ function AdminOverview() {
   return <OverviewPanel compact />;
 }
 
+const categorySlugFromName = (value: string) => value
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, "-")
+  .replace(/^-|-$/g, "");
+
+function CategoriesAdmin({
+  categories,
+  loading,
+  error,
+  onRefresh,
+  onUpdated,
+}: {
+  categories: CategoryRow[];
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => Promise<void>;
+  onUpdated: () => Promise<void>;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const resetForm = () => {
+    setEditingId(null);
+    setName("");
+    setSlug("");
+  };
+
+  const startEdit = (category: CategoryRow) => {
+    setEditingId(category.id);
+    setName(category.name);
+    setSlug(category.slug);
+  };
+
+  const save = async () => {
+    const normalizedName = name.trim();
+    const normalizedSlug = slug.trim().toLowerCase();
+    if (!normalizedName || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(normalizedSlug)) {
+      toast.error("Ingresa un nombre y un slug válido (minúsculas, números y guiones).");
+      return;
+    }
+    if (categories.some((category) => category.id !== editingId && category.slug.toLowerCase() === normalizedSlug)) {
+      toast.error("Ya existe una categoría con ese slug.");
+      return;
+    }
+
+    setSaving(true);
+    const result = editingId
+      ? await patchData<CategoryRow>("categories", { name: normalizedName, slug: normalizedSlug }, [{ column: "id", value: editingId }])
+      : await postData<CategoryRow>("categories", { name: normalizedName, slug: normalizedSlug });
+    setSaving(false);
+    if (result.error) {
+      toast.error(result.error.message || "No se pudo guardar la categoría.");
+      return;
+    }
+
+    toast.success(editingId ? "Categoría actualizada." : "Categoría creada.");
+    resetForm();
+    await onUpdated();
+  };
+
+  const remove = async (category: CategoryRow) => {
+    if (!confirm(`¿Eliminar la categoría "${category.name}"?`)) return;
+    setDeletingId(category.id);
+    const result = await deleteData<{ deleted: number }>("categories", [{ column: "id", value: category.id }]);
+    setDeletingId(null);
+    if (result.error) {
+      toast.error(result.error.message || "No se pudo eliminar la categoría.");
+      return;
+    }
+    toast.success("Categoría eliminada.");
+    if (editingId === category.id) resetForm();
+    await onUpdated();
+  };
+
+  return (
+    <section className="space-y-4 rounded-2xl border border-border bg-card p-5">
+      <div>
+        <h3 className="font-display text-xl text-secondary">Categorías</h3>
+        <p className="mt-1 text-sm text-muted-foreground">Administra las categorías disponibles para asignar a productos.</p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto_auto]">
+        <Field label="Nombre" value={name} onChange={(value) => { setName(value); if (!editingId) setSlug(categorySlugFromName(value)); }} />
+        <Field label="Slug" value={slug} onChange={setSlug} placeholder="por-ejemplo-niimbot" />
+        <Button type="button" className="self-end" disabled={saving} onClick={() => void save()}>
+          <Plus className="mr-2 h-4 w-4" />{saving ? "Guardando..." : editingId ? "Guardar" : "Crear"}
+        </Button>
+        {editingId && <Button type="button" variant="outline" className="self-end" disabled={saving} onClick={resetForm}>Cancelar</Button>}
+      </div>
+
+      {error ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive">
+          <span>{error}</span>
+          <Button type="button" size="sm" variant="outline" onClick={() => void onRefresh()}>Reintentar</Button>
+        </div>
+      ) : loading ? <p className="text-sm text-muted-foreground">Cargando categorías...</p> : categories.length ? (
+        <ul className="divide-y divide-border rounded-xl border border-border">
+          {categories.map((category) => (
+            <li key={category.id} className="flex flex-wrap items-center justify-between gap-3 p-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-secondary">{category.name}</p>
+                <p className="text-xs text-muted-foreground">{category.slug}</p>
+              </div>
+              <div className="flex gap-2">
+                <Button type="button" size="sm" variant="outline" aria-label={`Editar ${category.name}`} onClick={() => startEdit(category)}>
+                  <Pencil className="mr-1 h-3.5 w-3.5" />Editar
+                </Button>
+                <Button type="button" size="sm" variant="destructive" disabled={deletingId === category.id} onClick={() => void remove(category)}>
+                  <Trash2 className="mr-1 h-3.5 w-3.5" />{deletingId === category.id ? "Eliminando..." : "Eliminar"}
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">Todavía no hay categorías.</p>}
+    </section>
+  );
+}
+
+function NiimbotPageImagesAdmin() {
+  const [slots, setSlots] = useState<NiimbotPageImageSlot[]>(() => NIIMBOT_PAGE_IMAGE_SLOTS.map(([key]) => ({ key, path: "", alt: null, altDraft: "" })));
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadImages = async () => {
+    setLoading(true);
+    setError(null);
+    const result = await fetchNiimbotPageImages();
+    if (result.error) {
+      setError(result.error.message || "No se pudieron cargar las imágenes de NIIMBOT.");
+      setLoading(false);
+      return;
+    }
+
+    const configured = new Map((result.data || []).map((item) => [item.key, item]));
+    const next = await Promise.all(NIIMBOT_PAGE_IMAGE_SLOTS.map(async ([key]) => {
+      const item = configured.get(key);
+      if (!item) return { key, path: "", alt: null, altDraft: "" };
+      const urlResult = await fetchNiimbotPageImageUrl(key);
+      return { ...item, altDraft: item.alt || "", previewUrl: urlResult.data?.url };
+    }));
+    setSlots(next);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    void loadImages();
+  }, []);
+
+  const refreshPreview = async (key: string) => {
+    const result = await fetchNiimbotPageImageUrl(key);
+    if (result.error || !result.data?.url) {
+      toast.error("No se pudo cargar la vista previa");
+      return;
+    }
+    setSlots((current) => current.map((slot) => slot.key === key ? { ...slot, previewUrl: result.data!.url } : slot));
+  };
+
+  const uploadImage = async (key: string, file: File) => {
+    const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+    if (!allowedTypes.has(file.type)) {
+      toast.error("Solo se permiten imágenes JPEG, PNG o WebP");
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toast.error("La imagen no puede superar 8 MB");
+      return;
+    }
+
+    const localPreviewUrl = URL.createObjectURL(file);
+    setSlots((current) => current.map((slot) => slot.key === key ? { ...slot, localPreviewUrl, uploading: true } : slot));
+    let result: Awaited<ReturnType<typeof uploadNiimbotPageImage>>;
+    try {
+      result = await uploadNiimbotPageImage(key, file);
+    } catch {
+      toast.error("No se pudo leer la imagen");
+      setSlots((current) => current.map((slot) => slot.key === key ? { ...slot, localPreviewUrl: undefined, uploading: false } : slot));
+      URL.revokeObjectURL(localPreviewUrl);
+      return;
+    }
+    if (result.error) {
+      toast.error(result.error.message || "No se pudo cargar la imagen");
+      setSlots((current) => current.map((slot) => slot.key === key ? { ...slot, localPreviewUrl: undefined, uploading: false } : slot));
+      URL.revokeObjectURL(localPreviewUrl);
+      return;
+    }
+
+    toast.success("Imagen actualizada correctamente");
+    URL.revokeObjectURL(localPreviewUrl);
+    await loadImages();
+  };
+
+  const saveAlt = async (slot: NiimbotPageImageSlot) => {
+    if (!slot.path) {
+      toast.error("Configura una imagen antes de guardar el ALT");
+      return;
+    }
+    setSlots((current) => current.map((item) => item.key === slot.key ? { ...item, savingAlt: true } : item));
+    const result = await updateNiimbotPageImageAlt(slot.key, slot.path, slot.altDraft.trim());
+    if (result.error) {
+      toast.error(result.error.message || "No se pudo guardar el ALT");
+      setSlots((current) => current.map((item) => item.key === slot.key ? { ...item, savingAlt: false } : item));
+      return;
+    }
+    toast.success("ALT actualizado correctamente");
+    await loadImages();
+  };
+
+  return (
+    <section className="space-y-6">
+      <div>
+        <span className="text-primary text-xs uppercase tracking-[0.3em] font-semibold">NIIMBOT</span>
+        <h2 className="font-display text-3xl text-secondary mt-2">Imágenes de página</h2>
+        <p className="mt-2 max-w-2xl text-sm text-muted-foreground">Administra las imágenes editoriales de NIIMBOT sin modificar las imágenes del catálogo.</p>
+      </div>
+
+      {loading ? <p className="text-sm text-muted-foreground">Cargando imágenes...</p> : error ? <p className="rounded-2xl border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">{error}</p> : (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {slots.map((slot) => {
+            const label = NIIMBOT_PAGE_IMAGE_SLOTS.find(([key]) => key === slot.key)?.[1] || slot.key;
+            const preview = slot.localPreviewUrl || slot.previewUrl;
+            return (
+              <article key={slot.key} className="flex min-w-0 flex-col rounded-3xl border border-border bg-card p-5 shadow-soft">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">NIIMBOT</p>
+                    <h3 className="mt-2 font-display text-2xl text-secondary">{label}</h3>
+                  </div>
+                  <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${slot.path ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}>
+                    {slot.path && <CheckCircle2 className="h-3 w-3" />}
+                    {slot.path ? "Configurada" : "Sin configurar"}
+                  </span>
+                </div>
+
+                <div className="mt-4 flex aspect-[16/10] items-center justify-center overflow-hidden rounded-2xl border border-border bg-muted/40">
+                  {preview ? <img src={preview} alt={slot.altDraft || label} onError={() => { if (slot.previewUrl) void refreshPreview(slot.key); }} className="h-full w-full object-contain" /> : <ImagePlus className="h-8 w-8 text-muted-foreground" />}
+                </div>
+
+                <p className="mt-3 break-all text-[11px] text-muted-foreground">{slot.alt ? `ALT: ${slot.alt}` : "Sin texto ALT"}</p>
+                <label className="mt-4 inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-smooth hover:bg-primary/90">
+                  <Upload className="h-4 w-4" />
+                  {slot.uploading ? "Cargando..." : "Cambiar imagen"}
+                  <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" disabled={slot.uploading} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadImage(slot.key, file); event.currentTarget.value = ""; }} />
+                </label>
+
+                <label className="mt-4 block text-sm font-medium text-secondary">
+                  Texto ALT
+                  <input value={slot.altDraft} onChange={(event) => setSlots((current) => current.map((item) => item.key === slot.key ? { ...item, altDraft: event.target.value } : item))} className="mt-1.5 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/40" maxLength={200} />
+                </label>
+                <Button type="button" variant="outline" className="mt-3 w-full" disabled={!slot.path || slot.savingAlt} onClick={() => void saveAlt(slot)}>
+                  {slot.savingAlt ? "Guardando..." : "Guardar ALT"}
+                </Button>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function OverviewPanel({ compact = false }: { compact?: boolean }) {
-  const { rows: productRows, products: liveProducts, loading: productsLoading } = useProductsCatalog();
+  const { rows: productRows, loading: productsLoading } = useProductsCatalog();
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -296,8 +589,7 @@ function OverviewPanel({ compact = false }: { compact?: boolean }) {
     void load();
   }, []);
 
-  const productCatalog = productRows.length ? productRows : liveProducts.map(toProductRow);
-  const lowStock = productCatalog.filter((product) => Number(product.stock ?? 0) <= LOW_STOCK_LIMIT).length;
+  const lowStock = productRows.filter((product) => Number(product.stock ?? 0) <= LOW_STOCK_LIMIT).length;
   const revenue = orders.filter((order) => isRevenueStatus(order.status)).reduce((sum, order) => sum + Number(order.total || 0), 0);
   const pending = orders.filter((order) => order.status === "pending").length;
   const adminCount = users.filter((user) => user.is_admin).length;
@@ -325,7 +617,7 @@ function OverviewPanel({ compact = false }: { compact?: boolean }) {
   return (
     <div className="space-y-6">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard icon={Package} label="Productos" value={String(productCatalog.length)} help={productsLoading ? "Sincronizando catálogo" : "En catálogo"} />
+        <StatCard icon={Package} label="Productos" value={String(productRows.length)} help={productsLoading ? "Sincronizando catálogo" : "En catálogo"} />
         <StatCard icon={AlertTriangle} label="Stock bajo" value={String(lowStock)} help="Productos por reponer" />
         <StatCard icon={ShoppingCart} label="Pedidos" value={String(orders.length)} help={pending ? `${pending} pendientes` : "Sin pendientes"} />
         <StatCard icon={ShieldCheck} label="Admins" value={String(adminCount)} help="Usuarios con acceso elevado" />
@@ -378,18 +670,58 @@ function OverviewPanel({ compact = false }: { compact?: boolean }) {
 }
 
 function ProductsAdmin() {
-  const { rows, products, loading, refreshProducts } = useProductsCatalog();
+  const { rows, loading, refreshProducts } = useProductsCatalog();
+  const [categories, setCategories] = useState<CategoryRow[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
+  const [categoriesError, setCategoriesError] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<ProductForm>(emptyProductForm());
+  const [observedProductStock, setObservedProductStock] = useState<number | undefined>();
+  const [observedVariantStocks, setObservedVariantStocks] = useState<Record<string, number>>({});
+  const [draftCategoryIds, setDraftCategoryIds] = useState<string[]>([]);
+  const [categoryAssignmentsEdited, setCategoryAssignmentsEdited] = useState(false);
   const [draftSubproducts, setDraftSubproducts] = useState<Array<{ id: string; name: string; image: string; description: string; price: number; stock: number; priceConfigured: boolean; stockConfigured: boolean; active: boolean; images: string[]; sortOrder?: number }>>([]);
-  const [normalizing, setNormalizing] = useState(false);
-  const catalogRows = rows.length ? rows.map((row) => ({ ...row, subproducts: row.variants?.map((variant) => ({ ...variant, image: variant.image || "", description: variant.description || "", images: variant.images?.map((image) => String(image.url ?? "")).filter(Boolean) })) ?? products.find((product) => product.id === row.id)?.subproducts })) : products.map(toProductRow);
+  const catalogRows = rows.map((row) => ({ ...row, subproducts: row.variants?.map((variant) => ({ ...variant, image: variant.image || "", description: variant.description || "", images: variant.images?.map((image) => String(image.url ?? "")).filter(Boolean) })) }));
+
+  const loadCategories = async () => {
+    setCategoriesLoading(true);
+    setCategoriesError(null);
+    const { data, error } = await fetchData<CategoryRow[]>("categories", { orderBy: "name", ascending: true });
+    if (error) {
+      setCategoriesError(error.message || "No se pudieron cargar las categorías.");
+      setCategoriesLoading(false);
+      return;
+    }
+    setCategories(Array.isArray(data) ? data : []);
+    setCategoriesLoading(false);
+  };
+
+  useEffect(() => {
+    void loadCategories();
+  }, []);
 
   const startEdit = (product: ProductRow) => {
     setEditing(product.id);
-    const variants = product.variants?.map((item) => ({ id: item.id, name: item.name, image: item.image || "", description: item.description || "", price: item.price ?? 0, stock: item.stock ?? 0, priceConfigured: item.price !== undefined, stockConfigured: item.stock !== undefined, active: item.active !== false, images: item.images?.map((image) => String(image.url ?? "")).filter(Boolean) ?? (item.image ? [item.image] : []) })) ?? parseSubproducts(product.subproducts ? JSON.stringify(product.subproducts) : "").map((item) => ({ ...item, price: item.price ?? 0, stock: item.stock ?? 0, priceConfigured: item.priceConfigured, stockConfigured: item.stockConfigured, active: item.active !== false, images: item.images ?? (item.image ? [item.image] : []) }));
+    setObservedProductStock(product.stock ?? 0);
+    setDraftCategoryIds(product.categories?.map((category) => category.id) ?? []);
+    setCategoryAssignmentsEdited(false);
+    const variants = product.variants?.map((item) => {
+      const images = normalizeSubproductImages(item.images, item.image ?? undefined);
+      return { id: item.id, name: item.name, image: images[0] ?? "", description: item.description || "", price: item.price ?? 0, stock: item.stock ?? 0, priceConfigured: item.price !== undefined, stockConfigured: item.stock !== undefined, active: item.active !== false, images };
+    }) ?? parseSubproducts(product.subproducts ? JSON.stringify(product.subproducts) : "").map((item) => {
+      const images = normalizeSubproductImages(item.images, item.image);
+      return { ...item, image: images[0] ?? "", price: item.price ?? 0, stock: item.stock ?? 0, priceConfigured: item.priceConfigured, stockConfigured: item.stockConfigured, active: item.active !== false, images };
+    });
     setDraftSubproducts(variants);
+    const observedStocks = product.variants
+      ? Object.fromEntries(product.variants
+        .filter((item) => typeof item.stock === "number")
+        .map((item) => [item.id, item.stock as number]))
+      : Object.fromEntries(variants
+        .filter((item) => item.stockConfigured)
+        .map((item) => [item.id, item.stock]));
+    setObservedVariantStocks(observedStocks);
     setForm({
       name: product.name,
       category: product.category,
@@ -397,6 +729,9 @@ function ProductsAdmin() {
       oldPrice: product.oldPrice !== undefined && product.oldPrice !== null ? String(product.oldPrice) : "",
       badge: product.badge || "",
       highlight: product.highlight ?? false,
+      activateWholesale: Boolean(product.activateWholesale),
+      wholesaleMinQty: String(product.wholesaleMinQty ?? 0),
+      wholesaleDiscountPercent: String(product.wholesaleDiscountPercent ?? 0),
       stock: String(product.stock ?? 0),
       description: product.description || "",
       specsText: (product.specs || []).join(", "),
@@ -408,6 +743,10 @@ function ProductsAdmin() {
 
   const cancelEdit = () => {
     setEditing(null);
+    setObservedProductStock(undefined);
+    setObservedVariantStocks({});
+    setDraftCategoryIds([]);
+    setCategoryAssignmentsEdited(false);
     setDraftSubproducts([]);
     setForm(emptyProductForm());
   };
@@ -428,11 +767,31 @@ function ProductsAdmin() {
     const extension = file.name.split(".").pop() || "jpg";
     const result = await uploadFile(`products/${editing}-${subproductId}-${Date.now()}.${extension}`, file);
     if (!result.data?.publicUrl) throw new Error("No se pudo subir la imagen");
-    setDraftSubproducts((current) => current.map((item) => item.id === subproductId ? { ...item, image: result.data!.publicUrl, images: [...item.images, result.data!.publicUrl] } : item));
+    setDraftSubproducts((current) => current.map((item) => {
+      if (item.id !== subproductId) return item;
+      const images = normalizeSubproductImages([...item.images, result.data!.publicUrl]);
+      return { ...item, image: images[0] ?? "", images };
+    }));
   };
 
   const updateSubproduct = (id: string, field: "name" | "description" | "image" | "price" | "stock" | "active" | "images", value: string | number | boolean | string[]) => {
-    setDraftSubproducts((current) => current.map((item) => item.id === id ? { ...item, [field]: value, ...(field === "price" ? { priceConfigured: true } : {}), ...(field === "stock" ? { stockConfigured: true } : {}) } : item));
+    setDraftSubproducts((current) => current.map((item) => {
+      if (item.id !== id) return item;
+      const configured = { ...(field === "price" ? { priceConfigured: true } : {}), ...(field === "stock" ? { stockConfigured: true } : {}) };
+      if (field === "images") {
+        const images = normalizeSubproductImages(value as string[]);
+        return { ...item, ...configured, image: images[0] ?? "", images };
+      }
+      if (field === "image") {
+        const primaryImage = String(value).trim();
+        const currentImages = normalizeSubproductImages(item.images, item.image);
+        const images = primaryImage
+          ? normalizeSubproductImages([primaryImage, ...currentImages.filter((image) => image !== primaryImage)])
+          : currentImages.slice(1);
+        return { ...item, ...configured, image: images[0] ?? "", images };
+      }
+      return { ...item, ...configured, [field]: value };
+    }));
   };
 
   const addSubproduct = () => {
@@ -451,7 +810,10 @@ function ProductsAdmin() {
       setSaving(false);
       return;
     }
-    const subproducts = draftSubproducts.map((item, index) => ({ ...item, image: item.images[0] || item.image, price: item.priceConfigured ? item.price : undefined, stock: item.stockConfigured ? item.stock : undefined, sortOrder: index }));
+    const subproducts = draftSubproducts.map((item, index) => {
+      const images = normalizeSubproductImages(item.images, item.image);
+      return { ...item, image: images[0] ?? "", images, price: item.priceConfigured ? item.price : undefined, stock: item.stockConfigured ? item.stock : undefined, expectedStock: observedVariantStocks[item.id], sortOrder: index };
+    });
     const payload = {
       name: form.name.trim(),
       category: form.category.trim(),
@@ -459,24 +821,28 @@ function ProductsAdmin() {
       oldPrice: form.oldPrice.trim() ? Number(form.oldPrice) : null,
       badge: form.badge.trim() ? form.badge.trim() : null,
       highlight: Boolean(form.highlight),
+      activateWholesale: Boolean(form.activateWholesale),
+      wholesaleMinQty: Math.max(0, Number(form.wholesaleMinQty) || 0),
+      wholesaleDiscountPercent: Math.max(0, Math.min(100, Number(form.wholesaleDiscountPercent) || 0)),
       stock: Math.max(0, Number(form.stock) || 0),
+      expectedStock: observedProductStock,
       description: form.description.trim(),
       specs: parseSpecs(form.specsText),
       image: form.image.trim() || null,
       images: form.imagesText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+      ...(categoryAssignmentsEdited ? { categories: draftCategoryIds } : {}),
       subproducts: subproducts.filter((item) => item.name.trim()),
     };
-
-    if (typeof window !== "undefined") {
-      const customSubproducts = JSON.parse(window.localStorage.getItem("shelby:custom_subproducts") || "{}") as Record<string, unknown>;
-      customSubproducts[editing] = subproducts;
-      window.localStorage.setItem("shelby:custom_subproducts", JSON.stringify(customSubproducts));
-    }
 
     const { error } = await postData("products", { id: editing, ...payload });
     if (error) {
       console.error("Backend upsert error:", error);
       const detailed = (error && (error.message || JSON.stringify(error))) || "No se pudo guardar el producto";
+      if (error.businessCode === "PENDING_ORDER_VARIANT_REFERENCE") {
+        toast.error("No se pudo eliminar esta variante porque está asociada a un pedido pendiente. Revisa el pedido antes de intentar quitarla nuevamente.");
+        setSaving(false);
+        return;
+      }
       // Detect missing table and give actionable guidance
       if (typeof detailed === "string" && (detailed.includes("Could not find the table") || detailed.includes("relation \"products\" does not exist") || detailed.includes("table \"public.products\""))) {
         toast.error("La tabla 'products' no existe o el backend no está conectado. Revisa MYSQL_SETUP.md y ejecuta la migración de Prisma en el backend.");
@@ -555,29 +921,18 @@ function ProductsAdmin() {
     await refreshProducts();
   };
 
-  const normalizeLegacyVariants = async () => {
-    if (normalizing) return;
-    setNormalizing(true);
-    try {
-      const productsWithLegacy = defaultProducts.filter((product) => product.subproducts?.length).map((product) => ({ id: product.id, variants: product.subproducts }));
-      const preview = await invokeFunction<{ dryRun?: boolean; report?: { legacy?: number; existing?: number; created?: number; conflicts?: string[] } }>("normalize-legacy-variants", { dryRun: true, products: productsWithLegacy });
-      if (preview.error || !preview.data?.report) throw preview.error || new Error("No se pudo preparar la normalización");
-      const report = preview.data.report;
-      if ((report.conflicts?.length ?? 0) > 0) throw new Error(`Conflictos de IDs: ${report.conflicts?.join(", ")}`);
-      if (!confirm(`Se detectaron ${report.legacy ?? 0} subproductos legacy. Ya existentes: ${report.existing ?? 0}. Se crearán: ${report.legacy! - (report.existing ?? 0)}. ¿Continuar?`)) return;
-      const result = await invokeFunction("normalize-legacy-variants", { dryRun: false, products: productsWithLegacy });
-      if (result.error) throw result.error;
-      toast.success("Subproductos normalizados", { description: "Los datos legacy ahora están disponibles como variantes persistentes." });
-      await refreshProducts();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "No se pudo normalizar");
-    } finally {
-      setNormalizing(false);
-    }
-  };
-
   return (
     <section className="space-y-6">
+      <CategoriesAdmin
+        categories={categories}
+        loading={categoriesLoading}
+        error={categoriesError}
+        onRefresh={loadCategories}
+        onUpdated={async () => {
+          await loadCategories();
+          await refreshProducts();
+        }}
+      />
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h2 className="font-display text-2xl text-secondary">Productos</h2>
@@ -586,9 +941,6 @@ function ProductsAdmin() {
         <div className="flex items-center gap-2">
           <Button onClick={refreshProducts} variant="outline" className="gap-2">
             <RefreshCcw className="h-4 w-4" /> Refrescar
-          </Button>
-          <Button onClick={() => void normalizeLegacyVariants()} disabled={normalizing} variant="outline" className="gap-2">
-            <Repeat className="h-4 w-4" /> {normalizing ? "Normalizando..." : "Normalizar legacy"}
           </Button>
           <Button onClick={createNew} variant="secondary" className="gap-2">
             <Plus className="h-4 w-4" /> Nuevo producto
@@ -643,7 +995,31 @@ function ProductsAdmin() {
                 <div className="mt-4 bg-background border border-border rounded-2xl p-4">
                   <div className="grid md:grid-cols-2 gap-3">
                     <Field label="Nombre" value={form.name} onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
-                    <Field label="Categoría" value={form.category} onChange={(value) => setForm((current) => ({ ...current, category: value }))} />
+                    <fieldset className="md:col-span-2 rounded-xl border border-border p-3" disabled={categoriesLoading || Boolean(categoriesError)}>
+                      <legend className="px-1 text-sm font-medium text-secondary">Categorías asignadas</legend>
+                      <p className="mb-2 text-xs text-muted-foreground">Son etiquetas adicionales. La categoría general actual ({form.category}) se conserva para los filtros existentes.</p>
+                      {categoriesLoading ? <p className="text-sm text-muted-foreground">Cargando categorías...</p> : categoriesError ? <p className="text-sm text-destructive">{categoriesError} Las asignaciones actuales se conservarán.</p> : categories.length ? (
+                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                          {categories.map((category) => (
+                            <label key={category.id} className="flex min-h-10 items-center gap-2 rounded-lg border border-border px-3 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={draftCategoryIds.includes(category.id)}
+                                onChange={(event) => {
+                                  setCategoryAssignmentsEdited(true);
+                                  setDraftCategoryIds((current) => event.target.checked
+                                    ? Array.from(new Set([...current, category.id]))
+                                    : current.filter((id) => id !== category.id));
+                                }}
+                              />
+                              <span>{category.name}</span>
+                              <span className="ml-auto text-xs text-muted-foreground">{category.slug}</span>
+                            </label>
+                          ))}
+                        </div>
+                      ) : <p className="text-sm text-muted-foreground">No hay categorías creadas todavía.</p>}
+                      {!categoryAssignmentsEdited && !categoriesError && <p className="mt-2 text-xs text-muted-foreground">Las asignaciones existentes no cambiarán mientras no modifiques esta selección.</p>}
+                    </fieldset>
                     <Field label="Precio / costo" type="number" value={form.price} onChange={(value) => setForm((current) => ({ ...current, price: value }))} />
                     <Field label="Precio anterior" type="number" value={form.oldPrice} onChange={(value) => setForm((current) => ({ ...current, oldPrice: value }))} />
                     <Field label="Stock" type="number" value={form.stock} onChange={(value) => setForm((current) => ({ ...current, stock: value }))} />
@@ -657,6 +1033,17 @@ function ProductsAdmin() {
                         className="h-4 w-4 rounded border border-border text-primary focus:ring-primary"
                       />
                     </label>
+                    <label className="block">
+                      <span className="text-sm font-medium text-secondary block mb-1.5">Precio por mayor activo</span>
+                      <input
+                        type="checkbox"
+                        checked={form.activateWholesale}
+                        onChange={(event) => setForm((current) => ({ ...current, activateWholesale: event.target.checked }))}
+                        className="h-4 w-4 rounded border border-border text-primary focus:ring-primary"
+                      />
+                    </label>
+                    <Field label="Cantidad mínima por mayor" type="number" value={form.wholesaleMinQty} onChange={(value) => setForm((current) => ({ ...current, wholesaleMinQty: value }))} />
+                    <Field label="Descuento por mayor (%)" type="number" value={form.wholesaleDiscountPercent} onChange={(value) => setForm((current) => ({ ...current, wholesaleDiscountPercent: value }))} />
                     <div className="md:col-span-2">
                       <Field
                         label="Imagen URL"
@@ -785,27 +1172,27 @@ function CouponsAdmin() {
     updatedAt: undefined,
   });
 
-  const loadCoupons = async () => {
+  const loadCoupons = useCallback(async () => {
     setLoading(true);
     const { data, error } = await fetchData<CouponRow>("coupons", { orderBy: "createdAt", ascending: false });
     if (error) console.error(error);
     setRows((Array.isArray(data) ? data : []) as CouponRow[]);
     setLoading(false);
-  };
+  }, []);
 
-  const loadAudit = async () => {
+  const loadAudit = useCallback(async () => {
     const { data, error } = await fetchData<CouponAuditRow>("coupon_audit", { orderBy: "createdAt", ascending: false });
     if (error) console.error(error);
     setAuditRows((Array.isArray(data) ? data : []) as CouponAuditRow[]);
-  };
+  }, []);
 
-  const refreshAll = async () => {
+  const refreshAll = useCallback(async () => {
     await Promise.all([loadCoupons(), loadAudit()]);
-  };
+  }, [loadCoupons, loadAudit]);
 
   useEffect(() => {
     void refreshAll();
-  }, []);
+  }, [refreshAll]);
 
   const resetForm = () => {
     setEditing(null);
@@ -1184,7 +1571,7 @@ function OrdersAdmin() {
             </Button>
             <Button
               variant="outline"
-              onClick={() => downloadTextFile(`ventas-${new Date().toISOString().slice(0, 10)}.xls`, `\n                <html><head><meta charset=\"utf-8\" /></head><body><table border=\"1\"><thead><tr><th>ID</th><th>Total</th><th>Estado</th><th>Correo</th><th>Método</th><th>Fecha</th><th>Usuario</th></tr></thead><tbody>${rows
+              onClick={() => downloadTextFile(`ventas-${new Date().toISOString().slice(0, 10)}.xls`, `\n                <html><head><meta charset="utf-8" /></head><body><table border="1"><thead><tr><th>ID</th><th>Total</th><th>Estado</th><th>Correo</th><th>Método</th><th>Fecha</th><th>Usuario</th></tr></thead><tbody>${rows
                 .map((order) => `<tr><td>${order.id}</td><td>${order.total}</td><td>${order.status}</td><td>${order.customerEmail || ""}</td><td>${order.paymentMethod || ""}</td><td>${order.createdAt || order.created_at || ""}</td><td>${order.userId || order.user_id || ""}</td></tr>`)
                 .join("")}</tbody></table></body></html>`, "application/vnd.ms-excel;charset=utf-8;")}
               className="gap-2"
@@ -1364,7 +1751,7 @@ function UsersAdmin() {
             <Button
               type="button"
               variant="outline"
-              onClick={() => downloadTextFile(`usuarios-${new Date().toISOString().slice(0, 10)}.xls`, `\n                <html><head><meta charset=\"utf-8\" /></head><body><table border=\"1\"><thead><tr><th>ID</th><th>Nombre</th><th>Email</th><th>Cedula</th><th>Admin</th></tr></thead><tbody>${rows
+              onClick={() => downloadTextFile(`usuarios-${new Date().toISOString().slice(0, 10)}.xls`, `\n                <html><head><meta charset="utf-8" /></head><body><table border="1"><thead><tr><th>ID</th><th>Nombre</th><th>Email</th><th>Cedula</th><th>Admin</th></tr></thead><tbody>${rows
                 .map((user) => `<tr><td>${user.id}</td><td>${user.name}</td><td>${user.email}</td><td>${user.cedula || ""}</td><td>${user.is_admin ? "SI" : "NO"}</td></tr>`)
                 .join("")}</tbody></table></body></html>`, "application/vnd.ms-excel;charset=utf-8;")}
               className="gap-2"

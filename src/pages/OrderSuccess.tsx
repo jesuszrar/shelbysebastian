@@ -4,9 +4,10 @@ import { CheckCircle2, MessageCircle, ShoppingBag, XCircle } from "lucide-react"
 import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
 import { Button } from "@/components/ui/button";
-import { formatCOP } from "@/data/products";
+import { formatCOP } from "@/lib/format";
 import { fetchData } from "@/integrations/api/client";
 import { trackPurchase } from "@/lib/metaPixel";
+import { SHELBY_WHATSAPP_URL } from "@/lib/contact";
 
 type PaymentStatus = "payment_pending" | "payment_approved" | "payment_failed";
 
@@ -55,8 +56,6 @@ const OrderSuccess = () => {
     if (!order) return;
 
     let cancelled = false;
-    let intervalId: number | undefined;
-
     const refreshStatus = async () => {
       const { data, error } = await fetchData<{ status?: string | null; paymentMethod?: string | null; total?: number }>("orders", {
         filters: JSON.stringify([{ column: "id", value: order }]),
@@ -73,37 +72,35 @@ const OrderSuccess = () => {
         setStatus(nextStatus);
       }
 
-      if (nextStatus !== "payment_pending" && intervalId !== undefined) {
+      if (nextStatus !== "payment_pending") {
         window.clearInterval(intervalId);
       }
     };
 
-    void refreshStatus();
-    intervalId = window.setInterval(() => {
+    const intervalId = window.setInterval(() => {
       void refreshStatus();
     }, 4000);
+    void refreshStatus();
 
     return () => {
       cancelled = true;
-      if (intervalId !== undefined) {
-        window.clearInterval(intervalId);
-      }
+      window.clearInterval(intervalId);
     };
   }, [order]);
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="min-h-screen bg-[#f5f8f8]">
       <Navbar />
-      <main className="flex-1 pt-32 pb-16 px-4">
-        <div className="container-shelby max-w-xl">
-          <div className="bg-card border border-border rounded-3xl p-10 text-center shadow-elegant">
-            <div className={`mx-auto h-16 w-16 rounded-full flex items-center justify-center shadow-soft ${isFailed ? "bg-destructive" : "bg-primary"}`}>
+      <main className="px-4 pb-20 pt-32">
+        <div className="container-shelby max-w-2xl">
+          <div className="relative overflow-hidden rounded-[2rem] border border-border bg-white p-8 text-center shadow-elegant sm:p-12">
+            <div className={`mx-auto flex h-20 w-20 items-center justify-center rounded-[1.6rem] shadow-soft ${isFailed ? "bg-destructive" : "bg-primary"}`}>
               {isFailed ? <XCircle className="h-9 w-9 text-destructive-foreground" /> : <CheckCircle2 className="h-9 w-9 text-primary-foreground" />}
             </div>
-            <h1 className="font-display text-3xl sm:text-4xl text-secondary mt-5">
+            <h1 className="mt-6 font-display text-4xl text-primary sm:text-5xl">
               {isFailed ? "Pago no completado" : isPending ? "¡Pedido recibido!" : "¡Pago exitoso!"}
             </h1>
-            <p className="text-muted-foreground mt-3">
+            <p className="mx-auto mt-4 max-w-xl text-muted-foreground">
               {isFailed
                 ? "Tu pago no se procesó. Puedes intentarlo de nuevo o coordinar por WhatsApp."
                 : isPending
@@ -111,26 +108,26 @@ const OrderSuccess = () => {
                 : "Tu pago fue procesado correctamente. Te enviaremos la factura al correo registrado y los detalles del envío por WhatsApp."}
             </p>
             {isPending && (
-              <p className="text-sm text-secondary/90 mt-4">{pendingHint}</p>
+              <p className="mt-4 rounded-2xl bg-[#f5f8f8] p-4 text-left text-sm text-primary/80">{pendingHint}</p>
             )}
-            <div className="mt-6 bg-muted/30 border border-border rounded-2xl p-5 text-left text-sm space-y-2 text-secondary/90">
-              {order && <div className="flex justify-between"><span className="text-muted-foreground">N.º de pedido</span><span className="font-mono text-secondary">{order}</span></div>}
-              {method && <div className="flex justify-between"><span className="text-muted-foreground">Método</span><span className="text-secondary">{friendlyMethod ?? method}</span></div>}
+            <div className="mt-7 space-y-3 rounded-[1.4rem] border border-border bg-[#f5f8f8] p-5 text-left text-sm text-primary/90">
+              {order && <div className="flex justify-between gap-4"><span className="text-muted-foreground">N.º de pedido</span><span className="font-mono text-primary">{order}</span></div>}
+              {method && <div className="flex justify-between gap-4"><span className="text-muted-foreground">Método</span><span className="text-primary">{friendlyMethod ?? method}</span></div>}
               {!Number.isNaN(totalNum) && totalNum > 0 && (
-                <div className="flex justify-between items-baseline pt-2 border-t border-border"><span className="text-muted-foreground">Total</span><span className="font-display text-xl text-primary">{formatCOP(totalNum)}</span></div>
+                <div className="flex items-baseline justify-between gap-4 border-t border-border pt-3"><span className="text-muted-foreground">Total</span><span className="font-display text-3xl text-primary">{formatCOP(totalNum)}</span></div>
               )}
             </div>
-            <div className="mt-8 flex flex-col sm:flex-row gap-3">
+            <div className="mt-8 grid gap-3 sm:grid-cols-2">
               <Button asChild className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft">
                 <Link to={isFailed ? "/checkout" : "/products"}><ShoppingBag className="h-4 w-4" /> {isFailed ? "Intentar de nuevo" : "Seguir comprando"}</Link>
               </Button>
               {isPending && order && (
-                <Button asChild variant="outline" className="flex-1 border-border text-secondary hover:bg-secondary/10 hover:text-secondary">
+                <Button asChild variant="outline" className="flex-1 border-border text-primary hover:bg-primary/5">
                   <Link to={`/payment-processing?order=${order}`}>Verificar estado</Link>
                 </Button>
               )}
-              <Button asChild variant="outline" className="flex-1 border-whatsapp text-whatsapp hover:bg-whatsapp hover:text-white">
-                <a href="https://wa.me/573228426561?text=Hola%20Shelby%2C%20acabo%20de%20realizar%20un%20pedido" target="_blank" rel="noopener noreferrer">
+              <Button asChild variant="outline" className="flex-1 border-whatsapp text-whatsapp hover:bg-whatsapp hover:text-white sm:col-span-2">
+                <a href={`${SHELBY_WHATSAPP_URL}?text=Hola%20Shelby%2C%20acabo%20de%20realizar%20un%20pedido`} target="_blank" rel="noopener noreferrer">
                   <MessageCircle className="h-4 w-4" /> Contactar soporte
                 </a>
               </Button>

@@ -1,5 +1,5 @@
 {
-  "name": "shelby-mysql-backend",
+  "name": "shelby-importaciones-backend",
   "private": true,
   "type": "module",
   "scripts": {
@@ -31,7 +31,6 @@
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
-    "mysql2": "^3.14.3",
     "nodemailer": "^9.0.3",
     "prisma": "6.15.0",
     "typescript": "^5.8.3",

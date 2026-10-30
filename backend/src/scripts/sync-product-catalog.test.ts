@@ -6,9 +6,9 @@ import type { ProductCatalogItem } from "./product-catalog-data.js";
 import { syncProductCatalog } from "./sync-product-catalog.js";
 
 type SyncState = {
-  products: Array<Record<string, any>>;
-  variants: Array<Record<string, any>>;
-  images: Array<Record<string, any>>;
+  products: Array<Record<string, unknown> & { id: string }>;
+  variants: Array<Record<string, unknown> & { id: string; productId: string }>;
+  images: Array<Record<string, unknown> & { id?: string; productId: string; variantId: string | null; url: string }>;
   productExclusions: Array<{ productId: string }>;
   variantExclusions: Array<{ variantId: string; productId: string }>;
   operations: string[];
@@ -46,7 +46,7 @@ const makeSyncClient = (
     variantWrites: [],
     imageWrites: [],
   };
-  const client: any = {};
+  const client: Record<string, unknown> = {};
   const snapshot = () => structuredClone({
     products: state.products,
     variants: state.variants,
@@ -77,14 +77,14 @@ const makeSyncClient = (
     return [];
   };
   client.product = {
-    findMany: async ({ where }: any = {}) => !where?.id?.in ? [...state.products] : state.products.filter((row) => where.id.in.includes(row.id)),
-    create: async ({ data }: any) => {
+    findMany: async ({ where }: { where?: { id?: { in?: string[] } } } = {}) => !where?.id?.in ? [...state.products] : state.products.filter((row) => where.id!.in!.includes(row.id)),
+    create: async ({ data }: { data: Record<string, unknown> & { id: string } }) => {
       state.operations.push("product.create");
       const row = { ...data };
       state.products.push(row);
       return row;
     },
-    update: async ({ where, data }: any) => {
+    update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
       state.operations.push("product.update");
       const row = state.products.find((item) => item.id === where.id);
       if (!row) throw new Error(`missing product ${where.id}`);
@@ -94,7 +94,7 @@ const makeSyncClient = (
   };
   client.productVariant = {
     findMany: async () => [...state.variants],
-    create: async ({ data }: any) => {
+    create: async ({ data }: { data: Record<string, unknown> & { id: string; product: { connect: { id: string } } } }) => {
       state.operations.push("productVariant.create");
       state.variantWrites.push({ operation: "create", variantId: data.id });
       if (options.failVariantCreate) throw new Error("simulated variant insert failure");
@@ -102,7 +102,7 @@ const makeSyncClient = (
       state.variants.push(row);
       return row;
     },
-    update: async ({ where, data }: any) => {
+    update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
       state.operations.push("productVariant.update");
       state.variantWrites.push({ operation: "update", variantId: where.id });
       const row = state.variants.find((item) => item.id === where.id);
@@ -113,13 +113,13 @@ const makeSyncClient = (
   };
   client.productImage = {
     findMany: async () => [...state.images],
-    create: async ({ data }: any) => {
+    create: async ({ data }: { data: Record<string, unknown> & { productId: string; variantId: string | null; url: string } }) => {
       state.operations.push("productImage.create");
       state.imageWrites.push({ operation: "create", productId: data.productId, variantId: data.variantId });
       state.images.push(data);
       return data;
     },
-    update: async ({ where, data }: any) => {
+    update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
       state.operations.push("productImage.update");
       const image = state.images.find((item) => item.id === where.id);
       if (!image) throw new Error(`missing image ${where.id}`);
@@ -127,14 +127,14 @@ const makeSyncClient = (
       Object.assign(image, data);
       return image;
     },
-    delete: async ({ where }: any) => {
+    delete: async ({ where }: { where: { id: string } }) => {
       state.operations.push("productImage.delete");
       const index = state.images.findIndex((item) => item.id === where.id);
       if (index < 0) throw new Error(`missing image ${where.id}`);
       state.imageWrites.push({ operation: "delete", productId: state.images[index].productId, variantId: state.images[index].variantId });
       return state.images.splice(index, 1)[0];
     },
-    deleteMany: async ({ where }: any) => {
+    deleteMany: async ({ where }: { where: { productId?: string; variantId?: string | null } }) => {
       state.operations.push("productImage.deleteMany");
       state.imageWrites.push({ operation: "deleteMany", productId: where.productId, variantId: where.variantId });
       const before = state.images.length;
@@ -143,14 +143,14 @@ const makeSyncClient = (
     },
   };
   client.productVariantExclusion = {
-    findMany: async ({ where }: any = {}) => !where?.variantId?.in
+    findMany: async ({ where }: { where?: { variantId?: { in?: string[] } } } = {}) => !where?.variantId?.in
       ? [...state.variantExclusions]
-      : state.variantExclusions.filter((row) => where.variantId.in.includes(row.variantId)),
+      : state.variantExclusions.filter((row) => where.variantId!.in!.includes(row.variantId)),
   };
   client.productExclusion = {
-    findMany: async ({ where }: any = {}) => !where?.productId?.in
+    findMany: async ({ where }: { where?: { productId?: { in?: string[] } } } = {}) => !where?.productId?.in
       ? [...state.productExclusions]
-      : state.productExclusions.filter((row) => where.productId.in.includes(row.productId)),
+      : state.productExclusions.filter((row) => where.productId!.in!.includes(row.productId)),
   };
   client.$transaction = async (callback: (transaction: unknown) => Promise<unknown>) => {
     const saved = snapshot();

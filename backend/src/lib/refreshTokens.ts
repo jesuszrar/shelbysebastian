@@ -14,8 +14,17 @@ export const hashRefreshToken = (token: string): string => {
 };
 
 export const createRefreshToken = async (userId: string, token: string, expiresAt: Date) => {
+  return createRefreshTokenWithClient(prisma, userId, token, expiresAt);
+};
+
+export const createRefreshTokenWithClient = async (
+  client: Pick<PrismaClient, "refreshToken">,
+  userId: string,
+  token: string,
+  expiresAt: Date,
+) => {
   const tokenHash = hashRefreshToken(token);
-  const created = await prisma.refreshToken.create({
+  const created = await client.refreshToken.create({
     data: { userId, tokenHash, expiresAt },
   });
   return created;
@@ -23,7 +32,7 @@ export const createRefreshToken = async (userId: string, token: string, expiresA
 
 export const verifyRefreshToken = async (token: string) => {
   const tokenHash = hashRefreshToken(token);
-  const record = await prisma.refreshToken.findUnique({ where: { tokenHash } as any });
+  const record = await prisma.refreshToken.findUnique({ where: { tokenHash } });
   if (!record) return null;
   if (record.revokedAt) return { record, valid: false };
   if (record.expiresAt.getTime() < Date.now()) return { record, valid: false };
@@ -36,12 +45,18 @@ export const revokeRefreshToken = async (id: string) => {
 
 export const rotateRefreshToken = async (oldId: string, newToken: string, newExpiresAt: Date) => {
   const newHash = hashRefreshToken(newToken);
-  // mark old as revoked and set replacedById after creating new
-  const old = await prisma.refreshToken.findUnique({ where: { id: oldId } as any });
-  if (!old) throw new Error("old refresh token not found");
-  const created = await prisma.refreshToken.create({ data: { userId: old.userId, tokenHash: newHash, expiresAt: newExpiresAt } });
-  await prisma.refreshToken.update({ where: { id: oldId }, data: { revokedAt: new Date(), replacedById: created.id } });
-  return created;
+  return prisma.$transaction(async (transaction) => {
+    const old = await transaction.refreshToken.findUnique({ where: { id: oldId } });
+    if (!old) throw new Error("old refresh token not found");
+    const created = await transaction.refreshToken.create({
+      data: { userId: old.userId, tokenHash: newHash, expiresAt: newExpiresAt },
+    });
+    await transaction.refreshToken.update({
+      where: { id: oldId },
+      data: { revokedAt: new Date(), replacedById: created.id },
+    });
+    return created;
+  });
 };
 
 export default {

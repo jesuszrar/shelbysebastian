@@ -20,7 +20,7 @@ export default function AddressList({ onSelect }: { onSelect: (a: UserAddress) =
       return;
     }
     setAddresses((res.data ?? []) as UserAddress[]);
-    const def = (res.data ?? []).find((a: any) => a.isDefault) as UserAddress | undefined;
+    const def = (res.data ?? []).find((address) => address.isDefault === true) as UserAddress | undefined;
     if (def) setSelectedId(def.id);
   };
 

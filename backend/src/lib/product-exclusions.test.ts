@@ -18,16 +18,16 @@ const makeClient = (seed: {
     createdVariants: [] as Array<Record<string, unknown>>,
     operations: [] as string[],
   };
-  const client: any = {};
+  const client: Record<string, unknown> = {};
 
   client.$queryRaw = async () => {
     state.operations.push("lock");
     return [];
   };
   client.product = {
-    findMany: async ({ where }: any = {}) => state.products.filter((product) => !where?.id?.in || where.id.in.includes(product.id)),
-    findUnique: async ({ where }: any) => state.products.find((product) => product.id === where.id) ?? null,
-    deleteMany: async ({ where }: any) => {
+    findMany: async ({ where }: { where?: { id?: { in?: string[] } } } = {}) => state.products.filter((product) => !where?.id?.in || where.id.in.includes(product.id)),
+    findUnique: async ({ where }: { where: { id: string } }) => state.products.find((product) => product.id === where.id) ?? null,
+    deleteMany: async ({ where }: { where: { id: { in: string[] } } }) => {
       state.operations.push("product.deleteMany");
       if (failProductDelete) throw new Error("simulated delete failure");
       const ids = new Set(where.id.in as string[]);
@@ -38,9 +38,9 @@ const makeClient = (seed: {
     },
   };
   client.productVariant = {
-    findMany: async ({ where }: any) => state.variants.filter((variant) => where.productId.in.includes(variant.productId)),
-    findUnique: async ({ where }: any) => state.variants.find((variant) => variant.id === where.id) ?? null,
-    create: async ({ data }: any) => {
+    findMany: async ({ where }: { where: { productId: { in: string[] } } }) => state.variants.filter((variant) => where.productId.in.includes(variant.productId)),
+    findUnique: async ({ where }: { where: { id: string } }) => state.variants.find((variant) => variant.id === where.id) ?? null,
+    create: async ({ data }: { data: { id: string; productId: string } }) => {
       state.createdVariants.push(data);
       state.variants.push({ id: data.id, productId: data.productId });
       return data;
@@ -48,8 +48,8 @@ const makeClient = (seed: {
   };
   client.productImage = { create: async () => ({}) };
   client.productExclusion = {
-    findUnique: async ({ where }: any) => state.productExclusions.find((item) => item.productId === where.productId) ?? null,
-    createMany: async ({ data }: any) => {
+    findUnique: async ({ where }: { where: { productId: string } }) => state.productExclusions.find((item) => item.productId === where.productId) ?? null,
+    createMany: async ({ data }: { data: Array<{ productId: string }> }) => {
       state.operations.push("productExclusion.createMany");
       for (const item of data) {
         if (!state.productExclusions.some((existing) => existing.productId === item.productId)) state.productExclusions.push(item);
@@ -58,8 +58,8 @@ const makeClient = (seed: {
     },
   };
   client.productVariantExclusion = {
-    findUnique: async ({ where }: any) => state.variantExclusions.find((item) => item.variantId === where.variantId) ?? null,
-    createMany: async ({ data }: any) => {
+    findUnique: async ({ where }: { where: { variantId: string } }) => state.variantExclusions.find((item) => item.variantId === where.variantId) ?? null,
+    createMany: async ({ data }: { data: Array<{ variantId: string; productId: string }> }) => {
       state.operations.push("productVariantExclusion.createMany");
       for (const item of data) {
         if (!state.variantExclusions.some((existing) => existing.variantId === item.variantId)) state.variantExclusions.push(item);

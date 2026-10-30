@@ -1,21 +1,27 @@
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { MessageCircle } from "lucide-react";
+import { SHELBY_WHATSAPP_URL } from "@/lib/contact";
 export const CTA = () => (
-  <section id="contacto" className="py-24 bg-background">
+  <section id="contacto" className="bg-white py-24">
     <div className="container-shelby">
-      <div className="relative bg-primary rounded-2xl p-10 sm:p-16 overflow-hidden shadow-elegant">
-        <div className="absolute inset-y-0 right-0 hidden lg:block w-[34%] bg-secondary/20 rounded-l-[2rem]" />
-        <div className="relative grid lg:grid-cols-2 gap-8 items-center">
+      <div className="relative overflow-hidden bg-primary p-10 shadow-elegant sm:p-14">
+        <div className="absolute inset-y-0 right-0 hidden w-[38%] border-l border-white/10 bg-secondary/30 lg:block" />
+        <div className="relative grid items-center gap-8 lg:grid-cols-2">
           <div>
-            <h2 className="font-display text-4xl sm:text-5xl text-white leading-tight">¿Listo para imprimir <span className="text-white">tu próximo pedido?</span></h2>
-            <p className="text-white/80 mt-4 max-w-lg">Escríbenos por WhatsApp y te asesoramos sin compromiso.</p>
+            <span className="eyebrow-shelby text-white/80">Hablemos de tu operación</span>
+            <h2 className="mt-3 max-w-2xl font-display text-4xl leading-none text-white sm:text-6xl">Haz que cada venta se vea mejor.</h2>
+            <p className="mt-5 max-w-lg text-base leading-relaxed text-white/75">Encuentra el equipo correcto, recibe asesoría real y empieza a operar con más confianza desde el primer día.</p>
           </div>
           <div className="flex flex-wrap gap-3 lg:justify-end">
-            <Button asChild size="lg" className="bg-whatsapp hover:bg-whatsapp/90 text-white h-14 px-8 shadow-elegant">
-              <a href="https://wa.me/573228426561" target="_blank" rel="noopener noreferrer"><MessageCircle className="h-5 w-5" /> Hablar por WhatsApp</a>
+            <Button asChild size="lg" className="h-14 bg-whatsapp px-8 text-white shadow-elegant hover:bg-whatsapp/90">
+              <a href={SHELBY_WHATSAPP_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2">
+                <MessageCircle className="h-5 w-5" /> Hablar por WhatsApp
+              </a>
             </Button>
-            <Button asChild size="lg" variant="outline" className="border-white/30 bg-white/10 text-white hover:bg-white/20 h-14 px-8"><Link to="/products">Ver catálogo</Link></Button>
+            <Button asChild variant="outline" size="lg" className="h-14 border-white/30 bg-white/10 px-8 text-white hover:bg-white/20">
+              <Link to="/products">Ver catálogo</Link>
+            </Button>
           </div>
         </div>
       </div>

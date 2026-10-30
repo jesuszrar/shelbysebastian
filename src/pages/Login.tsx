@@ -61,26 +61,26 @@ const Login = () => {
   };
 
   return (
-    <div className="min-h-screen flex">
-      {/* LEFT: Form */}
-      <div className="flex-1 flex flex-col bg-background px-6 sm:px-12 py-8 lg:px-16">
-        <Link to="/" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-smooth mb-8">
+    <div className="flex min-h-screen bg-[#f5f8f8]">
+      <div className="flex flex-1 flex-col bg-background px-6 py-8 sm:px-12 lg:px-16">
+        <Link to="/" className="mb-8 inline-flex items-center gap-2 text-sm text-muted-foreground transition-smooth hover:text-primary">
           <ArrowLeft className="h-4 w-4" /> Volver al inicio
         </Link>
-        <div className="flex items-center gap-3 mb-12">
+
+        <div className="mb-12 flex items-center gap-3">
           <img src={logo} alt="Shelby" className="h-12 w-12 rounded-md shadow-soft" />
           <div>
-            <div className="font-display text-xl tracking-wide text-secondary">SHELBY</div>
-            <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground -mt-1">Importaciones</div>
+            <div className="font-display text-xl tracking-[0.14em] text-primary">SHELBY</div>
+            <div className="-mt-1 text-[10px] uppercase tracking-[0.28em] text-muted-foreground">Importaciones</div>
           </div>
         </div>
 
-        <div className="flex-1 flex flex-col justify-center max-w-md w-full mx-auto">
+        <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center">
           <div className="mb-8">
-            <h1 className="font-display text-4xl sm:text-5xl text-secondary leading-tight">
+            <h1 className="font-display text-4xl leading-tight text-primary sm:text-5xl">
               {mode === "login" ? "Bienvenido de nuevo" : "Crea tu cuenta"}
             </h1>
-            <p className="text-muted-foreground mt-2">
+            <p className="mt-2 text-muted-foreground">
               {mode === "login" ? "Accede para continuar tu compra" : "Regístrate y compra fácil y rápido"}
             </p>
           </div>
@@ -88,50 +88,48 @@ const Login = () => {
           <form onSubmit={handleSubmit} className="space-y-4">
             {mode === "register" && (
               <div>
-                <label className="text-sm font-medium text-secondary block mb-1.5">Nombre completo</label>
+                <label className="mb-1.5 block text-sm font-medium text-primary">Nombre completo</label>
                 <div className="relative">
-                  <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Tu nombre"
-                    className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="name" />
+                  <UserIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Tu nombre" className="w-full rounded-2xl border border-border bg-white py-3 pl-10 pr-4 text-primary focus:outline-none focus:ring-2 focus:ring-primary/30" autoComplete="name" />
                 </div>
-                {errors.name && <p className="text-xs text-destructive mt-1">{errors.name}</p>}
+                {errors.name && <p className="mt-1 text-xs text-destructive">{errors.name}</p>}
               </div>
             )}
+
             <div>
-              <label className="text-sm font-medium text-secondary block mb-1.5">Cédula</label>
+              <label className="mb-1.5 block text-sm font-medium text-primary">Cédula</label>
               <div className="relative">
-                <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <input type="text" value={cedula} onChange={(e) => setCedula(e.target.value)} placeholder="Tu cédula"
-                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="username" />
+                <UserIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <input type="text" value={cedula} onChange={(e) => setCedula(e.target.value)} placeholder="Tu cédula" className="w-full rounded-2xl border border-border bg-white py-3 pl-10 pr-4 text-primary focus:outline-none focus:ring-2 focus:ring-primary/30" autoComplete="username" />
               </div>
-              {errors.cedula && <p className="text-xs text-destructive mt-1">{errors.cedula}</p>}
-            </div>
-            {mode === "register" && (
-              <div>
-                <label className="text-sm font-medium text-secondary block mb-1.5">Correo electrónico</label>
-                <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@correo.com"
-                    className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth" autoComplete="email" />
-                </div>
-                {errors.email && <p className="text-xs text-destructive mt-1">{errors.email}</p>}
-              </div>
-            )}
-            <div>
-              <label className="text-sm font-medium text-secondary block mb-1.5">Contraseña</label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
-                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/40 transition-smooth"
-                  autoComplete={mode === "login" ? "current-password" : "new-password"} />
-              </div>
-              {errors.password && <p className="text-xs text-destructive mt-1">{errors.password}</p>}
+              {errors.cedula && <p className="mt-1 text-xs text-destructive">{errors.cedula}</p>}
             </div>
 
-            <Button type="submit" disabled={loading} className="w-full h-12 bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft">
+            {mode === "register" && (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-primary">Correo electrónico</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@correo.com" className="w-full rounded-2xl border border-border bg-white py-3 pl-10 pr-4 text-primary focus:outline-none focus:ring-2 focus:ring-primary/30" autoComplete="email" />
+                </div>
+                {errors.email && <p className="mt-1 text-xs text-destructive">{errors.email}</p>}
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-primary">Contraseña</label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" className="w-full rounded-2xl border border-border bg-white py-3 pl-10 pr-4 text-primary focus:outline-none focus:ring-2 focus:ring-primary/30" autoComplete={mode === "login" ? "current-password" : "new-password"} />
+              </div>
+              {errors.password && <p className="mt-1 text-xs text-destructive">{errors.password}</p>}
+            </div>
+
+            <Button type="submit" disabled={loading} className="h-12 w-full bg-primary text-primary-foreground shadow-soft hover:bg-primary/90">
               {loading ? (
                 <span className="inline-flex items-center gap-2">
-                  <span className="h-4 w-4 rounded-full border-2 border-primary-foreground border-t-transparent animate-spin" />
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
                   Procesando...
                 </span>
               ) : (
@@ -140,40 +138,39 @@ const Login = () => {
             </Button>
           </form>
 
-          <p className="text-center text-sm text-muted-foreground mt-6">
+          <p className="mt-6 text-center text-sm text-muted-foreground">
             {mode === "login" ? "¿No tienes cuenta?" : "¿Ya tienes cuenta?"}{" "}
-            <button type="button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setErrors({}); }} className="text-primary font-semibold hover:underline">
+            <button type="button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setErrors({}); }} className="font-semibold text-primary hover:underline">
               {mode === "login" ? "Regístrate" : "Inicia sesión"}
             </button>
           </p>
         </div>
       </div>
 
-      {/* RIGHT: Image with overlay */}
-      <div className="hidden lg:block relative flex-1 max-w-[55%]">
-        <img src={heroImg} alt="Productos Shelby Importaciones" className="absolute inset-0 w-full h-full object-cover" />
+      <div className="relative hidden max-w-[55%] flex-1 lg:block">
+        <img src={heroImg} alt="Productos Shelby Importaciones" className="absolute inset-0 h-full w-full object-cover" />
         <div className="absolute inset-0 bg-gradient-login" />
-        <div className="relative z-10 h-full flex flex-col justify-end p-12 xl:p-16 text-background">
-          <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-primary/20 border border-primary/30 text-primary-glow text-xs font-semibold tracking-wider uppercase backdrop-blur-sm w-fit">
+        <div className="relative z-10 flex h-full flex-col justify-end p-12 xl:p-16 text-white">
+          <span className="inline-flex w-fit items-center gap-2 rounded-full border border-primary/30 bg-primary/20 px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.22em] text-white/90 backdrop-blur-sm">
             <Sparkles className="h-3.5 w-3.5" /> Tienda 100% colombiana
           </span>
-          <h2 className="font-display text-5xl xl:text-6xl mt-6 leading-[0.95] text-balance">
-            Compra fácil y rápido,<br />
-            <span className="text-primary-glow">imprime tu éxito.</span>
+          <h2 className="mt-6 font-display text-5xl leading-[0.95] xl:text-6xl">
+            Compra fácil y rápido,
+            <span className="mt-2 block text-primary-glow">imprime tu éxito.</span>
           </h2>
-          <p className="mt-5 text-background/80 max-w-md text-lg">
+          <p className="mt-5 max-w-md text-lg text-white/80">
             Impresoras térmicas, lectores y suministros con envío a todo Colombia y asesoría real por WhatsApp.
           </p>
-          <div className="grid grid-cols-3 gap-6 mt-10 max-w-lg">
+          <div className="mt-10 grid max-w-lg grid-cols-3 gap-6">
             {[
               { icon: Truck, k: "+1.500", v: "Envíos hechos" },
               { icon: ShieldCheck, k: "30 días", v: "Garantía" },
               { icon: Sparkles, k: "4.9 ★", v: "Clientes felices" },
             ].map((s) => (
               <div key={s.v}>
-                <s.icon className="h-5 w-5 text-primary-glow mb-2" />
+                <s.icon className="mb-2 h-5 w-5 text-primary-glow" />
                 <div className="font-display text-2xl">{s.k}</div>
-                <div className="text-xs text-background/70 uppercase tracking-wider">{s.v}</div>
+                <div className="text-xs uppercase tracking-[0.22em] text-white/70">{s.v}</div>
               </div>
             ))}
           </div>
@@ -182,4 +179,5 @@ const Login = () => {
     </div>
   );
 };
+
 export default Login;

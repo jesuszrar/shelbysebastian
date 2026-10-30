@@ -2,9 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, Link, Navigate } from "react-router-dom";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
-import { WhatsAppButton } from "@/components/shelby/WhatsAppButton";
 import { Button } from "@/components/ui/button";
-import { formatCOP } from "@/data/products";
+import { formatCOP } from "@/lib/format";
 import { useCart } from "@/context/CartContext";
 import { toast } from "sonner";
 import { ShoppingCart, Check, Star, Minus, Plus, ArrowLeft, MessageCircle, ShieldCheck, Truck, Sparkles } from "lucide-react";
@@ -14,7 +13,7 @@ import { SHELBY_WHATSAPP_URL } from "@/lib/contact";
 
 const ProductDetail = () => {
   const { productId } = useParams();
-  const { products: liveProducts } = useProductsCatalog();
+  const { products: liveProducts, loading, error } = useProductsCatalog();
   const product = liveProducts.find((item) => item.id === (productId || ""));
   const { add } = useCart();
   const [qty, setQty] = useState(1);
@@ -45,6 +44,8 @@ const ProductDetail = () => {
     });
   }, [product]);
 
+  if (loading) return <div className="min-h-screen px-6 py-32 text-sm text-muted-foreground">Cargando producto...</div>;
+  if (error) return <div className="min-h-screen px-6 py-32 text-sm text-destructive">No se pudo cargar el catálogo: {error}</div>;
   if (!product) return <Navigate to="/products" replace />;
 
   const handleAdd = async () => {
@@ -119,6 +120,12 @@ const ProductDetail = () => {
                 <span className="font-display text-[3rem] leading-none text-primary">{formatCOP(displayPrice)}</span>
                 {product.oldPrice && <span className="pb-1 text-lg text-muted-foreground line-through">{formatCOP(product.oldPrice)}</span>}
               </div>
+
+              {product.activateWholesale && product.wholesaleMinQty && product.wholesaleDiscountPercent ? (
+                <div className="mt-4 inline-flex w-fit items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-800">
+                  Precio por mayor: {product.wholesaleDiscountPercent}% off desde {product.wholesaleMinQty} unidades
+                </div>
+              ) : null}
 
               <div className={`mt-5 inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-medium ${variantDataIncomplete ? "border-amber-200 bg-amber-50 text-amber-800" : stock > 0 ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-600"}`}>
                 {variantDataIncomplete ? "Precio y stock pendientes de configurar" : stock > 0 ? `Stock disponible: ${stock}` : "Sin stock disponible"}
@@ -256,9 +263,7 @@ const ProductDetail = () => {
           )}
         </div>
       </main>
-      <Footer />
-      <WhatsAppButton />
-    </div>
+      <Footer />\n    </div>
   );
 };
 

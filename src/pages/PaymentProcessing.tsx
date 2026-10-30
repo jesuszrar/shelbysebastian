@@ -3,8 +3,9 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
 import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
+import { CreditCard, MessageCircle } from "lucide-react";
 import { resolveApiBaseUrl } from "@/integrations/api/client";
+import { SHELBY_WHATSAPP_URL } from "@/lib/contact";
 
 const PAYMENT_METHOD_HINTS: Record<string, string> = {
   nequi: "Nequi puede no devolver un enlace directo. Revisa el push en tu app o el teléfono registrado.",
@@ -12,13 +13,22 @@ const PAYMENT_METHOD_HINTS: Record<string, string> = {
   pse: "PSE abre un portal bancario. Mantén esta pantalla abierta mientras se procesa.",
   card: "La pasarela de pago de tarjeta aparecerá en la siguiente pantalla.",
 };
+type PaymentTransaction = Record<string, unknown>;
+type PaymentStatusResponse = {
+  transaction?: PaymentTransaction | null;
+  paymentMethod?: string | null;
+  status?: string | null;
+  mappedStatus?: string | null;
+  pendingWithoutPaymentUrl?: boolean;
+  transactionNotFound?: boolean;
+};
 
 const PaymentProcessing = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const orderId = searchParams.get("order") || "";
   const [status, setStatus] = useState<string | null>(null);
-  const [transaction, setTransaction] = useState<any>(null);
+  const [transaction, setTransaction] = useState<PaymentTransaction | null>(null);
   const [transactionId, setTransactionId] = useState<string | null>(null);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<string | null>(null);
@@ -39,8 +49,8 @@ const PaymentProcessing = () => {
         setPaymentMethod(method);
         setIsNequi(String(method).toLowerCase() === "nequi");
         setPendingWithoutPaymentUrl(Boolean(parsed.pendingWithoutPaymentUrl));
-      } catch {
-        /* ignore malformed data */
+      } catch (error) {
+        console.warn("[payment-processing] stored payment data is invalid", error);
       }
     };
 
@@ -66,7 +76,7 @@ const PaymentProcessing = () => {
         const baseUrl = resolveApiBaseUrl();
         const url = `${baseUrl}/api/payments/transaction-status?${params.toString()}`;
         const res = await fetch(url);
-        const data = await res.json();
+        const data = await res.json() as PaymentStatusResponse;
 
         if (!mounted) return;
         if (data?.transaction) setTransaction(data.transaction);
@@ -111,22 +121,23 @@ const PaymentProcessing = () => {
   }, [orderId, transactionId, navigate, paymentMethod, isNequi]);
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="min-h-screen bg-[#f5f8f8]">
       <Navbar />
-      <main className="flex-1 flex items-center justify-center pt-32 pb-16 px-4">
-        <div className="bg-card border border-border rounded-3xl p-12 text-center shadow-soft max-w-md">
-          <img src="/assets/logo.png" alt="Shelby" className="mx-auto mb-4 h-16" />
-          <h1 className="font-display text-2xl text-secondary">Estamos preparando tu pago</h1>
-          <p className="text-muted-foreground mt-2">Pedido <span className="font-mono">{orderId}</span></p>
+      <main className="flex items-center justify-center px-4 pb-20 pt-32">
+        <div className="w-full max-w-xl rounded-[2rem] border border-border bg-white p-8 text-center shadow-elegant sm:p-12">
+          <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-[1.6rem] bg-primary shadow-soft"><CreditCard className="h-9 w-9 text-white" /></div>
+          <span className="mt-6 block text-xs font-semibold uppercase tracking-[0.3em] text-primary">Pago seguro Shelby</span>
+          <h1 className="mt-3 font-display text-4xl text-primary sm:text-5xl">Estamos preparando tu pago</h1>
+          <p className="mt-3 text-muted-foreground">Pedido <span className="font-mono text-primary">{orderId}</span></p>
           {paymentMethod && (
-            <p className="text-sm text-muted-foreground mt-2">Método: <strong className="text-secondary capitalize">{paymentMethod}</strong></p>
+            <p className="mt-2 text-sm text-muted-foreground">Método: <strong className="capitalize text-primary">{paymentMethod}</strong></p>
           )}
           <div className="mt-6">
-            <div className="flex justify-center mb-4">
-            <div className="h-12 w-12 rounded-full border-4 border-primary/30 border-t-primary animate-spin" />
+            <div className="mb-4 flex justify-center">
+            <div className="h-12 w-12 animate-spin rounded-full border-4 border-primary/20 border-t-primary" />
           </div>
           <p className="text-sm text-muted-foreground">
-            Estado: <strong className="text-secondary">{status || "PENDING"}</strong>
+            Estado: <strong className="text-primary">{status || "PENDING"}</strong>
           </p>
           {isNequi && (
             <p className="mt-3 text-sm text-muted-foreground">
@@ -144,11 +155,11 @@ const PaymentProcessing = () => {
           )}
           {transaction?.id && (
             <div className="mt-4 text-left text-sm text-muted-foreground space-y-2">
-              <div>
-                <span className="font-medium text-secondary">Transacción:</span> <span className="font-mono">{String(transaction.id)}</span>
+              <div className="rounded-2xl bg-[#f5f8f8] p-4 text-left">
+                <span className="font-medium text-primary">Transacción:</span> <span className="font-mono">{String(transaction.id)}</span>
               </div>
               <div>
-                <span className="font-medium text-secondary">Referencia pedido:</span> <span className="font-mono">{orderId}</span>
+                <span className="font-medium text-primary">Referencia pedido:</span> <span className="font-mono">{orderId}</span>
               </div>
             </div>
           )}
@@ -176,14 +187,14 @@ const PaymentProcessing = () => {
                 Verificar estado
               </Button>
             )}
-            <Button variant="outline" className="w-full" onClick={() => navigate("/checkout")}>Volver al checkout</Button>
+          <Button variant="outline" className="w-full border-border text-primary hover:bg-primary/5" onClick={() => navigate("/checkout")}>Volver al checkout</Button>
             {!paymentUrl && (
               <Button
                 variant="outline"
                 className="w-full border-whatsapp text-whatsapp hover:bg-whatsapp hover:text-white"
-                onClick={() => window.open("https://wa.me/573228426561?text=Hola%20Shelby%2C%20necesito%20ayuda%20con%20mi%20pago", "_blank")}
+                onClick={() => window.open(`${SHELBY_WHATSAPP_URL}?text=Hola%20Shelby%2C%20necesito%20ayuda%20con%20mi%20pago`, "_blank")}
               >
-                Contactar soporte por WhatsApp
+                <MessageCircle className="h-4 w-4" /> Contactar soporte por WhatsApp
               </Button>
             )}
           </div>

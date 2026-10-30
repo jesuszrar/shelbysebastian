@@ -4,9 +4,8 @@
 
 @layer base {
   :root {
-    /* Palette updated from user */
-    --background: 0 0% 95%; /* #F2F2F2 */
-    --foreground: 199 97% 13%; /* #012E40 */
+    --background: 180 20% 97%;
+    --foreground: 199 97% 13%;
 
     --card: 0 0% 100%;
     --card-foreground: 199 97% 13%;
@@ -14,15 +13,15 @@
     --popover: 0 0% 100%;
     --popover-foreground: 199 97% 13%;
 
-    --primary: 199 97% 13%; /* #012E40 */
+    --primary: 199 97% 13%;
     --primary-foreground: 0 0% 100%;
-    --primary-glow: 191 96% 28%; /* #03738C */
+    --primary-glow: 191 96% 28%;
 
-    --secondary: 191 96% 28%; /* #03738C */
+    --secondary: 191 96% 28%;
     --secondary-foreground: 0 0% 100%;
 
-    --muted: 180 8% 69%; /* #AAB7B7 */
-    --muted-foreground: 199 30% 35%;
+    --muted: 180 9% 88%;
+    --muted-foreground: 199 20% 32%;
 
     --accent: 191 96% 28%;
     --accent-foreground: 0 0% 100%;
@@ -34,35 +33,44 @@
     --destructive: 0 75% 50%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 192 8% 77%; /* #C0C8CA */
+    --border: 192 10% 82%;
     --input: 192 8% 80%;
     --ring: 191 96% 28%;
 
-    --radius: 0.875rem;
+    --radius: 0.65rem;
 
-    --gradient-gold: linear-gradient(135deg, hsl(36 73% 54%), hsl(41 84% 68%));
+    --gradient-gold: linear-gradient(135deg, hsl(67 86% 58%), hsl(48 94% 62%));
     --gradient-dark: linear-gradient(135deg, hsl(199 97% 13%), hsl(191 96% 28%));
-    --gradient-cream: linear-gradient(180deg, hsl(0 0% 95%), hsl(0 0% 97%));
-    --gradient-hero: linear-gradient(115deg, hsl(199 97% 13% / 0.94) 0%, hsl(199 97% 13% / 0.68) 55%, hsl(191 96% 28% / 0.28) 100%);
-    --gradient-login: linear-gradient(135deg, hsl(199 97% 13% / 0.9) 0%, hsl(191 96% 28% / 0.58) 100%);
+    --gradient-cream: linear-gradient(180deg, hsl(0 0% 98%), hsl(0 0% 95%));
+    --gradient-hero: linear-gradient(115deg, hsl(199 97% 13% / 0.96) 0%, hsl(199 97% 13% / 0.74) 48%, hsl(191 96% 28% / 0.28) 100%);
+    --gradient-login: linear-gradient(135deg, hsl(199 97% 13% / 0.92) 0%, hsl(191 96% 28% / 0.58) 100%);
+    --gradient-surface: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(241,245,245,0.92));
 
-    --shadow-soft: 0 4px 20px -8px hsl(199 97% 13% / 0.12);
-    --shadow-elegant: 0 20px 50px -20px hsl(199 97% 13% / 0.25);
-    --shadow-gold: 0 12px 30px -10px hsl(36 73% 54% / 0.45);
+    --shadow-soft: 0 8px 24px -18px hsl(199 97% 13% / 0.22);
+    --shadow-elegant: 0 24px 60px -28px hsl(199 97% 13% / 0.28);
+    --shadow-gold: 0 16px 40px -16px hsl(36 73% 54% / 0.45);
 
     --transition-smooth: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   * { @apply border-border; }
+  html { scroll-behavior: smooth; }
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(1rem); }
+    to { opacity: 1; transform: translateY(0); }
+  }
   body {
     @apply bg-background text-foreground;
-    font-family: "Inter", system-ui, sans-serif;
+    font-family: "DM Sans", "Inter", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
   h1, h2, h3, .font-display {
     font-family: "Bebas Neue", "Inter", sans-serif;
-    letter-spacing: 0.02em;
+    letter-spacing: 0;
   }
+  img { display: block; }
+  a { @apply transition-smooth; }
 }
 
 @layer utilities {
@@ -71,11 +79,14 @@
   .bg-gradient-cream { background: var(--gradient-cream); }
   .bg-gradient-hero { background: var(--gradient-hero); }
   .bg-gradient-login { background: var(--gradient-login); }
+  .bg-gradient-surface { background: var(--gradient-surface); }
   .shadow-soft { box-shadow: var(--shadow-soft); }
   .shadow-elegant { box-shadow: var(--shadow-elegant); }
   .shadow-gold { box-shadow: var(--shadow-gold); }
   .transition-smooth { transition: var(--transition-smooth); }
   .text-balance { text-wrap: balance; }
+  .surface-card { background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(244,247,248,0.97)); }
+  .section-shell { @apply relative; }
 
   .container-shelby {
     width: 100%;
@@ -83,6 +94,15 @@
     margin-right: auto;
     padding-left: 1rem;
     padding-right: 1rem;
-    max-width: 1280px;
+    max-width: 1360px;
+  }
+
+  .eyebrow-shelby {
+    @apply text-[10px] font-bold uppercase tracking-[0.28em];
+  }
+
+  .tech-grid {
+    background-image: linear-gradient(hsl(199 97% 13% / 0.055) 1px, transparent 1px), linear-gradient(90deg, hsl(199 97% 13% / 0.055) 1px, transparent 1px);
+    background-size: 32px 32px;
   }
 }
