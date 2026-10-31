@@ -44,7 +44,7 @@ export const ProductCard = ({ p }: { p: Product }) => {
 
       <Link to={`/products/${p.id}`} className="block overflow-hidden bg-muted">
         <div className="aspect-[4/3] overflow-hidden bg-[#edf3f3]">
-          <img src={p.image} alt={p.name} loading="lazy" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className="h-full w-full object-contain p-5 transition-smooth duration-500 group-hover:scale-[1.04]" />
+          <img src={p.image || "/placeholder.svg"} alt={p.name} loading="lazy" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className="h-full w-full object-contain p-5 transition-smooth duration-500 group-hover:scale-[1.04]" />
         </div>
       </Link>
 

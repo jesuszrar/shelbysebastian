@@ -66,7 +66,8 @@ const ProductDetail = () => {
   };
 
   const waMsg = encodeURIComponent(`Hola Shelby, me interesa la ${product.name} (${formatCOP(product.price)}). ¿Tienen disponible?`);
-  const gallery = Array.from(new Set([...(selectedVariant?.images || []), selectedVariant?.image, ...(product.images || []), product.image].filter(Boolean) as string[]));
+  const galleryImages = Array.from(new Set([...(selectedVariant?.images || []), selectedVariant?.image, ...(product.images || []), product.image].filter(Boolean) as string[]));
+  const gallery = galleryImages.length > 0 ? galleryImages : ["/placeholder.svg"];
 
   return (
     <div className="min-h-screen bg-[#f5f8f8]">
@@ -86,7 +87,7 @@ const ProductDetail = () => {
                   </span>
                 )}
                 <div className="aspect-[5/4] overflow-hidden rounded-[1.4rem] bg-muted">
-                  <img src={activeImage || product.image} alt={product.name} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className="h-full w-full object-cover" />
+                  <img src={activeImage || product.image || "/placeholder.svg"} alt={product.name} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className="h-full w-full object-cover" />
                 </div>
               </div>
 
@@ -98,7 +99,7 @@ const ProductDetail = () => {
                     onClick={() => setActiveImage(img)}
                     className={`overflow-hidden rounded-2xl border p-1.5 transition-smooth ${activeImage === img ? "border-primary bg-primary/5 shadow-soft" : "border-border bg-white hover:border-primary/40"}`}
                   >
-                    <img src={img} alt={`${product.name} vista ${index + 1}`} className="h-20 w-full rounded-xl object-cover" />
+                    <img src={img} alt={`${product.name} vista ${index + 1}`} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className="h-20 w-full rounded-xl object-cover" />
                   </button>
                 ))}
               </div>

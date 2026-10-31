@@ -4,6 +4,7 @@ import { mkdir } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import { startWompiWebhookWorker } from "./lib/wompi-persistence.js";
+import { resolveUploadsDirectory } from "./lib/uploads-directory.js";
 
 const productionEnvironment = process.env.NODE_ENV === "production";
 if (!productionEnvironment) {
@@ -34,7 +35,7 @@ if (!jwtSecret) {
 const prisma = new PrismaClient();
 const app = createApp({ prisma, jwtSecret });
 const port = Number(process.env.PORT || 3001);
-const uploadsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "uploads");
+const uploadsDir = resolveUploadsDirectory(fileURLToPath(import.meta.url));
 
 await mkdir(uploadsDir, { recursive: true });
 startWompiWebhookWorker(prisma);

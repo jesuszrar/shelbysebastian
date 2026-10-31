@@ -24,6 +24,7 @@ import cookieParser from "cookie-parser";
 import { products as staticProducts } from "./scripts/product-catalog-data.js";
 import { buildCatalogSyncPlan } from "./scripts/catalog-sync-plan.js";
 import { syncProductCatalog } from "./scripts/sync-product-catalog.js";
+import { resolveUploadsDirectory } from "./lib/uploads-directory.js";
 
 export type ServerDependencies = {
   prisma: PrismaClient;
@@ -36,7 +37,7 @@ const { prisma, jwtSecret } = dependencies;
 if (!jwtSecret.trim()) throw new Error("JWT_SECRET must be configured before starting the backend");
 const niimbotPageImageStore = (prisma as unknown as { niimbotPageImage: NiimbotPageImageStore }).niimbotPageImage;
 const app = express();
-const uploadsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "uploads");
+const uploadsDir = resolveUploadsDirectory(fileURLToPath(import.meta.url));
 const assetsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public", "assets");
 const NIIMBOT_PAGE_IMAGE_KEYS = new Set([
   "hero_desktop",
