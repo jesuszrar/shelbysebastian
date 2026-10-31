@@ -3,6 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import { mkdir } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+import { startWompiWebhookWorker } from "./lib/wompi-persistence.js";
 const productionEnvironment = process.env.NODE_ENV === "production";
 if (!productionEnvironment) {
     dotenv.config();
@@ -29,7 +30,8 @@ const prisma = new PrismaClient();
 const app = createApp({ prisma, jwtSecret });
 const port = Number(process.env.PORT || 3001);
 const uploadsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "uploads");
-app.listen(port, async () => {
-    await mkdir(uploadsDir, { recursive: true });
-    console.log(`Shelby MySQL backend listening on http://localhost:${port}`);
+await mkdir(uploadsDir, { recursive: true });
+startWompiWebhookWorker(prisma);
+app.listen(port, () => {
+    console.log(`Shelby PostgreSQL backend listening on http://localhost:${port}`);
 });

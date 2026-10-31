@@ -9,8 +9,11 @@ export const hashRefreshToken = (token) => {
     return crypto.createHash("sha256").update(token).digest("hex");
 };
 export const createRefreshToken = async (userId, token, expiresAt) => {
+    return createRefreshTokenWithClient(prisma, userId, token, expiresAt);
+};
+export const createRefreshTokenWithClient = async (client, userId, token, expiresAt) => {
     const tokenHash = hashRefreshToken(token);
-    const created = await prisma.refreshToken.create({
+    const created = await client.refreshToken.create({
         data: { userId, tokenHash, expiresAt },
     });
     return created;
@@ -31,13 +34,19 @@ export const revokeRefreshToken = async (id) => {
 };
 export const rotateRefreshToken = async (oldId, newToken, newExpiresAt) => {
     const newHash = hashRefreshToken(newToken);
-    // mark old as revoked and set replacedById after creating new
-    const old = await prisma.refreshToken.findUnique({ where: { id: oldId } });
-    if (!old)
-        throw new Error("old refresh token not found");
-    const created = await prisma.refreshToken.create({ data: { userId: old.userId, tokenHash: newHash, expiresAt: newExpiresAt } });
-    await prisma.refreshToken.update({ where: { id: oldId }, data: { revokedAt: new Date(), replacedById: created.id } });
-    return created;
+    return prisma.$transaction(async (transaction) => {
+        const old = await transaction.refreshToken.findUnique({ where: { id: oldId } });
+        if (!old)
+            throw new Error("old refresh token not found");
+        const created = await transaction.refreshToken.create({
+            data: { userId: old.userId, tokenHash: newHash, expiresAt: newExpiresAt },
+        });
+        await transaction.refreshToken.update({
+            where: { id: oldId },
+            data: { revokedAt: new Date(), replacedById: created.id },
+        });
+        return created;
+    });
 };
 export default {
     generateRefreshToken,
