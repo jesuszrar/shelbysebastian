@@ -1,7 +1,7 @@
 ﻿import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { getStoredSession, saveSession, clearSession, onAuthStateChange, SESSION_EXPIRED_EVENT, resolveApiBaseUrl, getEmailByCedula, persistCedulaEmail, syncProfile, type SessionUser, type StoredSession } from "@/integrations/api/client";
-import { ADMIN_CEDULA, isAdminUser } from "./authUtils";
+import { getStoredSession, saveSession, clearSession, onAuthStateChange, SESSION_EXPIRED_EVENT, resolveApiBaseUrl, syncProfile, type SessionUser, type StoredSession } from "@/integrations/api/client";
+import { isAdminUser } from "./authUtils";
 
 export type User = { id: string; name: string; email: string; cedula?: string; isAdmin?: boolean };
 
@@ -19,53 +19,7 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-const ACTIVE_CEDULA_STORAGE_KEY = "shelby_active_cedula";
-const CEDULA_EMAIL_STORAGE_KEY = "shelby_cedula_email_map";
-
 const normalizeCedula = (cedula: string) => cedula.replace(/\D/g, "").trim();
-
-const setActiveCedula = (cedula: string) => {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(ACTIVE_CEDULA_STORAGE_KEY, cedula);
-};
-
-const getActiveCedula = () => {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(ACTIVE_CEDULA_STORAGE_KEY);
-};
-
-const clearActiveCedula = () => {
-  if (typeof window === "undefined") return;
-  window.localStorage.removeItem(ACTIVE_CEDULA_STORAGE_KEY);
-};
-
-const readCedulaEmailMap = (): Record<string, string> => {
-  if (typeof window === "undefined") return {};
-
-  try {
-    const raw = window.localStorage.getItem(CEDULA_EMAIL_STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
-  } catch {
-    return {};
-  }
-};
-
-const writeCedulaEmailMap = (cedula: string, email: string) => {
-  if (typeof window === "undefined") return;
-
-  const current = readCedulaEmailMap();
-  current[normalizeCedula(cedula)] = email;
-  window.localStorage.setItem(CEDULA_EMAIL_STORAGE_KEY, JSON.stringify(current));
-};
-
-const persistCedulaEmailLocal = async (cedula: string, email: string, accessToken?: string) => {
-  const normalizedCedula = normalizeCedula(cedula);
-  writeCedulaEmailMap(normalizedCedula, email);
-  const ok = await persistCedulaEmail(normalizedCedula, email.trim(), accessToken);
-  if (!ok) {
-    console.error("Error saving cedula email map to backend");
-  }
-};
 
 const toUser = (u: SessionUser | null | undefined): User | null =>
   u
@@ -77,6 +31,27 @@ const toUser = (u: SessionUser | null | undefined): User | null =>
         isAdmin: Boolean(u.user_metadata?.is_admin ?? u.is_admin),
       }
     : null;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const isSessionUser = (value: unknown): value is SessionUser => {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id.trim()) return false;
+  if (["email", "name", "cedula"].some((key) => value[key] !== undefined && typeof value[key] !== "string")) return false;
+  if (value.is_admin !== undefined && typeof value.is_admin !== "boolean") return false;
+  if (value.user_metadata !== undefined) {
+    if (!isRecord(value.user_metadata)) return false;
+    if (["name", "cedula"].some((key) => value.user_metadata[key] !== undefined && typeof value.user_metadata[key] !== "string")) return false;
+    if (value.user_metadata.is_admin !== undefined && typeof value.user_metadata.is_admin !== "boolean") return false;
+  }
+  return true;
+};
+
+const isStoredSession = (value: unknown): value is Exclude<StoredSession, null> =>
+  isRecord(value) &&
+  typeof value.access_token === "string" &&
+  Boolean(value.access_token.trim()) &&
+  isSessionUser(value.user);
 
 const getAuthUrl = (path: string) => {
   const baseUrl = resolveApiBaseUrl();
@@ -96,7 +71,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       if (event === SESSION_EXPIRED_EVENT) {
         setSession(null);
         setUser(null);
-        clearActiveCedula();
         if (typeof window !== "undefined") {
           try {
             window.alert("La sesión expiró, inicia sesión nuevamente");
@@ -122,54 +96,41 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     return () => subscription.unsubscribe();
   }, [navigate]);
 
-  const findEmailByCedula = async (cedula: string) => {
-    const normalizedCedula = normalizeCedula(cedula);
-
-    const localEmail = readCedulaEmailMap()[normalizedCedula];
-    if (localEmail) {
-      return localEmail;
-    }
-
-    const backendEmail = await getEmailByCedula(normalizedCedula);
-    if (backendEmail) {
-      return backendEmail;
-    }
-
-    return null;
-  };
-
   const login = async (cedula: string, password: string) => {
     const normalizedCedula = normalizeCedula(cedula);
-    const email = await findEmailByCedula(normalizedCedula);
-    if (!email) {
-      throw new Error("Cédula no registrada. Regístrate primero.");
-    }
-
     const response = await fetch(getAuthUrl("/api/auth/login"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ email: email.trim(), password: password.trim() }),
+      body: JSON.stringify({ cedula: normalizedCedula, password: password.trim() }),
     });
 
-    const data = await response.json().catch(() => null);
+    const data: unknown = await response.json().catch(() => null);
+    const body = isRecord(data) ? data : null;
     if (!response.ok) {
-      const message = (data as { error?: string } | null)?.error ?? response.statusText;
-      throw new Error(String(message));
+      const backendError = typeof body?.error === "string" ? body.error.trim() : "";
+      const fallbackMessage = response.status === 401
+        ? "Cédula o contraseña incorrectas."
+        : response.status === 403
+          ? "No tienes autorización para iniciar sesión."
+          : response.status >= 500
+            ? "El servicio de inicio de sesión no está disponible. Intenta nuevamente más tarde."
+            : "No se pudo iniciar sesión. Intenta nuevamente.";
+      throw new Error(backendError || fallbackMessage);
     }
 
-    const result = data as { session?: StoredSession | null; user?: SessionUser | null };
-    if (!result.session || !result.user) {
-      throw new Error("No se pudo iniciar sesión. Intenta nuevamente.");
+    const sessionCandidate = body?.session;
+    const userCandidate = body?.user;
+    if (!isStoredSession(sessionCandidate) || !isSessionUser(userCandidate)) {
+      throw new Error("El servidor devolvió una respuesta inválida al iniciar sesión. Intenta nuevamente.");
     }
 
-    saveSession(result.session);
-    setSession(result.session);
-    setUser(toUser(result.session.user));
-    setActiveCedula(normalizedCedula);
+    saveSession(sessionCandidate);
+    setSession(sessionCandidate);
+    setUser(toUser(sessionCandidate.user));
 
-    const sessionUserName = result.user.user_metadata?.name as string ?? result.user.name ?? result.user.email?.split("@")[0] ?? "Cliente";
-    await syncProfile(result.user, normalizedCedula, sessionUserName, result.session.access_token);
+    const sessionUserName = userCandidate.user_metadata?.name as string ?? userCandidate.name ?? userCandidate.email?.split("@")[0] ?? "Cliente";
+    await syncProfile(userCandidate, normalizedCedula, sessionUserName, sessionCandidate.access_token);
   };
 
   const register = async (name: string, cedula: string, email: string, password: string) => {
@@ -194,13 +155,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       throw new Error("No se pudo crear el usuario. Intenta nuevamente.");
     }
 
-    await persistCedulaEmailLocal(normalizedCedula, normalizedEmail, result.session.access_token);
     await syncProfile(result.user, normalizedCedula, name.trim(), result.session.access_token);
 
     saveSession(result.session);
     setSession(result.session);
     setUser(toUser(result.session.user));
-    setActiveCedula(normalizedCedula);
   };
 
   const verifyRegistrationCode = async (email: string, token: string) => {
@@ -232,7 +191,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     } catch (err) {
       console.error("logout request failed", err);
     }
-    clearActiveCedula();
     clearSession();
     setSession(null);
     setUser(null);
@@ -249,7 +207,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         register,
         verifyRegistrationCode,
         logout,
-        isAdmin: isAdminUser(user, session, getActiveCedula()),
+        isAdmin: isAdminUser(user, session),
       }}
     >
       {children}

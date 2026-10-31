@@ -19,12 +19,23 @@ export const getWompiConfig = () => {
     };
     console.log("[wompi config]", {
         baseUrl: config.baseUrl,
-        publicKeySuffix: config.publicKey ? config.publicKey.slice(-6) : null,
+        hasPublicKey: Boolean(config.publicKey),
         hasPrivateKey: Boolean(config.privateKey),
         hasIntegrityKey: Boolean(config.integrityKey),
         hasEventsKey: Boolean(config.eventsKey),
     });
     return config;
+};
+export const isWompiPublicEnvironment = (nodeEnvironment, renderFlag) => nodeEnvironment === "production" || ["true", "1", "yes"].includes(String(renderFlag ?? "").trim().toLowerCase());
+export const isWompiPaymentSimulationEnabled = (nodeEnvironment, simulationFlag, isPublicEnvironment = isWompiPublicEnvironment(nodeEnvironment, process.env.RENDER)) => nodeEnvironment === "development" && simulationFlag === "true" && !isPublicEnvironment;
+export const getWompiPaymentConfigError = (config, nodeEnvironment, simulationFlag, isPublicEnvironment = isWompiPublicEnvironment(nodeEnvironment, process.env.RENDER)) => {
+    const credentialsConfigured = Boolean(config.publicKey && config.privateKey && config.eventsKey);
+    const allCredentialsMissing = !config.publicKey && !config.privateKey && !config.eventsKey;
+    if (credentialsConfigured || (allCredentialsMissing &&
+        isWompiPaymentSimulationEnabled(nodeEnvironment, simulationFlag, isPublicEnvironment))) {
+        return null;
+    }
+    return "Wompi payment configuration is incomplete";
 };
 export const normalizeWompiPaymentMethod = (value) => {
     const normalized = normalizeText(value);
@@ -131,28 +142,59 @@ export const buildWompiTransactionIntegritySignature = (reference, amountInCents
     const signatureString = `${reference}${amountInCents}${currency}${integrityKey}`;
     return crypto.createHash("sha256").update(signatureString).digest("hex");
 };
-export const getWompiMerchantSignature = (rawBody) => {
-    const { eventsKey } = getWompiConfig();
-    return crypto.createHmac("sha256", eventsKey).update(rawBody).digest("hex");
-};
+const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 export const extractWebhookSignature = (headerValue) => {
     const candidate = Array.isArray(headerValue) ? headerValue[0] : headerValue;
     if (!candidate)
         return null;
-    const normalized = candidate.trim();
-    if (!normalized)
-        return null;
-    const match = normalized.match(/(?:sha256=|v1=)?([a-f0-9]{32,})/i);
-    return (match?.[1] ?? normalized).toLowerCase();
+    const checksum = candidate.trim();
+    return /^[a-f0-9]{64}$/i.test(checksum) ? checksum.toLowerCase() : null;
 };
-export const verifyWompiEventSignature = (rawBody, signatureHeader) => {
+export const getWompiMerchantSignature = (event, eventsKey = getWompiConfig().eventsKey) => {
+    if (!eventsKey || !isRecord(event) || !isRecord(event.signature) || !isRecord(event.data))
+        return null;
+    const properties = event.signature.properties;
+    const timestamp = event.timestamp;
+    if (!Array.isArray(properties) || properties.length === 0 || typeof timestamp !== "number" || !Number.isSafeInteger(timestamp)) {
+        return null;
+    }
+    const values = [];
+    for (const property of properties) {
+        if (typeof property !== "string" || !property.trim())
+            return null;
+        const segments = property.split(".").filter(Boolean);
+        if (segments[0] === "data")
+            segments.shift();
+        let value = event.data;
+        for (const segment of segments) {
+            if (!isRecord(value) || !Object.prototype.hasOwnProperty.call(value, segment))
+                return null;
+            value = value[segment];
+        }
+        if (value === undefined || value === null || (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")) {
+            return null;
+        }
+        values.push(String(value));
+    }
+    return crypto.createHash("sha256").update(`${values.join("")}${timestamp}${eventsKey}`).digest("hex");
+};
+export const verifyWompiEventSignature = (event, checksumHeader) => {
     const { eventsKey } = getWompiConfig();
     if (!eventsKey)
         return false;
-    const signature = extractWebhookSignature(signatureHeader);
-    if (!signature)
+    const eventChecksum = isRecord(event) && isRecord(event.signature) && typeof event.signature.checksum === "string"
+        ? event.signature.checksum
+        : undefined;
+    const headerChecksum = Array.isArray(checksumHeader)
+        ? checksumHeader.find((value) => value.trim() !== "")
+        : checksumHeader;
+    const signatureSource = headerChecksum?.trim() ? headerChecksum : eventChecksum;
+    const signature = extractWebhookSignature(signatureSource);
+    if (!signature || !/^[a-f0-9]{64}$/i.test(signature))
         return false;
-    const expected = crypto.createHmac("sha256", eventsKey).update(rawBody).digest("hex");
+    const expected = getWompiMerchantSignature(event, eventsKey);
+    if (!expected)
+        return false;
     const expectedBuffer = Buffer.from(expected, "hex");
     const signatureBuffer = Buffer.from(signature, "hex");
     if (expectedBuffer.length !== signatureBuffer.length)

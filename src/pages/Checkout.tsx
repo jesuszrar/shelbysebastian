@@ -6,7 +6,7 @@ import { Footer } from "@/components/shelby/Footer";
 import { Button } from "@/components/ui/button";
 import { useCart } from "@/context/CartContext";
 import { useAuth } from "@/context/AuthContext";
-import { formatCOP } from "@/data/products";
+import { formatCOP } from "@/lib/format";
 import { toast } from "sonner";
 import { CreditCard, Truck, MessageCircle, Lock, ShoppingBag, Copy, CheckCircle2, Loader2, Smartphone, Building2, Landmark } from "lucide-react";
 import { SiVisa, SiMastercard } from "react-icons/si";
@@ -18,6 +18,25 @@ import { SHELBY_WHATSAPP_URL } from "@/lib/contact";
 
 type PaymentMethod = "card" | "pse" | "nequi" | "daviplata" | "transferencia" | "contraentrega";
 const WOMPI_MINIMUM_TOTAL = 150000;
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+
+const isOrderCreationError = (error: unknown): error is Error & { status?: number } =>
+  error instanceof Error && error.name === "OrderCreationError";
+
+const getOrderCreationErrorMessage = (error: unknown) => {
+  if (!isOrderCreationError(error)) return null;
+  const message = error.message.trim();
+  const status = error.status;
+  if (
+    !Number.isInteger(status) || status! < 100 || status! > 599 ||
+    !message || message.length > 300 || /[<>{}]/.test(message) ||
+    /\b(?:bearer|token|password|secret|api[_ -]?key|authorization)\b/i.test(message)
+  ) return null;
+  return message;
+};
 
 const checkoutSchema = z.object({
   name: z.string().trim().min(2, "Nombre requerido").max(80),
@@ -189,16 +208,16 @@ const Checkout = () => {
     return false;
   };
 
-  const handleSelectAddress = (addr: Record<string, any>) => {
+  const handleSelectAddress = (addr: Record<string, unknown>) => {
     setForm((f) => ({
       ...f,
-      name: addr.fullName ?? f.name,
-      email: addr.email ?? f.email,
-      phone: addr.phone ?? f.phone,
-      department: addr.department ?? f.department,
-      city: addr.city ?? f.city,
-      address: addr.address ?? f.address,
-      notes: addr.reference ?? f.notes,
+      name: typeof addr.fullName === "string" ? addr.fullName : f.name,
+      email: typeof addr.email === "string" ? addr.email : f.email,
+      phone: typeof addr.phone === "string" ? addr.phone : f.phone,
+      department: typeof addr.department === "string" ? addr.department : f.department,
+      city: typeof addr.city === "string" ? addr.city : f.city,
+      address: typeof addr.address === "string" ? addr.address : f.address,
+      notes: typeof addr.reference === "string" ? addr.reference : f.notes,
     }));
   };
 
@@ -231,7 +250,7 @@ const Checkout = () => {
       shipping_name: data.name,
       shipping_email: data.email,
       shipping_phone: data.phone,
-      shipping_department: (data as any).department ?? null,
+      shipping_department: data.department,
       shipping_city: data.city,
       shipping_address: data.address,
       shipping_reference: data.notes || null,
@@ -240,7 +259,13 @@ const Checkout = () => {
     const { error } = await postData("orders", payload);
 
     if (error) {
-      throw error;
+      const status = Number(error.code);
+      const orderError = new Error(typeof error.message === "string" ? error.message : "");
+      Object.assign(orderError, {
+        name: "OrderCreationError",
+        status: Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined,
+      });
+      throw orderError;
     }
     // If user wanted to save the address (and is authenticated) create it
     try {
@@ -251,14 +276,14 @@ const Checkout = () => {
           cedula: user?.cedula ?? undefined,
           email: data.email,
           phone: data.phone,
-          department: (data as any).department,
+          department: data.department,
           city: data.city,
           address: data.address,
           reference: data.notes || undefined,
         });
       }
     } catch (e) {
-      console.warn("No se pudo guardar la dirección automáticamente", e);
+      console.warn("No se pudo guardar la dirección automáticamente");
     }
   };
 
@@ -291,7 +316,7 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
       setDiscountAmount(Math.max(0, coupon.discount ?? 0));
       setCouponMessage(`Cupón aplicado: ${coupon.coupon.type === "percent" ? `${coupon.coupon.value}%` : formatCOP(coupon.coupon.value)} de descuento.`);
     } catch (err) {
-      console.error(err);
+      console.error("No se pudo validar el cupón");
       setCouponMessage("Error al validar el cupón.");
       setDiscountAmount(0);
     } finally {
@@ -368,13 +393,7 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
       console.log("[checkout] creating wompi payment", {
         endpoint: wompiEndpoint,
         paymentMethod: data.payment,
-        total: checkoutTotal,
-        customerEmail: data.email,
-        reference: orderId,
         currency: "COP",
-        redirectUrl: `${window.location.origin}/payment-processing?order=${orderId}`,
-        customerName: data.name,
-        customerPhone: data.phone,
       });
       const { data: res, error } = await api.payments.createWompiPayment({
         products: detailedItems.map((it) => ({
@@ -396,28 +415,20 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
       const paymentLinkId = extractWompiPaymentLinkId(res);
       const transactionId = extractWompiTransactionId(res);
       const success = isWompiResponseSuccessful(res);
-      console.log("[checkout] wompi response", { response: res, success, paymentUrl, paymentLinkId, transactionId });
+      console.log("[checkout] wompi response", { success, paymentUrlPresent: Boolean(paymentUrl), paymentLinkPresent: Boolean(paymentLinkId), transactionIdPresent: Boolean(transactionId) });
       if (error) {
         console.error("[checkout] createWompiPayment failed", {
           endpoint: wompiEndpoint,
           status: error.code ?? null,
-          message: error.message ?? String(error),
-          responseBody: res,
         });
         throw error;
       }
-      try {
-        console.log("[client response]", JSON.stringify(res, null, 2));
-      } catch (e) {}
-      console.log("[paymentUrl]", paymentUrl);
-      console.log("[paymentLinkId]", paymentLinkId);
-      console.log("[transactionId]", transactionId);
-      const txn = (res as any)?.transaction as Record<string, unknown> | undefined;
-      const pendingWithoutPaymentUrl = Boolean((res as any)?.pendingWithoutPaymentUrl) || (!paymentUrl && txn && String(txn.status ?? "").toUpperCase() === "PENDING" && ["NEQUI", "DAVIPLATA", "PSE"].includes(String((txn.payment_method_type ?? txn.payment_method ?? txn.type ?? "")).toUpperCase()));
+      const wompiResponse = asRecord(res);
+      const txn = asRecord(wompiResponse?.transaction);
+      const pendingWithoutPaymentUrl = wompiResponse?.pendingWithoutPaymentUrl === true || (!paymentUrl && txn && String(txn.status ?? "").toUpperCase() === "PENDING" && ["NEQUI", "DAVIPLATA", "PSE"].includes(String((txn.payment_method_type ?? txn.payment_method ?? txn.type ?? "")).toUpperCase()));
       console.log("[checkout] wompi paymentUrl summary", {
         paymentUrlPresent: Boolean(paymentUrl),
         pendingWithoutPaymentUrl,
-        transactionId: txn?.id ?? null,
       });
       console.log("[checkout] payment flow finished");
       try {
@@ -425,7 +436,9 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
           `payment_${orderId}`,
           JSON.stringify({ paymentUrl: paymentUrl || null, paymentLinkId: paymentLinkId || null, transactionId: transactionId || null, paymentMethod: data.payment, pendingWithoutPaymentUrl }),
         );
-      } catch {}
+      } catch (error) {
+        console.warn("No se pudo guardar el estado del pago en esta sesión", error);
+      }
       clear();
 
       if (success && paymentUrl) {
@@ -441,9 +454,14 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
       throw new Error("Wompi payment response invalid: missing paymentUrl or unsuccessful");
     } catch (err) {
       setLoading(false);
-      const msg = getWompiErrorMessage(err);
-      if (data.payment !== "card" && data.payment !== "pse" && ((err as any)?.status === 422 || (err as any)?.code === "payment_method_not_available")) {
-        toast.error("Medio de pago no disponible", { description: String((err as any)?.message || msg) });
+      const orderMessage = getOrderCreationErrorMessage(err);
+      const msg = orderMessage || getWompiErrorMessage(err);
+      if (isOrderCreationError(err)) {
+        toast.error("No se pudo iniciar el pago", { description: String(msg) });
+      } else if (data.payment !== "card" && data.payment !== "pse" && err && typeof err === "object" && (
+        ("status" in err && err.status === 422) || ("code" in err && err.code === "payment_method_not_available")
+      )) {
+        toast.error("Medio de pago no disponible", { description: String("message" in err ? err.message || msg : msg) });
       } else {
         toast.error("No se pudo iniciar el pago", { description: String(msg) });
       }
@@ -457,8 +475,7 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
       selectedPaymentMethod: form.payment,
       isLoading: loading,
       formValid,
-      cartItems: detailedItems,
-      total: checkoutTotal,
+      itemCount: detailedItems.length,
     });
 
     const data = validate();
@@ -472,8 +489,7 @@ const { data, error } = await invokeFunction("redeem-coupon", { code, subtotal, 
       selectedPaymentMethod: payment,
       isLoading: loading,
       formValid,
-      cartItems: detailedItems,
-      total: checkoutTotal,
+      itemCount: detailedItems.length,
     });
 
     // Validate using the selected payment (override) so errors reflect chosen method
@@ -510,13 +526,7 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
         console.log("[checkout] creating wompi payment", {
           endpoint: wompiEndpoint,
           paymentMethod: data.payment,
-          total: finalTotal,
-          customerEmail: data.email,
-          reference: orderId,
           currency: "COP",
-          redirectUrl: `${window.location.origin}/payment-processing?order=${orderId}`,
-          customerName: data.name,
-          customerPhone: data.phone,
         });
         const { data: res, error } = await api.payments.createWompiPayment({
           products: detailedItems.map((it) => ({ id: it.product.id, variantId: it.variant?.id ?? null, name: it.variant ? `${it.product.name} - ${it.variant.name}` : it.product.name, quantity: it.quantity, unit_price: Number(it.variant?.price ?? it.product.price) })),
@@ -532,30 +542,26 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
         const paymentLinkId = extractWompiPaymentLinkId(res);
         const transactionId = extractWompiTransactionId(res);
         const success = isWompiResponseSuccessful(res);
-        console.log("[checkout] wompi response", { response: res, success, paymentUrl, paymentLinkId, transactionId });
+        console.log("[checkout] wompi response", { success, paymentUrlPresent: Boolean(paymentUrl), paymentLinkPresent: Boolean(paymentLinkId), transactionIdPresent: Boolean(transactionId) });
         if (error) {
           console.error("[checkout] createWompiPayment failed", {
             endpoint: wompiEndpoint,
             status: error.code ?? null,
-            message: error.message ?? String(error),
-            responseBody: res,
           });
           throw error;
         }
 
-        try {
-          console.log("[client response]", JSON.stringify(res, null, 2));
-        } catch (e) {}
-        console.log("[paymentUrl]", paymentUrl);
-        console.log("[paymentLinkId]", paymentLinkId);
-        console.log("[transactionId]", transactionId);
-
-        const txn = (res as any)?.transaction as Record<string, unknown> | undefined;
-        const pendingWithoutPaymentUrl = Boolean((res as any)?.pendingWithoutPaymentUrl) || (!paymentUrl && txn && String(txn.status ?? "").toUpperCase() === "PENDING" && ["NEQUI", "DAVIPLATA", "PSE"].includes(String((txn.payment_method_type ?? txn.payment_method ?? txn.type ?? "")).toUpperCase()));
-        console.log("[checkout] wompi response summary", { paymentUrl, status: txn?.status, pendingWithoutPaymentUrl });
+        const wompiResponse = asRecord(res);
+        const txn = asRecord(wompiResponse?.transaction);
+        const pendingWithoutPaymentUrl = wompiResponse?.pendingWithoutPaymentUrl === true || (!paymentUrl && txn && String(txn.status ?? "").toUpperCase() === "PENDING" && ["NEQUI", "DAVIPLATA", "PSE"].includes(String((txn.payment_method_type ?? txn.payment_method ?? txn.type ?? "")).toUpperCase()));
+        console.log("[checkout] wompi response summary", { paymentUrlPresent: Boolean(paymentUrl), status: txn?.status, pendingWithoutPaymentUrl });
 
         if (success && paymentUrl) {
-          try { sessionStorage.setItem(`payment_${orderId}`, JSON.stringify({ paymentUrl, paymentLinkId: paymentLinkId || null, transactionId: transactionId || null, paymentMethod: data.payment, pendingWithoutPaymentUrl })); } catch {}
+          try {
+            sessionStorage.setItem(`payment_${orderId}`, JSON.stringify({ paymentUrl, paymentLinkId: paymentLinkId || null, transactionId: transactionId || null, paymentMethod: data.payment, pendingWithoutPaymentUrl }));
+          } catch (error) {
+            console.warn("No se pudo guardar el estado del pago en esta sesión", error);
+          }
           clear();
           window.location.href = paymentUrl;
           return;
@@ -563,7 +569,11 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
 
         if (pendingWithoutPaymentUrl) {
           console.log("[checkout] payment flow finished");
-          try { sessionStorage.setItem(`payment_${orderId}`, JSON.stringify({ paymentUrl, paymentLinkId: paymentLinkId || null, transactionId: transactionId || null, paymentMethod: data.payment, pendingWithoutPaymentUrl })); } catch {}
+          try {
+            sessionStorage.setItem(`payment_${orderId}`, JSON.stringify({ paymentUrl, paymentLinkId: paymentLinkId || null, transactionId: transactionId || null, paymentMethod: data.payment, pendingWithoutPaymentUrl }));
+          } catch (error) {
+            console.warn("No se pudo guardar el estado del pago en esta sesión", error);
+          }
           clear();
           return navigate(`/payment-processing?order=${orderId}`);
         }
@@ -575,7 +585,11 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
         }
 
         // Non-external fallback should continue to order success or WhatsApp fallback
-        console.warn("[checkout] manual confirm wompi response invalid", { success, paymentUrl, pendingWithoutPaymentUrl, response: res });
+        console.warn("[checkout] manual confirm wompi response invalid", {
+          success,
+          paymentUrlPresent: Boolean(paymentUrl),
+          pendingWithoutPaymentUrl: Boolean(pendingWithoutPaymentUrl),
+        });
         throw new Error("Wompi payment response invalid: missing paymentUrl or unsuccessful");
 
         // For non-external methods (e.g., transferencia) continue to WhatsApp fallback
@@ -593,8 +607,14 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
       window.open(`${SHELBY_WHATSAPP_URL}?text=${message}`, "_blank");
       navigate(`/order-success?order=${orderId}&total=${finalTotal}&method=${encodeURIComponent(paymentLabel)}&status=payment_pending`);
     } catch (error) {
-      console.error(error);
-      toast.error("No se pudo registrar el pago", { description: "Intenta de nuevo en unos segundos." });
+      console.error("[checkout] manual payment confirmation failed", {
+        code: String((error as Error & { code?: string })?.code ?? "unknown"),
+        status: Number((error as Error & { status?: number })?.status) || null,
+      });
+      const orderMessage = getOrderCreationErrorMessage(error);
+      toast.error(isOrderCreationError(error) ? "No se pudo registrar el pedido" : "No se pudo registrar el pago", {
+        description: orderMessage || "Intenta de nuevo en unos segundos.",
+      });
     } finally {
       setLoading(false);
     }
@@ -604,7 +624,16 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
     const data = validate();
     if (!data) return;
     const paymentLabel = data.payment === "transferencia" || data.payment === "contraentrega" ? PAYMENT_DETAILS[data.payment].label : WOMPI_PAYMENT_LABELS[data.payment as Exclude<PaymentMethod, "transferencia" | "contraentrega">];
-    void saveOrder("payment_pending", "whatsapp", data).catch((error) => console.error(error));
+    void saveOrder("payment_pending", "whatsapp", data).catch((error) => {
+      console.error("[checkout] WhatsApp order save failed", {
+        code: String((error as Error & { code?: string })?.code ?? "unknown"),
+        status: Number((error as Error & { status?: number })?.status) || null,
+      });
+      const orderMessage = getOrderCreationErrorMessage(error);
+      toast.error("No se pudo registrar el pedido", {
+        description: orderMessage || "Intenta de nuevo en unos segundos.",
+      });
+    });
     window.open(`${SHELBY_WHATSAPP_URL}?text=${buildWhatsAppMessage(data, paymentLabel)}`, "_blank");
   };
 
@@ -663,7 +692,7 @@ const wompiEndpoint = "/api/payments/create-wompi-payment";
                       <Input label="Nombre completo" value={form.name} onChange={update("name")} error={errors.name} autoComplete="name" />
                       <Input label="Correo electrónico" value={form.email} onChange={update("email")} error={errors.email} type="email" autoComplete="email" placeholder="cliente@correo.com" />
                       <Input label="Teléfono / WhatsApp" value={form.phone} onChange={update("phone")} error={errors.phone} type="tel" placeholder="3001234567" />
-                      <Input label="Departamento" value={(form as any).department} onChange={update("department" as any)} error={errors.department} placeholder="Cundinamarca" />
+                      <Input label="Departamento" value={form.department} onChange={update("department")} error={errors.department} placeholder="Cundinamarca" />
                       <Input label="Ciudad" value={form.city} onChange={update("city")} error={errors.city} placeholder="Bogotá, Medellín..." />
                       <Input label="Dirección" value={form.address} onChange={update("address")} error={errors.address} placeholder="Calle 123 # 45-67" />
                     </div>

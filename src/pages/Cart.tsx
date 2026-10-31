@@ -1,10 +1,10 @@
 import { Link } from "react-router-dom";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
-import { WhatsAppButton } from "@/components/shelby/WhatsAppButton";
 import { Button } from "@/components/ui/button";
 import { useCart } from "@/context/CartContext";
-import { formatCOP } from "@/data/products";
+import { formatCOP } from "@/lib/format";
+import { getWholesalePricing } from "@/lib/wholesale";
 import { Minus, Plus, Trash2, ShoppingBag, ArrowRight, ShieldCheck } from "lucide-react";
 
 const Cart = () => {
@@ -34,10 +34,19 @@ const Cart = () => {
           ) : (
             <div className="grid gap-8 lg:grid-cols-[1.2fr_0.8fr]">
               <div className="space-y-4">
-                {detailedItems.map((it) => (
-                  <article key={`${it.productId}:${it.variantId || "base"}`} className="flex items-center gap-4 rounded-[1.8rem] border border-border bg-white p-4 shadow-soft sm:p-5">
+                {detailedItems.map((it) => {
+                  const displayStock = it.variant ? it.variant.stock : it.product.stock;
+                  const basePrice = Number(it.variant?.price ?? it.product.price ?? 0);
+                  const wholesale = getWholesalePricing({
+                    basePrice,
+                    quantity: it.quantity,
+                    activateWholesale: it.product.activateWholesale,
+                    wholesaleMinQty: it.product.wholesaleMinQty,
+                    wholesaleDiscountPercent: it.product.wholesaleDiscountPercent,
+                  });
+                  return <article key={`${it.productId}:${it.variantId || "base"}`} className="flex items-center gap-4 rounded-[1.8rem] border border-border bg-white p-4 shadow-soft sm:p-5">
                     <Link to={`/products/${it.product.id}`} className="shrink-0">
-                      <img src={it.product.image} alt={it.product.name} className="h-24 w-24 rounded-2xl object-cover bg-muted sm:h-28 sm:w-28" />
+                      <img src={it.variant?.image || it.product.image} alt={it.product.name} className="h-24 w-24 rounded-2xl object-cover bg-muted sm:h-28 sm:w-28" />
                     </Link>
 
                     <div className="min-w-0 flex-1">
@@ -47,9 +56,12 @@ const Cart = () => {
                       {it.variant && <p className="mt-1 text-sm font-medium text-secondary">{it.variant.name}</p>}
                       <p className="mt-1 text-xs uppercase tracking-[0.2em] text-muted-foreground">{it.product.category}</p>
                       <div className="mt-2 text-sm text-muted-foreground">
-                        Stock disponible: <span className="font-semibold text-primary">{Math.max(0, Number(it.product.stock ?? 0))}</span>
+                        Stock disponible: <span className="font-semibold text-primary">{displayStock ?? "No disponible"}</span>
                       </div>
-                      <div className="mt-3 font-display text-2xl text-primary">{formatCOP(Number(it.variant?.price ?? it.product.price))}</div>
+                      <div className="mt-3 flex items-end gap-2">
+                        <span className="font-display text-2xl text-primary">{formatCOP(wholesale.finalUnitPrice)}</span>
+                        {wholesale.isWholesale && <span className="text-xs font-medium text-amber-700">{wholesale.discountPercent}% por mayor</span>}
+                      </div>
                     </div>
 
                     <div className="flex flex-col items-end gap-3">
@@ -67,8 +79,8 @@ const Cart = () => {
                         <Trash2 className="h-3.5 w-3.5" /> Quitar
                       </button>
                     </div>
-                  </article>
-                ))}
+                  </article>;
+                })}
               </div>
 
               <aside className="h-fit rounded-[2rem] border border-border bg-white p-6 shadow-elegant lg:sticky lg:top-32">
@@ -117,7 +129,6 @@ const Cart = () => {
         </div>
       </main>
       <Footer />
-      <WhatsAppButton />
     </div>
   );
 };

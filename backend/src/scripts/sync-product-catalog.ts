@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { lockProductCatalogIds } from "../lib/productCatalogLock.js";
 import { products as staticProducts } from "./product-catalog-data.js";
 
 const numberOrUndefined = (value: unknown): number | undefined => {
@@ -171,7 +172,7 @@ const getVariantImageRecords = (productId: string, subproduct: NonNullable<(type
 };
 
 const readExpectedState = async (prisma: PrismaClient) => {
-  const [existingProducts, existingVariants, existingProductImages] = await Promise.all([
+  const [existingProducts, existingVariants, existingProductImages, excludedVariants, excludedProducts] = await Promise.all([
     prisma.product.findMany({
       select: {
         id: true,
@@ -210,12 +211,16 @@ const readExpectedState = async (prisma: PrismaClient) => {
         isPrimary: true,
       },
     }),
+    prisma.productVariantExclusion.findMany({ select: { variantId: true } }),
+    prisma.productExclusion.findMany({ select: { productId: true } }),
   ]);
 
   return {
     existingProducts: new Map(existingProducts.map((product) => [product.id, product])),
     existingVariants: new Map(existingVariants.map((variant) => [variant.id, variant])),
     existingProductImages: new Map(existingProductImages.map((image) => [`${image.productId}:${image.variantId ?? "product"}:${image.url}`, image])),
+    excludedVariantIds: new Set(excludedVariants.map((variant) => variant.variantId)),
+    excludedProductIds: new Set(excludedProducts.map((product) => product.productId)),
   };
 };
 
@@ -260,19 +265,38 @@ const compareVariantData = (
   );
 };
 
-export const syncProductCatalog = async (prisma: PrismaClient) => {
-  const { existingProducts, existingVariants, existingProductImages } = await readExpectedState(prisma);
+const assertVariantOwnership = (variantId: string, expectedProductId: string, existingProductId: string) => {
+  if (existingProductId !== expectedProductId) {
+    throw new Error(`La variante ${variantId} pertenece al producto ${existingProductId}, pero el catálogo estático la asigna al producto ${expectedProductId}`);
+  }
+};
+
+export const syncProductCatalog = async (prisma: PrismaClient, products = staticProducts) => {
+  products = Array.from(new Map(products.map((product) => [product.id, product])).values());
+  const { existingProducts, existingVariants, existingProductImages, excludedVariantIds, excludedProductIds } = await readExpectedState(prisma);
+
+  for (const product of products) {
+    if (excludedProductIds.has(product.id)) continue;
+
+    for (const subproduct of product.subproducts ?? []) {
+      if (excludedVariantIds.has(subproduct.id)) continue;
+      const existingVariant = existingVariants.get(subproduct.id);
+      if (existingVariant) assertVariantOwnership(subproduct.id, product.id, existingVariant.productId);
+    }
+  }
 
   const plannedProducts = {
     create: [] as Array<{ type: "create"; product: (typeof staticProducts)[number]; summary: ReturnType<typeof buildProductSummary> }>,
     update: [] as Array<{ type: "update"; product: (typeof staticProducts)[number]; summary: ReturnType<typeof buildProductSummary> }>,
     skip: [] as Array<{ type: "skip"; product: (typeof staticProducts)[number]; summary: ReturnType<typeof buildProductSummary> }>,
+    excluded: [] as Array<{ type: "excluded"; product: (typeof staticProducts)[number]; summary: ReturnType<typeof buildProductSummary> }>,
   };
 
   const plannedVariants = {
     create: [] as Array<{ type: "create"; productId: string; subproduct: NonNullable<(typeof staticProducts)[number]["subproducts"]>[number]; summary: ReturnType<typeof buildVariantSummary> }>,
     update: [] as Array<{ type: "update"; productId: string; subproduct: NonNullable<(typeof staticProducts)[number]["subproducts"]>[number]; summary: ReturnType<typeof buildVariantSummary> }>,
     skip: [] as Array<{ type: "skip"; productId: string; subproduct: NonNullable<(typeof staticProducts)[number]["subproducts"]>[number]; summary: ReturnType<typeof buildVariantSummary> }>,
+    excluded: [] as Array<{ type: "excluded"; productId: string; subproduct: NonNullable<(typeof staticProducts)[number]["subproducts"]>[number]; summary: ReturnType<typeof buildVariantSummary> }>,
   };
 
   const plannedImages = {
@@ -280,7 +304,11 @@ export const syncProductCatalog = async (prisma: PrismaClient) => {
     skip: [] as Array<{ productId: string; variantId: string | null; url: string; sortOrder: number; isPrimary: boolean }>,
   };
 
-  for (const product of staticProducts) {
+  for (const product of products) {
+    if (excludedProductIds.has(product.id)) {
+      plannedProducts.excluded.push({ type: "excluded", product, summary: buildProductSummary(product) });
+      continue;
+    }
     const existingProduct = existingProducts.get(product.id) ?? null;
 
     if (!existingProduct) {
@@ -292,6 +320,10 @@ export const syncProductCatalog = async (prisma: PrismaClient) => {
     }
 
     for (const subproduct of product.subproducts ?? []) {
+      if (excludedVariantIds.has(subproduct.id)) {
+        plannedVariants.excluded.push({ type: "excluded", productId: product.id, subproduct, summary: buildVariantSummary(product.id, subproduct) });
+        continue;
+      }
       const existingVariant = existingVariants.get(subproduct.id) ?? null;
 
       if (!existingVariant) {
@@ -324,16 +356,18 @@ export const syncProductCatalog = async (prisma: PrismaClient) => {
 
   const summary = {
     dryRun: false,
-    sourceProducts: staticProducts.length,
+    sourceProducts: products.length,
     products: {
       create: plannedProducts.create.length,
       update: plannedProducts.update.length,
       skip: plannedProducts.skip.length,
+      excluded: plannedProducts.excluded.length,
     },
     variants: {
       create: plannedVariants.create.length,
       update: plannedVariants.update.length,
       skip: plannedVariants.skip.length,
+      excluded: plannedVariants.excluded.length,
     },
     images: {
       create: plannedImages.create.length,
@@ -348,35 +382,119 @@ export const syncProductCatalog = async (prisma: PrismaClient) => {
   };
 
   await prisma.$transaction(async (tx) => {
-    for (const item of plannedProducts.create) {
-      await tx.product.create({
-        data: getProductCreateInput(item.product),
-      });
+    const productIdsToLock = Array.from(new Set(products.map((product) => product.id)));
+    await lockProductCatalogIds(tx, productIdsToLock);
+    const excludedProductsDuringSync = productIdsToLock.length > 0
+      ? new Set((await tx.productExclusion.findMany({ where: { productId: { in: productIdsToLock } }, select: { productId: true } })).map((item) => item.productId))
+      : new Set<string>();
+    const currentProducts = productIdsToLock.length > 0
+      ? await tx.product.findMany({
+        where: { id: { in: productIdsToLock } },
+        select: {
+          id: true,
+          name: true,
+          category: true,
+          price: true,
+          stock: true,
+          image: true,
+          description: true,
+          specs: true,
+          badge: true,
+          oldPrice: true,
+          highlight: true,
+        },
+      })
+      : [];
+    const currentProductsById = new Map(currentProducts.map((item) => [item.id, item]));
+    const staticVariants = products.flatMap((product) => (product.subproducts ?? []).map((subproduct) => ({ productId: product.id, subproduct })));
+    const variantIdsToCheck = Array.from(new Set(staticVariants.map((item) => item.subproduct.id)));
+    const currentVariants = variantIdsToCheck.length > 0
+      ? await tx.productVariant.findMany({
+        where: { id: { in: variantIdsToCheck } },
+        select: {
+          id: true,
+          productId: true,
+          name: true,
+          description: true,
+          image: true,
+          active: true,
+          sortOrder: true,
+          price: true,
+          stock: true,
+        },
+      })
+      : [];
+    const currentVariantsById = new Map(currentVariants.map((item) => [item.id, item]));
+    const excludedDuringSync = variantIdsToCheck.length > 0
+      ? new Set((await tx.productVariantExclusion.findMany({ where: { variantId: { in: variantIdsToCheck } }, select: { variantId: true } })).map((item) => item.variantId))
+      : new Set<string>();
+
+    for (const { productId, subproduct } of staticVariants) {
+      if (excludedProductsDuringSync.has(productId) || excludedDuringSync.has(subproduct.id)) continue;
+      const existingVariant = currentVariantsById.get(subproduct.id);
+      if (existingVariant) assertVariantOwnership(subproduct.id, productId, existingVariant.productId);
     }
 
-    for (const item of plannedProducts.update) {
-      await tx.product.update({
-        where: { id: item.product.id },
-        data: getProductUpdateInput(item.product),
-      });
+    const currentImages = productIdsToLock.length > 0
+      ? await tx.productImage.findMany({ where: { productId: { in: productIdsToLock } }, select: { productId: true, variantId: true, url: true } })
+      : [];
+    const currentImageKeys = new Set(currentImages.map((image) => `${image.productId}:${image.variantId ?? "product"}:${image.url}`));
+
+    for (const product of products) {
+      if (excludedProductsDuringSync.has(product.id)) continue;
+      const existingProduct = currentProductsById.get(product.id) ?? null;
+      if (!existingProduct) {
+        await tx.product.create({ data: getProductCreateInput(product) });
+      } else if (compareProductData(product, existingProduct)) {
+        await tx.product.update({
+          where: { id: product.id },
+          data: getProductUpdateInput(product),
+        });
+      }
     }
 
-    for (const item of plannedVariants.create) {
-      await tx.productVariant.create({
-        data: getVariantCreateInput(item.productId, item.subproduct),
-      });
+    for (const { productId, subproduct } of staticVariants) {
+      if (excludedProductsDuringSync.has(productId) || excludedDuringSync.has(subproduct.id)) continue;
+      const existingVariant = currentVariantsById.get(subproduct.id) ?? null;
+      if (!existingVariant) {
+        await tx.productVariant.create({
+          data: getVariantCreateInput(productId, subproduct),
+        });
+        currentVariantsById.set(subproduct.id, {
+          id: subproduct.id,
+          productId,
+          name: subproduct.name,
+          description: subproduct.description ?? null,
+          image: normalizeUrl(subproduct.image),
+          active: subproduct.active ?? true,
+          sortOrder: subproduct.sortOrder ?? 0,
+          price: toDecimal(numberOrUndefined(subproduct.price), 0),
+          stock: numberOrUndefined(subproduct.stock) ?? 0,
+        });
+      } else if (compareVariantData(subproduct, existingVariant)) {
+        await tx.productVariant.update({
+          where: { id: subproduct.id },
+          data: getVariantUpdateInput(subproduct, existingVariant),
+        });
+      }
     }
 
-    for (const item of plannedVariants.update) {
-      const existing = existingVariants.get(item.subproduct.id) ?? null;
-      await tx.productVariant.update({
-        where: { id: item.subproduct.id },
-        data: getVariantUpdateInput(item.subproduct, existing),
-      });
-    }
+    for (const product of products) {
+      if (excludedProductsDuringSync.has(product.id)) continue;
 
-    for (const image of plannedImages.create) {
-      await tx.productImage.create({ data: image });
+      const images = [
+        ...getGalleryImageRecords(product),
+        ...(product.subproducts ?? [])
+          .filter((subproduct) => !excludedDuringSync.has(subproduct.id))
+          .flatMap((subproduct) => getVariantImageRecords(product.id, subproduct)),
+      ];
+
+      for (const image of images) {
+        const imageKey = `${image.productId}:${image.variantId ?? "product"}:${image.url}`;
+        if (currentImageKeys.has(imageKey)) continue;
+        await tx.productImage.create({ data: image });
+        currentImageKeys.add(imageKey);
+      }
     }
   });
 

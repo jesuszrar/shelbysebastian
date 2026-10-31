@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { CheckCircle2, Clock11, CreditCard, FileSearch, LayoutGrid, LogOut, MapPin, Mail, Phone, Sparkles } from "lucide-react";
+import { CheckCircle2, Clock11, FileSearch, LogOut, MapPin, Mail, Phone, Sparkles } from "lucide-react";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/AuthContext";
 import { fetchData, invokeFunction } from "@/integrations/api/client";
-import { formatCOP } from "@/data/products";
-import { toast } from "sonner";
+import { formatCOP } from "@/lib/format";
+import { SHELBY_WHATSAPP_URL } from "@/lib/contact";
 
 const parseTimestamp = (value?: string | null) => {
   if (!value || typeof value !== "string") return null;
@@ -58,14 +58,6 @@ const Profile = () => {
     void load();
   }, [user]);
 
-  const parseTimestamp = (value?: string | null) => {
-    if (!value || typeof value !== "string") return null;
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    const date = new Date(trimmed);
-    return Number.isNaN(date.getTime()) ? null : date;
-  };
-
   const recentOrders = useMemo(() => {
     return [...orders]
       .sort((a, b) => {
@@ -107,18 +99,18 @@ const Profile = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="min-h-screen bg-[#f5f8f8]">
       <Navbar />
-      <main className="flex-1 pt-32 pb-16 px-4">
+      <main className="flex-1 px-4 pb-16 pt-32">
         <div className="container-shelby grid gap-8 lg:grid-cols-[1.2fr_0.8fr]">
           <section className="space-y-6">
-            <div className="bg-card border border-border rounded-3xl p-8 shadow-soft">
+            <div className="rounded-[2rem] border border-border bg-white p-8 shadow-soft">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className="text-xs uppercase tracking-[0.3em] text-primary font-semibold">Mi perfil</p>
-                  <h1 className="font-display text-4xl text-secondary mt-3">Hola, {user?.name.split(" ")[0] || "Cliente"}</h1>
+                  <p className="text-xs font-semibold uppercase tracking-[0.3em] text-primary">Mi perfil</p>
+                  <h1 className="mt-3 font-display text-4xl text-primary">Hola, {user?.name.split(" ")[0] || "Cliente"}</h1>
                 </div>
-                <Button variant="outline" onClick={logout} className="gap-2">
+                <Button variant="outline" onClick={logout} className="gap-2 text-primary hover:bg-primary/5">
                   <LogOut className="h-4 w-4" /> Cerrar sesión
                 </Button>
               </div>
@@ -131,11 +123,11 @@ const Profile = () => {
               </div>
             </div>
 
-            <div className="bg-card border border-border rounded-3xl p-8 shadow-soft">
+            <div className="rounded-[2rem] border border-border bg-white p-8 shadow-soft">
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="text-xs uppercase tracking-[0.3em] text-primary font-semibold">Historial de compras</p>
-                  <h2 className="font-display text-3xl text-secondary mt-3">Tus últimos pedidos</h2>
+                  <p className="text-xs font-semibold uppercase tracking-[0.3em] text-primary">Historial de compras</p>
+                  <h2 className="mt-3 font-display text-3xl text-primary">Tus últimos pedidos</h2>
                 </div>
                 <div className="text-right text-xs text-muted-foreground">Mostrando {recentOrders.length} pedidos</div>
               </div>
@@ -143,42 +135,45 @@ const Profile = () => {
               {loading ? (
                 <div className="mt-6 py-16 text-center text-muted-foreground">Cargando tu historial...</div>
               ) : recentOrders.length === 0 ? (
-                <div className="mt-6 rounded-3xl border border-dashed border-border p-10 text-center text-muted-foreground">
-                  <FileSearch className="mx-auto h-12 w-12 text-primary mb-4" />
+                <div className="mt-6 rounded-[1.8rem] border border-dashed border-border p-10 text-center text-muted-foreground">
+                  <FileSearch className="mx-auto mb-4 h-12 w-12 text-primary" />
                   <p className="text-sm">Aún no tienes pedidos registrados.</p>
-                  <Button asChild className="mt-6 bg-primary text-primary-foreground hover:bg-primary/90"><Link to="/products">Ver productos</Link></Button>
+                  <Button asChild className="mt-6 bg-primary text-primary-foreground hover:bg-primary/90">
+                    <Link to="/products">Ver productos</Link>
+                  </Button>
                 </div>
               ) : (
                 <div className="mt-6 space-y-4">
                   {recentOrders.map((order) => (
-                    <div key={String(order.id)} className="rounded-3xl border border-border bg-background p-5 shadow-soft">
+                    <div key={String(order.id)} className="rounded-[1.8rem] border border-border bg-[#f5f8f8] p-5 shadow-soft">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>
-                          <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Pedido</p>
-                          <p className="font-mono text-sm text-secondary mt-1">{String(order.id)}</p>
+                          <p className="text-[10px] uppercase tracking-[0.28em] text-muted-foreground">Pedido</p>
+                          <p className="mt-1 font-mono text-sm text-primary">{String(order.id)}</p>
                         </div>
-                        <div className="grid gap-2 sm:grid-cols-3 text-sm text-muted-foreground">
-                          <div><span className="block text-secondary font-semibold">{String(order.status)}</span>Estado</div>
-                          <div><span className="block text-secondary font-semibold">{formatCOP(Number(order.total || 0))}</span>Total</div>
-                          <div><span className="block text-secondary font-semibold">{formatOrderDate(order.createdAt || order.created_at)}</span>Fecha</div>
+                        <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-3">
+                          <div><span className="block font-semibold text-primary">{String(order.status)}</span>Estado</div>
+                          <div><span className="block font-semibold text-primary">{formatCOP(Number(order.total || 0))}</span>Total</div>
+                          <div><span className="block font-semibold text-primary">{formatOrderDate(String(order.createdAt || order.created_at || ""))}</span>Fecha</div>
                         </div>
                       </div>
-                      <div className="mt-4 grid gap-3 sm:grid-cols-2 text-sm text-muted-foreground">
-                        <div className="rounded-2xl bg-muted/40 p-4">
-                          <p className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground">Método</p>
-                          <p className="mt-2 text-secondary">{String(order.paymentMethod || "-")}</p>
+
+                      <div className="mt-4 grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
+                        <div className="rounded-2xl bg-white p-4 shadow-soft">
+                          <p className="text-[10px] uppercase tracking-[0.26em] text-muted-foreground">Método</p>
+                          <p className="mt-2 text-primary">{String(order.paymentMethod || "-")}</p>
                         </div>
-                        <div className="rounded-2xl bg-muted/40 p-4">
-                          <p className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground">Envío</p>
-                          <p className="mt-2 text-secondary">{String(order.shipping || 0) === "0" ? "Gratis" : formatCOP(Number(order.shipping || 0))}</p>
+                        <div className="rounded-2xl bg-white p-4 shadow-soft">
+                          <p className="text-[10px] uppercase tracking-[0.26em] text-muted-foreground">Envío</p>
+                          <p className="mt-2 text-primary">{String(order.shipping || 0) === "0" ? "Gratis" : formatCOP(Number(order.shipping || 0))}</p>
                         </div>
-                        <div className="rounded-2xl bg-muted/40 p-4">
-                          <p className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground">Cupón</p>
-                          <p className="mt-2 text-secondary">{String(order.couponCode || "-")}</p>
+                        <div className="rounded-2xl bg-white p-4 shadow-soft">
+                          <p className="text-[10px] uppercase tracking-[0.26em] text-muted-foreground">Cupón</p>
+                          <p className="mt-2 text-primary">{String(order.couponCode || "-")}</p>
                         </div>
-                        <div className="rounded-2xl bg-muted/40 p-4">
-                          <p className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground">Descuento</p>
-                          <p className="mt-2 text-secondary">{order.discountAmount ? formatCOP(Number(order.discountAmount)) : "-"}</p>
+                        <div className="rounded-2xl bg-white p-4 shadow-soft">
+                          <p className="text-[10px] uppercase tracking-[0.26em] text-muted-foreground">Descuento</p>
+                          <p className="mt-2 text-primary">{order.discountAmount ? formatCOP(Number(order.discountAmount)) : "-"}</p>
                         </div>
                       </div>
                     </div>
@@ -189,30 +184,25 @@ const Profile = () => {
           </section>
 
           <aside className="space-y-6">
-            <div className="bg-card border border-border rounded-3xl p-8 shadow-soft">
+            <div className="rounded-[2rem] border border-border bg-white p-8 shadow-soft">
               <div className="flex items-center gap-3">
                 <div className="rounded-2xl bg-primary/10 p-3 text-primary"><Sparkles className="h-5 w-5" /></div>
                 <div>
-                  <p className="text-xs uppercase tracking-[0.3em] text-primary font-semibold">Cupones</p>
-                  <h2 className="font-display text-2xl text-secondary mt-2">Validar descuento</h2>
+                  <p className="text-xs font-semibold uppercase tracking-[0.3em] text-primary">Cupones</p>
+                  <h2 className="mt-2 font-display text-2xl text-primary">Validar descuento</h2>
                 </div>
               </div>
 
               <div className="mt-6 space-y-4">
                 <div>
-                  <label className="text-sm font-medium text-secondary block mb-2">Código de cupón</label>
-                  <input
-                    value={couponCode}
-                    onChange={(event) => setCouponCode(event.target.value)}
-                    placeholder="EJEMPLO10"
-                    className="w-full rounded-2xl border border-border bg-background px-4 py-3 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                  />
+                  <label className="mb-2 block text-sm font-medium text-primary">Código de cupón</label>
+                  <input value={couponCode} onChange={(event) => setCouponCode(event.target.value)} placeholder="EJEMPLO10" className="w-full rounded-2xl border border-border bg-[#f5f8f8] px-4 py-3 text-primary focus:outline-none focus:ring-2 focus:ring-primary/30" />
                 </div>
-                <Button onClick={handleApplyCoupon} disabled={couponLoading} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-soft">
+                <Button onClick={handleApplyCoupon} disabled={couponLoading} className="w-full bg-primary text-primary-foreground shadow-soft hover:bg-primary/90">
                   {couponLoading ? "Validando..." : "Validar cupón"}
                 </Button>
                 {couponResult && (
-                  <div className="rounded-2xl bg-muted/40 border border-border p-4 text-sm text-secondary">
+                  <div className="rounded-2xl border border-border bg-[#f5f8f8] p-4 text-sm text-primary">
                     <p className="font-semibold">{couponResult.message}</p>
                     {couponResult.discount && <p className="mt-2">Descuento: {couponResult.discount}</p>}
                   </div>
@@ -220,19 +210,19 @@ const Profile = () => {
               </div>
             </div>
 
-            <div className="bg-card border border-border rounded-3xl p-8 shadow-soft">
+            <div className="rounded-[2rem] border border-border bg-white p-8 shadow-soft">
               <div className="flex items-center gap-3">
                 <div className="rounded-2xl bg-primary/10 p-3 text-primary"><Clock11 className="h-5 w-5" /></div>
                 <div>
-                  <p className="text-xs uppercase tracking-[0.3em] text-primary font-semibold">Servicio</p>
-                  <h2 className="font-display text-2xl text-secondary mt-2">Soporte rápido</h2>
+                  <p className="text-xs font-semibold uppercase tracking-[0.3em] text-primary">Servicio</p>
+                  <h2 className="mt-2 font-display text-2xl text-primary">Soporte rápido</h2>
                 </div>
               </div>
-              <p className="mt-5 text-sm text-muted-foreground">
-                Si necesitas ayuda con tu orden o quieres una orden personalizada, escríbenos por WhatsApp y te respondemos rápido.
+              <p className="mt-5 text-sm leading-relaxed text-muted-foreground">
+                Si necesitas ayuda con tu orden o quieres una compra personalizada, escríbenos por WhatsApp y te respondemos rápido.
               </p>
-              <Button asChild className="mt-6 w-full bg-whatsapp text-white hover:bg-whatsapp/90 shadow-soft">
-                <a href="https://wa.me/573228426561?text=Hola%20Shelby%2C%20necesito%20ayuda%20con%20mi%20pedido" target="_blank" rel="noreferrer">Contactar por WhatsApp</a>
+              <Button asChild className="mt-6 w-full bg-whatsapp text-white shadow-soft hover:bg-whatsapp/90">
+                <a href={`${SHELBY_WHATSAPP_URL}?text=Hola%20Shelby%2C%20necesito%20ayuda%20con%20mi%20pedido`} target="_blank" rel="noreferrer">Contactar por WhatsApp</a>
               </Button>
             </div>
           </aside>
@@ -245,12 +235,12 @@ const Profile = () => {
 
 function DetailCard({ icon: Icon, label, value }: { icon: React.ComponentType<{ className?: string }>; label: string; value: string }) {
   return (
-    <div className="rounded-3xl border border-border bg-background p-5 shadow-soft">
+    <div className="rounded-[1.6rem] border border-border bg-[#f5f8f8] p-5 shadow-soft">
       <div className="flex items-center gap-3">
-        <div className="rounded-2xl bg-muted p-3 text-primary"><Icon className="h-4 w-4" /></div>
+        <div className="rounded-2xl bg-white p-3 text-primary shadow-soft"><Icon className="h-4 w-4" /></div>
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">{label}</p>
-          <p className="mt-1 font-semibold text-secondary">{value}</p>
+          <p className="text-[10px] uppercase tracking-[0.26em] text-muted-foreground">{label}</p>
+          <p className="mt-1 font-semibold text-primary">{value}</p>
         </div>
       </div>
     </div>

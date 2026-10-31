@@ -18,8 +18,12 @@ import PaymentProcessing from "./pages/PaymentProcessing";
 import OrderSuccess from "./pages/OrderSuccess";
 import NotFound from "./pages/NotFound";
 import Admin from "./pages/Admin";
+import Niimbot from "./pages/Niimbot";
+import Supplies from "./pages/Supplies";
+import Certificate from "./pages/Certificate";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import ProtectedAdminRoute from "@/components/ProtectedAdminRoute";
+import { Assistant } from "@/components/shelby/Assistant";
 import { trackPageView } from "@/lib/metaPixel";
 
 const queryClient = new QueryClient();
@@ -48,6 +52,8 @@ const App = () => (
               <Routes>
                 <Route path="/" element={<Index />} />
                 <Route path="/products" element={<ProductsPage />} />
+                <Route path="/insumos" element={<Supplies />} />
+                <Route path="/certificado" element={<Certificate />} />
                 <Route path="/products/:productId" element={<ProductDetail />} />
                 <Route path="/cart" element={<Cart />} />
                 <Route path="/login" element={<Login />} />
@@ -56,9 +62,11 @@ const App = () => (
                 <Route path="/payment-processing" element={<PaymentProcessing />} />
                 <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
                 <Route path="/admin" element={<ProtectedAdminRoute><Admin /></ProtectedAdminRoute>} />
+                <Route path="/niimbot" element={<Niimbot />} />
                 <Route path="/order-success" element={<OrderSuccess />} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
+              <Assistant />
             </CartProvider>
           </AuthProvider>
         </ProductsProvider>

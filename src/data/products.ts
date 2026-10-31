@@ -17,6 +17,12 @@ import d11hLabels40x12 from "@/assets/subproducts/d11h-labels-40x12.jpg";
 
 export type ProductCategory = "Adhesivas" | "Facturación" | "Más vendidos" | "Repuestos";
 
+export type CatalogCategory = {
+  id: string;
+  name: string;
+  slug: string;
+};
+
 export type Subproduct = {
   id: string;
   name: string;
@@ -41,6 +47,11 @@ export type Product = {
   highlight?: boolean;
   description: string;
   specs: string[];
+  activateWholesale?: boolean;
+  wholesaleMinQty?: number;
+  wholesaleDiscountPercent?: number;
+  categories?: CatalogCategory[];
+  variants?: Subproduct[];
   subproducts?: Subproduct[];
   images?: string[];
 };
