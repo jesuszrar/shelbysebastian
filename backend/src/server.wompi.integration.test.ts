@@ -257,6 +257,65 @@ const postWebhook = (baseUrl: string, event: ReturnType<typeof makeSignedEvent>)
     body: JSON.stringify(event),
   });
 
+test("rejects orders below the Wompi minimum before creating or changing payment attempts", async () => {
+  await withEnvironment(async () => {
+    const prisma = new FakePrisma();
+    prisma.orders.set("order-1", { ...makeOrder(), total: "149999.00" });
+    const staleAttempt = {
+      id: "attempt-existing",
+      orderId: "order-1",
+      status: "SENDING",
+      requestStartedAt: new Date(0),
+      createdAt: new Date(0),
+    };
+    prisma.attempts.set(String(staleAttempt.id), staleAttempt);
+
+    const noAttemptPrisma = new FakePrisma();
+    noAttemptPrisma.orders.set("order-1", { ...makeOrder(), total: "100000.00" });
+
+    const originalFetch = globalThis.fetch;
+    let providerRequests = 0;
+    globalThis.fetch = async (input, init) => {
+      if (String(input).startsWith("http://127.0.0.1:")) return originalFetch(input, init);
+      providerRequests += 1;
+      return new Response(JSON.stringify({ data: {} }));
+    };
+
+    try {
+      await withApp(prisma, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/payments/create-wompi-payment`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reference: "order-1", total: 149999, currency: "COP" }),
+        });
+        assert.equal(response.status, 422);
+        assert.deepEqual(await response.json(), {
+          error: "order_below_wompi_minimum",
+          message: "Para pagar electrónicamente con Wompi, tu pedido debe ser mínimo de $150.000",
+        });
+      });
+
+      assert.equal(prisma.attempts.size, 1);
+      assert.equal(prisma.attempts.get("attempt-existing")?.status, "SENDING");
+      assert.equal(prisma.attempts.get("attempt-existing")?.requestStartedAt, staleAttempt.requestStartedAt);
+
+      await withApp(noAttemptPrisma, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/payments/create-wompi-payment`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reference: "order-1", total: 100000, currency: "COP" }),
+        });
+        assert.equal(response.status, 422);
+      });
+
+      assert.equal(noAttemptPrisma.attempts.size, 0);
+      assert.equal(providerRequests, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 test("payment link attempts are durable, reused, and never POSTed again after an uncertain result", async () => {
   await withEnvironment(async () => {
     const prisma = new FakePrisma();

@@ -15,6 +15,7 @@ import { buildMercadoPagoPreferencePayload } from "./lib/mercadopagoPreference.j
 import { isAdminUserRecord } from "./lib/auth.js";
 import { canLookupCedulaEmail, canManagePrivateData, canSyncProfile, hasAdminRoleMutation, resolveDataReadAccess } from "./lib/access-control.js";
 import { buildWompiAuthorizationHeader, extractWompiMerchantMethods, getWompiConfig, getWompiPaymentConfigError, isWompiPaymentSimulationEnabled, isWompiPublicEnvironment, mapWompiStatusToOrderStatus, normalizePhoneNumber, normalizeWompiPaymentMethod, verifyWompiEventSignature } from "./lib/wompi.js";
+import { isWompiTotalBelowMinimum, WOMPI_MINIMUM_ERROR_MESSAGE } from "./lib/wompi-order.js";
 import { markWompiAttemptSending, markWompiAttemptUncertain, persistWompiWebhookReceipt, recordWompiAttemptLink, reserveWompiPaymentAttempt } from "./lib/wompi-persistence.js";
 import { wrap } from "./lib/serialize.js";
 import { createLegacyVariantUnlessExcluded, deleteProductsWithExclusions } from "./lib/product-exclusions.js";
@@ -25,15 +26,25 @@ import { products as staticProducts } from "./scripts/product-catalog-data.js";
 import { buildCatalogSyncPlan } from "./scripts/catalog-sync-plan.js";
 import { syncProductCatalog } from "./scripts/sync-product-catalog.js";
 import { resolveUploadsDirectory } from "./lib/uploads-directory.js";
+import {
+  createProfileAvatarObjectPath,
+  createSupabaseProfileAvatarStorage,
+  decodeProfileAvatar,
+  getOwnedProfileAvatarPath,
+  normalizeProfileAvatar,
+  type ProfileAvatarStorage,
+} from "./lib/profile-avatar.js";
 
 export type ServerDependencies = {
   prisma: PrismaClient;
   jwtSecret: string;
   createRefreshToken?: (userId: string, expiresAt: Date, transaction?: Prisma.TransactionClient) => Promise<string>;
+  profileAvatarStorage?: ProfileAvatarStorage;
 };
 
 export const createApp = (dependencies: ServerDependencies) => {
 const { prisma, jwtSecret } = dependencies;
+const getProfileAvatarStorage = () => dependencies.profileAvatarStorage ?? createSupabaseProfileAvatarStorage();
 if (!jwtSecret.trim()) throw new Error("JWT_SECRET must be configured before starting the backend");
 const niimbotPageImageStore = (prisma as unknown as { niimbotPageImage: NiimbotPageImageStore }).niimbotPageImage;
 const app = express();
@@ -223,6 +234,7 @@ const serializeUser = (user: User | null) =>
         name: user.name,
         email: user.email,
         cedula: user.cedula,
+        avatarUrl: user.avatarUrl,
         is_admin: user.isAdmin,
       }
     : null;
@@ -505,7 +517,7 @@ const issueSession = (user: User): StoredSession => {
     user: {
       id: user.id,
       email: user.email,
-      user_metadata: { name: user.name, cedula: user.cedula, is_admin: user.isAdmin },
+      user_metadata: { name: user.name, cedula: user.cedula, avatarUrl: user.avatarUrl, is_admin: user.isAdmin },
     },
   };
 };
@@ -719,15 +731,15 @@ const createWompiTransaction = async (body: WompiCreatePaymentBody) => {
     throw error;
   }
 
-  if (amountInCents < 15000000) {
+  if (isWompiTotalBelowMinimum(body.total)) {
     const error = Object.assign(
-      new Error("Wompi requiere un pedido mínimo de $ 150.000 para pagos electrónicos."),
+      new Error(WOMPI_MINIMUM_ERROR_MESSAGE),
       {
         status: 422,
         payload: {
           error: {
             type: "UNPROCESSABLE",
-            reason: "La base de la transacción debe ser igual o mayor a 150000",
+            reason: WOMPI_MINIMUM_ERROR_MESSAGE,
           },
         },
       },
@@ -1377,6 +1389,141 @@ app.get("/api/profile", async (req, res) => {
   if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
 
   return res.json({ user: serializeUser(user) });
+});
+
+app.post("/api/profile/avatar", async (req, res) => {
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+
+  let decoded: ReturnType<typeof decodeProfileAvatar>;
+  try {
+    const body = req.body as { contentBase64?: unknown; mimeType?: unknown };
+    decoded = decodeProfileAvatar(body.contentBase64, body.mimeType);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Contenido de imagen inválido";
+    const status = message.includes("5 MB") ? 413 : message.includes("Tipo de imagen") ? 415 : 400;
+    return res.status(status).json({ error: message });
+  }
+
+  let normalizedImage: Buffer;
+  try {
+    normalizedImage = await normalizeProfileAvatar(decoded.content, decoded.mimeType);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "No se pudo procesar la imagen";
+    return res.status(415).json({ error: message });
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: auth.sub } });
+  if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
+  const previousAvatarUrl = user.avatarUrl;
+
+  let storage: ProfileAvatarStorage;
+  try {
+    storage = getProfileAvatarStorage();
+  } catch (error) {
+    console.error("Profile avatar storage configuration is unavailable", error instanceof Error ? error.message : "unknown error");
+    return res.status(503).json({ error: "El almacenamiento de fotografías no está disponible" });
+  }
+
+  const objectPath = createProfileAvatarObjectPath(auth.sub);
+  const avatarUrl = storage.publicUrl(objectPath);
+  try {
+    await storage.upload(objectPath, normalizedImage, "image/webp");
+  } catch (error) {
+    console.error("Profile avatar upload failed", error instanceof Error ? error.message : "unknown error");
+    return res.status(502).json({ error: "No se pudo cargar la fotografía" });
+  }
+
+  let updatedUser: User;
+  try {
+    updatedUser = await prisma.user.update({
+      where: { id: auth.sub },
+      data: { avatarUrl },
+    });
+  } catch (error) {
+    let updateWasCommitted = false;
+    let persistedUser: User | null = null;
+    let updateStateWasRead = false;
+    let currentUserAfterFailure: User | null = null;
+    try {
+      currentUserAfterFailure = await prisma.user.findUnique({ where: { id: auth.sub } });
+      updateStateWasRead = true;
+      if (currentUserAfterFailure?.avatarUrl === avatarUrl) {
+        persistedUser = currentUserAfterFailure;
+        updateWasCommitted = true;
+      }
+    } catch (readError) {
+      console.error("Profile avatar update status could not be verified", readError instanceof Error ? readError.message : "unknown error");
+    }
+
+    if (!updateWasCommitted) {
+      if (updateStateWasRead && currentUserAfterFailure?.avatarUrl === previousAvatarUrl) {
+        try {
+          await storage.remove(objectPath);
+        } catch (cleanupError) {
+          console.error("Uncommitted profile avatar cleanup failed", cleanupError instanceof Error ? cleanupError.message : "unknown error");
+        }
+      }
+      console.error("Profile avatar database update failed", error instanceof Error ? error.message : "unknown error");
+      return res.status(500).json({ error: "No se pudo guardar la fotografía; se conservó la anterior" });
+    }
+    if (!persistedUser) return res.status(500).json({ error: "No se pudo confirmar el guardado de la fotografía" });
+    updatedUser = persistedUser;
+  }
+
+  const previousObjectPath = getOwnedProfileAvatarPath(previousAvatarUrl, auth.sub, storage);
+  let cleanupPending = false;
+  if (previousObjectPath && previousObjectPath !== objectPath) {
+    try {
+      await storage.remove(previousObjectPath);
+    } catch (error) {
+      cleanupPending = true;
+      console.error("Previous profile avatar cleanup failed", error instanceof Error ? error.message : "unknown error");
+    }
+  }
+
+  return res.status(201).json({ avatarUrl: updatedUser.avatarUrl, cleanupPending });
+});
+
+app.delete("/api/profile/avatar", async (req, res) => {
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+
+  const user = await prisma.user.findUnique({ where: { id: auth.sub } });
+  if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
+  const previousAvatarUrl = user.avatarUrl;
+  if (!previousAvatarUrl) return res.json({ avatarUrl: null, cleanupPending: false });
+
+  let storage: ProfileAvatarStorage;
+  try {
+    storage = getProfileAvatarStorage();
+  } catch (error) {
+    console.error("Profile avatar storage configuration is unavailable", error instanceof Error ? error.message : "unknown error");
+    return res.status(503).json({ error: "El almacenamiento de fotografías no está disponible" });
+  }
+
+  let updatedUser: User;
+  try {
+    updatedUser = await prisma.user.update({
+      where: { id: auth.sub },
+      data: { avatarUrl: null },
+    });
+  } catch (error) {
+    console.error("Profile avatar database deletion failed", error instanceof Error ? error.message : "unknown error");
+    return res.status(500).json({ error: "No se pudo eliminar la fotografía" });
+  }
+
+  const objectPath = getOwnedProfileAvatarPath(previousAvatarUrl, auth.sub, storage);
+  let cleanupPending = false;
+  if (objectPath) {
+    try {
+      await storage.remove(objectPath);
+    } catch (error) {
+      cleanupPending = true;
+      console.error("Deleted profile avatar cleanup failed", error instanceof Error ? error.message : "unknown error");
+    }
+  }
+  return res.json({ avatarUrl: updatedUser.avatarUrl, cleanupPending });
 });
 
 app.post("/api/rpc/:name", async (req, res) => {
@@ -2392,7 +2539,12 @@ app.post("/api/payments/create-wompi-payment", async (req, res) => {
       currency: body.currency,
     });
     if (reservation.kind === "not_found") return res.status(404).json({ error: "order_not_found" });
-    if (reservation.kind === "not_payable") return res.status(409).json({ error: reservation.reason });
+    if (reservation.kind === "not_payable") {
+      if (reservation.reason === "order_below_wompi_minimum") {
+        return res.status(422).json({ error: reservation.reason, message: WOMPI_MINIMUM_ERROR_MESSAGE });
+      }
+      return res.status(409).json({ error: reservation.reason });
+    }
     if (reservation.kind === "invalid_request") {
       return res.status(409).json({ error: "payment_order_mismatch", reason: reservation.reason });
     }

@@ -26,6 +26,9 @@ export type WompiOrderUpdateDecision =
   | { kind: "conflict"; reason: "order_already_approved" };
 export type WompiPaymentCreationError = "order_already_paid" | "order_not_payable";
 
+export const WOMPI_MINIMUM_TOTAL_COP = 150_000;
+export const WOMPI_MINIMUM_ERROR_MESSAGE = "Para pagar electrónicamente con Wompi, tu pedido debe ser mínimo de $150.000";
+
 const toMinorUnits = (value: unknown): number | null => {
   if (value === null || value === undefined || (typeof value !== "number" && typeof value !== "string" && typeof value !== "object")) {
     return null;
@@ -37,6 +40,11 @@ const toMinorUnits = (value: unknown): number | null => {
   const minorUnits = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
   if (minorUnits > BigInt(Number.MAX_SAFE_INTEGER)) return null;
   return Number(minorUnits);
+};
+
+export const isWompiTotalBelowMinimum = (total: unknown) => {
+  const amountInCents = toMinorUnits(total);
+  return amountInCents !== null && amountInCents < WOMPI_MINIMUM_TOTAL_COP * 100;
 };
 
 const toIntegerMinorUnits = (value: unknown): number | null => {

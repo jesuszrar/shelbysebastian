@@ -1,3 +1,5 @@
+export const WOMPI_MINIMUM_TOTAL_COP = 150_000;
+export const WOMPI_MINIMUM_ERROR_MESSAGE = "Para pagar electrónicamente con Wompi, tu pedido debe ser mínimo de $150.000";
 const toMinorUnits = (value) => {
     if (value === null || value === undefined || (typeof value !== "number" && typeof value !== "string" && typeof value !== "object")) {
         return null;
@@ -10,6 +12,10 @@ const toMinorUnits = (value) => {
     if (minorUnits > BigInt(Number.MAX_SAFE_INTEGER))
         return null;
     return Number(minorUnits);
+};
+export const isWompiTotalBelowMinimum = (total) => {
+    const amountInCents = toMinorUnits(total);
+    return amountInCents !== null && amountInCents < WOMPI_MINIMUM_TOTAL_COP * 100;
 };
 const toIntegerMinorUnits = (value) => {
     if (typeof value === "number")

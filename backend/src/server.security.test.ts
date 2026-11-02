@@ -3,8 +3,14 @@ import { createServer, type Server } from "node:http";
 import test from "node:test";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import sharp from "sharp";
 import type { PrismaClient } from "@prisma/client";
 import { createApp } from "./server.js";
+import {
+  createSupabaseProfileAvatarStorage,
+  getOwnedProfileAvatarPath,
+  type ProfileAvatarStorage,
+} from "./lib/profile-avatar.js";
 
 const testJwtSecret = "isolated-security-test-secret";
 const password = "customer-password";
@@ -17,6 +23,7 @@ type TestUser = {
   cedula: string;
   isAdmin: boolean;
   password: string;
+  avatarUrl?: string | null;
 };
 
 type TestOrder = {
@@ -44,6 +51,10 @@ type TestState = {
   cedulaEmails: TestCedulaEmail[];
   refreshTokens: Array<{ userId: string; tokenHash: string; expiresAt: Date }>;
   writes: string[];
+  avatarObjects: Map<string, Buffer>;
+  failAvatarUpload?: boolean;
+  failAvatarRemoval?: boolean;
+  failAvatarDatabaseUpdate?: boolean;
   failRefreshTokenCreation?: boolean;
 };
 
@@ -54,6 +65,7 @@ const createState = (): TestState => ({
     { id: "order-customer-2", userId: "customer-2", status: "pending", total: 200 },
   ],
   refreshTokens: [],
+  avatarObjects: new Map(),
   cedulaEmails: [
     { cedula: "111222333", email: "customer@example.test", userId: "customer-1" },
     { cedula: "444555666", email: "other@example.test", userId: "customer-2" },
@@ -81,6 +93,9 @@ const createFakePrisma = (state: TestState) => ({
     update: async ({ where, data }: { where: { id: string }; data: Partial<TestUser> }) => {
       const user = state.users.find((candidate) => candidate.id === where.id);
       if (!user) throw new Error("test user not found");
+      if (state.failAvatarDatabaseUpdate && "avatarUrl" in data) {
+        throw new Error("simulated avatar update failure");
+      }
       Object.assign(user, data);
       state.writes.push(`user.update:${where.id}`);
       return user;
@@ -171,9 +186,23 @@ const withHttpApp = async (
       }
     },
   };
+  const profileAvatarStorage: ProfileAvatarStorage = {
+    async upload(objectPath, content) {
+      if (state.failAvatarUpload) throw new Error("simulated avatar storage failure");
+      state.avatarObjects.set(objectPath, Buffer.from(content));
+    },
+    async remove(objectPath) {
+      if (state.failAvatarRemoval) throw new Error("simulated avatar deletion failure");
+      state.avatarObjects.delete(objectPath);
+    },
+    publicUrl(objectPath) {
+      return `https://storage.example.test/storage/v1/object/public/profile-avatars/${objectPath}`;
+    },
+  };
   const app = createApp({
     prisma: prisma as unknown as PrismaClient,
     jwtSecret: testJwtSecret,
+    profileAvatarStorage,
     createRefreshToken: async (userId, expiresAt, transaction) => {
       if (transaction) {
         await transaction.refreshToken.create({
@@ -230,6 +259,27 @@ const jsonRequest = (method: string, body?: unknown, token?: string): RequestIni
 
 const filterQuery = (column: string, value: string) =>
   `?filters=${encodeURIComponent(JSON.stringify([{ column, value }]))}`;
+
+test("avatar storage uses the dedicated bucket and rejects paths owned by another user", () => {
+  const storage = createSupabaseProfileAvatarStorage({
+    SUPABASE_URL: "https://storage.example.test/",
+    SUPABASE_SERVICE_ROLE_KEY: "isolated-test-key",
+    SUPABASE_AVATAR_BUCKET: "profile-avatars",
+  });
+  const ownPath = "user-avatars/customer-1/avatar.webp";
+  const ownUrl = storage.publicUrl(ownPath);
+  assert.equal(
+    ownUrl,
+    "https://storage.example.test/storage/v1/object/public/profile-avatars/user-avatars/customer-1/avatar.webp",
+  );
+  assert.equal(getOwnedProfileAvatarPath(ownUrl, "customer-1", storage), ownPath);
+  assert.equal(getOwnedProfileAvatarPath(ownUrl, "customer-2", storage), null);
+  assert.throws(() => createSupabaseProfileAvatarStorage({
+    SUPABASE_URL: "https://storage.example.test",
+    SUPABASE_SERVICE_ROLE_KEY: "isolated-test-key",
+    SUPABASE_AVATAR_BUCKET: "another-bucket",
+  }), /not configured/);
+});
 
 test("registration commits the user, cédula mapping and refresh token together", async () => {
   await withHttpApp(async ({ request, state }) => {
@@ -481,5 +531,136 @@ test("login rejects a cédula mapping that points to a different user's persiste
     assert.equal(response.status, 401);
     assert.deepEqual(await response.json(), { error: "Cédula o contraseña incorrectas" });
     assert.equal(state.writes.length, 0);
+  });
+});
+
+test("profile avatars are authenticated, validated, owned by the session, and safely replaceable", async () => {
+  await withHttpApp(async ({ request, state, tokenFor }) => {
+    const image = await sharp({
+      create: { width: 64, height: 64, channels: 3, background: { r: 30, g: 100, b: 170 } },
+    }).png().toBuffer();
+    const imageBody = {
+      contentBase64: image.toString("base64"),
+      mimeType: "image/png",
+      userId: "customer-2",
+    };
+    const anonymousUpload = await request("/api/profile/avatar", jsonRequest("POST", imageBody));
+    const anonymousDelete = await request("/api/profile/avatar", jsonRequest("DELETE"));
+    assert.equal(anonymousUpload.status, 401);
+    assert.equal(anonymousDelete.status, 401);
+    assert.equal(state.avatarObjects.size, 0);
+
+    const customerToken = tokenFor("customer-1");
+    const invalidImage = await request(
+      "/api/profile/avatar",
+      jsonRequest("POST", { ...imageBody, contentBase64: Buffer.from("not an image").toString("base64") }, customerToken),
+    );
+    const mimeMismatch = await request(
+      "/api/profile/avatar",
+      jsonRequest("POST", { ...imageBody, mimeType: "image/jpeg" }, customerToken),
+    );
+    assert.equal(invalidImage.status, 415);
+    assert.equal(mimeMismatch.status, 415);
+    assert.equal(state.avatarObjects.size, 0);
+
+    const oversizedImage = await request(
+      "/api/profile/avatar",
+      jsonRequest("POST", {
+        contentBase64: Buffer.alloc(5 * 1024 * 1024 + 1).toString("base64"),
+        mimeType: "image/png",
+      }, customerToken),
+    );
+    assert.equal(oversizedImage.status, 413, await oversizedImage.text());
+    assert.equal(state.avatarObjects.size, 0);
+
+    const upload = await request("/api/profile/avatar", jsonRequest("POST", imageBody, customerToken));
+    assert.equal(upload.status, 201);
+    const uploaded = await upload.json() as { avatarUrl: string; cleanupPending: boolean };
+    assert.match(uploaded.avatarUrl, /profile-avatars\/user-avatars\/customer-1\/[A-Za-z0-9-]+\.webp$/);
+    assert.equal(uploaded.cleanupPending, false);
+    assert.equal(state.users[0].avatarUrl, uploaded.avatarUrl);
+    assert.equal(state.users[1].avatarUrl ?? null, null);
+    const ownProfile = await request("/api/profile?userId=customer-2", { headers: { Authorization: `Bearer ${customerToken}` } });
+    const ownProfileBody = await ownProfile.json() as { user: { id: string; avatarUrl: string } };
+    assert.equal(ownProfileBody.user.id, "customer-1");
+    assert.equal(ownProfileBody.user.avatarUrl, uploaded.avatarUrl);
+    assert.equal(state.avatarObjects.size, 1);
+    assert.equal((await sharp([...state.avatarObjects.values()][0]).metadata()).format, "webp");
+  });
+});
+
+test("failed avatar upload or database update preserves the previous image", async () => {
+  await withHttpApp(async ({ request, state, tokenFor }) => {
+    const image = await sharp({
+      create: { width: 32, height: 32, channels: 3, background: { r: 200, g: 80, b: 50 } },
+    }).jpeg().toBuffer();
+    const token = tokenFor("customer-1");
+    const sendAvatar = () => request("/api/profile/avatar", jsonRequest("POST", {
+      contentBase64: image.toString("base64"),
+      mimeType: "image/jpeg",
+    }, token));
+    const firstUpload = await sendAvatar();
+    assert.equal(firstUpload.status, 201);
+    const previousUrl = state.users[0].avatarUrl;
+    const previousPath = [...state.avatarObjects.keys()][0];
+    assert.ok(previousUrl);
+
+    const processingFailure = await request("/api/profile/avatar", jsonRequest("POST", {
+      contentBase64: Buffer.from("still not an image").toString("base64"),
+      mimeType: "image/jpeg",
+    }, token));
+    assert.equal(processingFailure.status, 415);
+    assert.equal(state.users[0].avatarUrl, previousUrl);
+    assert.deepEqual([...state.avatarObjects.keys()], [previousPath]);
+
+    state.failAvatarUpload = true;
+    assert.equal((await sendAvatar()).status, 502);
+    assert.equal(state.users[0].avatarUrl, previousUrl);
+    assert.deepEqual([...state.avatarObjects.keys()], [previousPath]);
+    state.failAvatarUpload = false;
+
+    state.failAvatarDatabaseUpdate = true;
+    assert.equal((await sendAvatar()).status, 500);
+    assert.equal(state.users[0].avatarUrl, previousUrl);
+    assert.deepEqual([...state.avatarObjects.keys()], [previousPath]);
+
+    state.failAvatarDatabaseUpdate = false;
+    const replacement = await sendAvatar();
+    assert.equal(replacement.status, 201);
+    const replacementBody = await replacement.json() as { avatarUrl: string; cleanupPending: boolean };
+    assert.notEqual(replacementBody.avatarUrl, previousUrl);
+    assert.equal(replacementBody.cleanupPending, false);
+    assert.equal(state.users[0].avatarUrl, replacementBody.avatarUrl);
+    assert.equal(state.avatarObjects.has(previousPath), false);
+    assert.equal(state.avatarObjects.size, 1);
+  });
+});
+
+test("deleting an avatar only removes the authenticated user's own image", async () => {
+  await withHttpApp(async ({ request, state, tokenFor }) => {
+    const firstPath = "user-avatars/customer-1/first.webp";
+    const secondPath = "user-avatars/customer-2/second.webp";
+    const publicUrl = (objectPath: string) =>
+      `https://storage.example.test/storage/v1/object/public/profile-avatars/${objectPath}`;
+    state.users[0].avatarUrl = publicUrl(firstPath);
+    state.users[1].avatarUrl = publicUrl(secondPath);
+    state.avatarObjects.set(firstPath, Buffer.from("first"));
+    state.avatarObjects.set(secondPath, Buffer.from("second"));
+
+    const response = await request(
+      "/api/profile/avatar",
+      jsonRequest("DELETE", { userId: "customer-2" }, tokenFor("customer-1")),
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { avatarUrl: null, cleanupPending: false });
+    assert.equal(state.users[0].avatarUrl, null);
+    assert.equal(state.users[1].avatarUrl, publicUrl(secondPath));
+    assert.equal(state.avatarObjects.has(firstPath), false);
+    assert.equal(state.avatarObjects.has(secondPath), true);
+
+    const ownSecondDelete = await request("/api/profile/avatar", jsonRequest("DELETE", undefined, tokenFor("customer-2")));
+    assert.equal(ownSecondDelete.status, 200);
+    assert.equal(state.users[1].avatarUrl, null);
+    assert.equal(state.avatarObjects.has(secondPath), false);
   });
 });

@@ -4,8 +4,10 @@ import test from "node:test";
 import {
   decideWompiOrderUpdate,
   getWompiPaymentCreationError,
+  isWompiTotalBelowMinimum,
   validateWompiPaymentRequest,
   validateWompiTransaction,
+  WOMPI_MINIMUM_TOTAL_COP,
   type WompiOrderSnapshot,
 } from "./wompi-order.js";
 
@@ -14,6 +16,15 @@ const order: WompiOrderSnapshot = {
   total: "150000.00",
   status: "payment_pending",
 };
+
+test("enforces the $150,000 COP Wompi minimum at exact currency boundaries", () => {
+  assert.equal(WOMPI_MINIMUM_TOTAL_COP, 150_000);
+  assert.equal(isWompiTotalBelowMinimum("100000.00"), true);
+  assert.equal(isWompiTotalBelowMinimum("149999.99"), true);
+  assert.equal(isWompiTotalBelowMinimum("150000.00"), false);
+  assert.equal(isWompiTotalBelowMinimum("175000.00"), false);
+  assert.equal(isWompiTotalBelowMinimum("invalid"), false);
+});
 
 test("validates payment requests against the persisted order total, currency, and reference", () => {
   assert.equal(validateWompiPaymentRequest(order, { reference: "ORDER-1", total: 150000, currency: "COP" }), null);

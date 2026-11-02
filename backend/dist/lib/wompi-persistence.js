@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { getWompiPaymentCreationError, validateWompiPaymentRequest } from "./wompi-order.js";
+import { getWompiPaymentCreationError, isWompiTotalBelowMinimum, validateWompiPaymentRequest } from "./wompi-order.js";
 const activeAttemptStatuses = ["PREPARED", "SENDING", "LINK_CREATED", "UNCERTAIN", "REVIEW"];
 const terminalTransactionStatuses = new Set(["DECLINED", "VOIDED", "ERROR", "FAILED"]);
 const supportedTransactionStatuses = new Set(["PENDING", "APPROVED", ...terminalTransactionStatuses]);
@@ -24,6 +24,9 @@ export const reserveWompiPaymentAttempt = async (prisma, orderId, request) => pr
     const requestError = validateWompiPaymentRequest(order, request);
     if (requestError)
         return { kind: "invalid_request", reason: requestError };
+    if (isWompiTotalBelowMinimum(order.total)) {
+        return { kind: "not_payable", reason: "order_below_wompi_minimum" };
+    }
     const creationError = getWompiPaymentCreationError(order);
     const activeAttempt = await tx.wompiPaymentAttempt.findFirst({
         where: { orderId, status: { in: activeAttemptStatuses } },

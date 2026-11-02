@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { Prisma, type PrismaClient, type WompiPaymentAttempt, type WompiWebhookJob, type Order } from "@prisma/client";
-import { getWompiPaymentCreationError, validateWompiPaymentRequest } from "./wompi-order.js";
+import { getWompiPaymentCreationError, isWompiTotalBelowMinimum, validateWompiPaymentRequest } from "./wompi-order.js";
 
 const activeAttemptStatuses = ["PREPARED", "SENDING", "LINK_CREATED", "UNCERTAIN", "REVIEW"];
 const terminalTransactionStatuses = new Set(["DECLINED", "VOIDED", "ERROR", "FAILED"]);
@@ -39,6 +39,9 @@ export const reserveWompiPaymentAttempt = async (
 
   const requestError = validateWompiPaymentRequest(order, request);
   if (requestError) return { kind: "invalid_request", reason: requestError };
+  if (isWompiTotalBelowMinimum(order.total)) {
+    return { kind: "not_payable", reason: "order_below_wompi_minimum" };
+  }
 
   const creationError = getWompiPaymentCreationError(order);
   const activeAttempt = await tx.wompiPaymentAttempt.findFirst({
