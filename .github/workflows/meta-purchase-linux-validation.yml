@@ -25,8 +25,8 @@ jobs:
 
       - name: Pin npm
         run: |
-          npm install --global npm@10.13.0
-          test "$(npm --version)" = "10.13.0"
+          npm install --global npm@10.9.9
+          test "$(npm --version)" = "10.9.9"
 
       - name: Install dependencies and generate Prisma Client
         run: |
@@ -34,14 +34,15 @@ jobs:
             echo "Unexpected DATABASE_URL in validation environment; refusing to continue."
             exit 1
           fi
-          npm ci
+          env -u DATABASE_URL npm ci
 
       - name: Build backend
-        run: npm run build
+        run: env -u DATABASE_URL npm run build
 
-      - name: Run security and Meta Purchase tests
+      - name: Run security, catalog, and Meta Purchase tests
         run: |
           npm run test:security
+          npm run test:catalog-exclusions
           npm exec --no -- tsx --test src/lib/meta-purchase.test.ts
 
       - name: Verify build outputs and Prisma Client
@@ -61,13 +62,25 @@ jobs:
             END { exit !found }
           ' "$generated_schema"
 
-          linux_engines="$(find node_modules/.prisma/client -maxdepth 1 -type f \
-            \( -name 'libquery_engine-*.so.node' -o -name 'query-engine-*' -o -name 'query_engine-*linux*' \) \
-            -print)"
+          linux_engines="$(find node_modules/.prisma/client -maxdepth 1 -type f -name 'libquery_engine-*.so.node' -print)"
           if [ -z "$linux_engines" ]; then
-            echo "No Linux Prisma query engine was generated."
+            echo "No Linux Prisma Node-API query engine was generated."
             exit 1
           fi
+
+          while IFS= read -r engine; do
+            [ -n "$engine" ] || continue
+            engine_info="$(file "$engine")"
+            echo "$engine_info"
+            case "$engine_info" in
+              *ELF*) ;;
+              *)
+                echo "The generated Prisma engine is not an ELF Linux binary: $engine"
+                exit 1
+                ;;
+            esac
+          done <<< "$linux_engines"
+
           if find node_modules/.prisma/client -maxdepth 1 -type f -iname '*windows*' -print -quit | grep -q .; then
             echo "A Windows Prisma engine was found in the generated client."
             exit 1
