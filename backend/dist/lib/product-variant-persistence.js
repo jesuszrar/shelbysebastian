@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { lockProductCatalogIds } from "./productCatalogLock.js";
+import { normalizeProductImageUrls } from "./product-image-galleries.js";
 export const withProductCatalogBatchTransaction = (prisma, productIds, operation) => prisma.$transaction(async (transaction) => {
     await lockProductCatalogIds(transaction, productIds);
     return operation(transaction);
@@ -264,9 +265,7 @@ export const findStockSnapshotConflict = (entity, id, expectedStock, currentStoc
 export const resolveVariantImageUrls = (variant) => {
     if (!Array.isArray(variant.images))
         return null;
-    return Array.from(new Set(variant.images
-        .map((image) => (typeof image === "string" ? image : String(image?.url ?? "")).trim())
-        .filter(Boolean)));
+    return normalizeProductImageUrls(variant.images);
 };
 export const productCatalogRelations = {
     variants: {
@@ -276,7 +275,7 @@ export const productCatalogRelations = {
         },
     },
     categories: { include: { category: true } },
-    images: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }] },
+    images: { where: { variantId: null }, orderBy: [{ sortOrder: "asc" }, { id: "asc" }] },
 };
 export const readProductWithCatalogRelations = (transaction, productId) => transaction.product.findUnique({
     where: { id: productId },
@@ -303,6 +302,7 @@ export const replaceVariantImagesIfChanged = async (transaction, productId, vari
     return true;
 };
 export const replaceProductImagesIfChanged = async (transaction, productId, imageUrls) => {
+    const normalizedImageUrls = normalizeProductImageUrls(imageUrls);
     const where = { productId, variantId: null };
     const currentImages = await transaction.productImage.findMany({
         where,
@@ -310,11 +310,11 @@ export const replaceProductImagesIfChanged = async (transaction, productId, imag
         select: { id: true, url: true },
     });
     const currentUrls = currentImages.map((image) => image.url);
-    if (currentUrls.length === imageUrls.length && currentUrls.every((url, index) => url === imageUrls[index])) {
+    if (currentUrls.length === normalizedImageUrls.length && currentUrls.every((url, index) => url === normalizedImageUrls[index])) {
         return false;
     }
     await transaction.productImage.deleteMany({ where });
-    for (const [sortOrder, url] of imageUrls.entries()) {
+    for (const [sortOrder, url] of normalizedImageUrls.entries()) {
         await transaction.productImage.create({
             data: { productId, variantId: null, url, sortOrder, isPrimary: sortOrder === 0 },
         });
