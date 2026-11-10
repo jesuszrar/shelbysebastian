@@ -440,12 +440,12 @@ const ProductCard = ({
   return (
     <article className="flex h-full flex-col overflow-hidden border border-[#d9e4e2] bg-white">
       <div className="flex flex-1 flex-col 2xl:grid 2xl:grid-cols-[0.85fr_1.15fr]">
-        <Link to={`/products/${product.id}`} className="flex min-h-48 items-center justify-center bg-[#f1f6f4] p-4 sm:min-h-72 sm:p-6">
+        <Link to={`/products/${product.id}`} className="block aspect-[4/3] w-full overflow-hidden bg-[#f1f6f4] p-2 sm:p-3">
           <img
             src={productImage}
             alt={product.name}
             loading="lazy"
-            className="max-h-44 w-full object-contain transition-transform duration-300 hover:scale-[1.02] sm:max-h-64"
+            className="h-full w-full object-contain p-1 transition-transform duration-300 hover:scale-[1.02]"
           />
         </Link>
         <div className="flex min-w-0 flex-1 flex-col p-4 sm:p-6">

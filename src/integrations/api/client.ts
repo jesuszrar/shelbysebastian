@@ -353,7 +353,6 @@ const request = async <T>(path: string, init?: RequestInit): ApiResult<T> => {
     const url = baseUrl ? `${baseUrl}${targetPath}` : targetPath;
 
     const rawStoredSession = window.localStorage.getItem(SESSION_KEY);
-    console.info("[auth] stored session raw", rawStoredSession ? rawStoredSession.slice(0, 200) : null);
 
     const isAuthEndpoint = path.startsWith("/api/auth");
 

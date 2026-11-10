@@ -3,7 +3,7 @@ import { Footer } from "@/components/shelby/Footer";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Button } from "@/components/ui/button";
 import { useProductsCatalog } from "@/context/ProductsContext";
-import { deleteData, fetchData, fetchNiimbotPageImageUrl, fetchNiimbotPageImages, patchData, postData, resolveImageUrl, updateNiimbotPageImageAlt, uploadFile, uploadNiimbotPageImage, type NiimbotPageImage } from "@/integrations/api/client";
+import { deleteData, fetchData, patchData, postData, resolveImageUrl, uploadFile } from "@/integrations/api/client";
 import { formatCOP } from "@/lib/format";
 import { toast } from "sonner";
 import {
@@ -21,7 +21,6 @@ import {
   ArrowDown,
   ArrowUp,
   BarChart3,
-  CheckCircle2,
   Clock3,
   ClipboardCopy,
   ImagePlus,
@@ -44,21 +43,6 @@ const ADMIN_EMAIL_STATUSES = new Set(["paid", "approved", "completed", "payment_
 const LOW_STOCK_LIMIT = 3;
 const ORDER_STATUS_OPTIONS = ["payment_pending", "payment_approved", "payment_failed", "pending", "paid", "approved", "shipped", "delivered", "cancelled", "failed"] as const;
 
-const NIIMBOT_PAGE_IMAGE_SLOTS = [
-  ["hero_desktop", "Hero escritorio"],
-  ["hero_mobile", "Hero móvil"],
-  ["hardware_b1", "Hardware B1"],
-  ["hardware_d110", "Hardware D110"],
-  ["hardware_d11h", "Hardware D11H"],
-  ["consumables", "Consumibles"],
-  ["solution_comercio", "Solución Comercio"],
-  ["solution_inventario", "Solución Inventario"],
-  ["solution_organizacion", "Solución Organización"],
-  ["solution_identificacion", "Solución Identificación"],
-  ["trust", "Confianza / Certificación"],
-] as const;
-
-type NiimbotPageImageSlot = NiimbotPageImage & { previewUrl?: string; altDraft: string; localPreviewUrl?: string; uploading?: boolean; savingAlt?: boolean };
 
 const normalizeSubproductImages = (images: Array<string | { url?: string }> | undefined, fallbackImage?: string) => {
   const uniqueImages = Array.from(new Set((images ?? []).map((image) => (typeof image === "string" ? image : image.url ?? "").trim()).filter(Boolean)));
@@ -255,7 +239,7 @@ const buildCsv = (headers: string[], rows: Array<Array<string | number | null | 
   [headers.map(escapeCsvValue).join(","), ...rows.map((row) => row.map(escapeCsvValue).join(","))].join("\n");
 
 const Admin = () => {
-  const [tab, setTab] = useState<"overview" | "products" | "orders" | "users" | "marketing" | "niimbot">("overview");
+  const [tab, setTab] = useState<"overview" | "products" | "orders" | "users" | "marketing">("overview");
 
   return (
     <div className="min-h-screen bg-background">
@@ -283,7 +267,6 @@ const Admin = () => {
             <TabButton active={tab === "orders"} onClick={() => setTab("orders")} icon={ShoppingCart} label="Ventas" />
             <TabButton active={tab === "users"} onClick={() => setTab("users")} icon={Users} label="Usuarios" />
             <TabButton active={tab === "marketing"} onClick={() => setTab("marketing")} icon={Tag} label="Marketing" />
-            <TabButton active={tab === "niimbot"} onClick={() => setTab("niimbot")} icon={ImagePlus} label="NIIMBOT" />
           </div>
 
           {tab === "overview" && <OverviewPanel />}
@@ -291,7 +274,6 @@ const Admin = () => {
           {tab === "orders" && <OrdersAdmin />}
           {tab === "users" && <UsersAdmin />}
           {tab === "marketing" && <CouponsAdmin />}
-          {tab === "niimbot" && <NiimbotPageImagesAdmin />}
         </div>
       </main>
       <Footer />
@@ -464,148 +446,6 @@ function CategoriesAdmin({
   );
 }
 
-function NiimbotPageImagesAdmin() {
-  const [slots, setSlots] = useState<NiimbotPageImageSlot[]>(() => NIIMBOT_PAGE_IMAGE_SLOTS.map(([key]) => ({ key, path: "", alt: null, altDraft: "" })));
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const loadImages = async () => {
-    setLoading(true);
-    setError(null);
-    const result = await fetchNiimbotPageImages();
-    if (result.error) {
-      setError(result.error.message || "No se pudieron cargar las imágenes de NIIMBOT.");
-      setLoading(false);
-      return;
-    }
-
-    const configured = new Map((result.data || []).map((item) => [item.key, item]));
-    const next = await Promise.all(NIIMBOT_PAGE_IMAGE_SLOTS.map(async ([key]) => {
-      const item = configured.get(key);
-      if (!item) return { key, path: "", alt: null, altDraft: "" };
-      const urlResult = await fetchNiimbotPageImageUrl(key);
-      return { ...item, altDraft: item.alt || "", previewUrl: urlResult.data?.url };
-    }));
-    setSlots(next);
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    void loadImages();
-  }, []);
-
-  const refreshPreview = async (key: string) => {
-    const result = await fetchNiimbotPageImageUrl(key);
-    if (result.error || !result.data?.url) {
-      toast.error("No se pudo cargar la vista previa");
-      return;
-    }
-    setSlots((current) => current.map((slot) => slot.key === key ? { ...slot, previewUrl: result.data!.url } : slot));
-  };
-
-  const uploadImage = async (key: string, file: File) => {
-    const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
-    if (!allowedTypes.has(file.type)) {
-      toast.error("Solo se permiten imágenes JPEG, PNG o WebP");
-      return;
-    }
-    if (file.size > 8 * 1024 * 1024) {
-      toast.error("La imagen no puede superar 8 MB");
-      return;
-    }
-
-    const localPreviewUrl = URL.createObjectURL(file);
-    setSlots((current) => current.map((slot) => slot.key === key ? { ...slot, localPreviewUrl, uploading: true } : slot));
-    let result: Awaited<ReturnType<typeof uploadNiimbotPageImage>>;
-    try {
-      result = await uploadNiimbotPageImage(key, file);
-    } catch {
-      toast.error("No se pudo leer la imagen");
-      setSlots((current) => current.map((slot) => slot.key === key ? { ...slot, localPreviewUrl: undefined, uploading: false } : slot));
-      URL.revokeObjectURL(localPreviewUrl);
-      return;
-    }
-    if (result.error) {
-      toast.error(result.error.message || "No se pudo cargar la imagen");
-      setSlots((current) => current.map((slot) => slot.key === key ? { ...slot, localPreviewUrl: undefined, uploading: false } : slot));
-      URL.revokeObjectURL(localPreviewUrl);
-      return;
-    }
-
-    toast.success("Imagen actualizada correctamente");
-    URL.revokeObjectURL(localPreviewUrl);
-    await loadImages();
-  };
-
-  const saveAlt = async (slot: NiimbotPageImageSlot) => {
-    if (!slot.path) {
-      toast.error("Configura una imagen antes de guardar el ALT");
-      return;
-    }
-    setSlots((current) => current.map((item) => item.key === slot.key ? { ...item, savingAlt: true } : item));
-    const result = await updateNiimbotPageImageAlt(slot.key, slot.path, slot.altDraft.trim());
-    if (result.error) {
-      toast.error(result.error.message || "No se pudo guardar el ALT");
-      setSlots((current) => current.map((item) => item.key === slot.key ? { ...item, savingAlt: false } : item));
-      return;
-    }
-    toast.success("ALT actualizado correctamente");
-    await loadImages();
-  };
-
-  return (
-    <section className="space-y-6">
-      <div>
-        <span className="text-primary text-xs uppercase tracking-[0.3em] font-semibold">NIIMBOT</span>
-        <h2 className="font-display text-3xl text-secondary mt-2">Imágenes de página</h2>
-        <p className="mt-2 max-w-2xl text-sm text-muted-foreground">Administra las imágenes editoriales de NIIMBOT sin modificar las imágenes del catálogo.</p>
-      </div>
-
-      {loading ? <p className="text-sm text-muted-foreground">Cargando imágenes...</p> : error ? <p className="rounded-2xl border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">{error}</p> : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {slots.map((slot) => {
-            const label = NIIMBOT_PAGE_IMAGE_SLOTS.find(([key]) => key === slot.key)?.[1] || slot.key;
-            const preview = slot.localPreviewUrl || slot.previewUrl;
-            return (
-              <article key={slot.key} className="flex min-w-0 flex-col rounded-3xl border border-border bg-card p-5 shadow-soft">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">NIIMBOT</p>
-                    <h3 className="mt-2 font-display text-2xl text-secondary">{label}</h3>
-                  </div>
-                  <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${slot.path ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}>
-                    {slot.path && <CheckCircle2 className="h-3 w-3" />}
-                    {slot.path ? "Configurada" : "Sin configurar"}
-                  </span>
-                </div>
-
-                <div className="mt-4 flex aspect-[16/10] items-center justify-center overflow-hidden rounded-2xl border border-border bg-muted/40">
-                  {preview ? <img src={preview} alt={slot.altDraft || label} onError={() => { if (slot.previewUrl) void refreshPreview(slot.key); }} className="h-full w-full object-contain" /> : <ImagePlus className="h-8 w-8 text-muted-foreground" />}
-                </div>
-
-                <p className="mt-3 break-all text-[11px] text-muted-foreground">{slot.alt ? `ALT: ${slot.alt}` : "Sin texto ALT"}</p>
-                <label className="mt-4 inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-smooth hover:bg-primary/90">
-                  <Upload className="h-4 w-4" />
-                  {slot.uploading ? "Cargando..." : "Cambiar imagen"}
-                  <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" disabled={slot.uploading} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadImage(slot.key, file); event.currentTarget.value = ""; }} />
-                </label>
-
-                <label className="mt-4 block text-sm font-medium text-secondary">
-                  Texto ALT
-                  <input value={slot.altDraft} onChange={(event) => setSlots((current) => current.map((item) => item.key === slot.key ? { ...item, altDraft: event.target.value } : item))} className="mt-1.5 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/40" maxLength={200} />
-                </label>
-                <Button type="button" variant="outline" className="mt-3 w-full" disabled={!slot.path || slot.savingAlt} onClick={() => void saveAlt(slot)}>
-                  {slot.savingAlt ? "Guardando..." : "Guardar ALT"}
-                </Button>
-              </article>
-            );
-          })}
-        </div>
-      )}
-    </section>
-  );
-}
-
 function OverviewPanel({ compact = false }: { compact?: boolean }) {
   const { rows: productRows, loading: productsLoading } = useProductsCatalog();
   const [orders, setOrders] = useState<OrderRow[]>([]);
@@ -728,7 +568,7 @@ function ProductsAdmin() {
   const loadCategories = async () => {
     setCategoriesLoading(true);
     setCategoriesError(null);
-    const { data, error } = await fetchData<CategoryRow[]>("categories", { orderBy: "name", ascending: true });
+    const { data, error } = await fetchData<CategoryRow[]>("categories", { orderBy: "sortOrder", ascending: true });
     if (error) {
       setCategoriesError(error.message || "No se pudieron cargar las categorías.");
       setCategoriesLoading(false);

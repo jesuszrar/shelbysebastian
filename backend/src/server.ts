@@ -1,4 +1,5 @@
 import express from "express";
+import { moveCategoryInOrder } from "./lib/category-order.js";
 import { createMetaPurchaseCredential, isMetaPurchaseApproved, matchesMetaPurchaseCredential, normalizeMetaPurchaseItems } from "./lib/meta-purchase.js";
 import cors from "cors";
 import { Prisma, type PrismaClient, type Product, type Order, type User, type Coupon, type CedulaEmail, type UserAddress } from "@prisma/client";
@@ -2150,20 +2151,31 @@ app.patch("/api/data/:table", async (req, res) => {
           ORDER BY "sortOrder" ASC, "id" ASC
           FOR UPDATE
         `);
-        const currentIndex = locked.findIndex((row) => row.id === categoryId);
-        if (currentIndex < 0) return { error: "Categoria no encontrada" };
-        const targetIndex = currentIndex + (direction === "up" ? -1 : 1);
-        if (targetIndex < 0 || targetIndex >= locked.length) return { boundary: true };
 
-        const current = locked[currentIndex];
-        const target = locked[targetIndex];
-        await transaction.category.update({ where: { id: current.id }, data: { sortOrder: target.sortOrder } });
-        await transaction.category.update({ where: { id: target.id }, data: { sortOrder: current.sortOrder } });
-        return { moved: true };
+        const reordered = moveCategoryInOrder(locked, categoryId, direction);
+        if (reordered.notFound) return { error: "Categoria no encontrada" };
+
+        if (reordered.moved) {
+          const originalPositions = new Map(locked.map((row) => [row.id, row.sortOrder]));
+
+          for (const row of reordered.rows) {
+            if (originalPositions.get(row.id) !== row.sortOrder) {
+              await transaction.category.update({
+                where: { id: row.id },
+                data: { sortOrder: row.sortOrder },
+              });
+            }
+          }
+        }
+
+        return {
+          moved: reordered.moved,
+          boundary: reordered.boundary,
+        };
       });
 
       if ("error" in result) return res.status(404).json({ error: result.error });
-      return res.json({ moved: "moved" in result && result.moved === true, boundary: "boundary" in result });
+      return res.json(result);
     }
 
     if (filters.length === 0) return res.status(400).json({ error: "Se requiere un filtro para actualizar categorías" });
