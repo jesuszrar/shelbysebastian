@@ -63,6 +63,7 @@ model Category {
   id        String            @id @default(cuid())
   name      String
   slug      String            @unique
+  sortOrder Int               @default(0)
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
   products  ProductCategory[]
@@ -129,7 +130,8 @@ model Order {
   id                  String    @id
   items               Json
   total               Decimal   @db.Decimal(12, 2)
-  status              String    @default("pending")
+  currency            String    @default("COP")
+  status               String    @default("pending")
   userId              String?
   createdAt           DateTime  @default(now())
   customerAddress     String?
@@ -153,13 +155,41 @@ model Order {
   shipping_phone      String?
   shipping_reference  String?
   user                User?     @relation(fields: [userId], references: [id])
+  metaPurchaseClaim   MetaPurchaseClaim?
   paymentAttempts     WompiPaymentAttempt[]
   wompiTransactions   WompiTransaction[]
+  inventoryReviewReason String? @db.Text
 
   @@index([userId])
   @@index([status])
   @@index([createdAt])
   @@index([couponCode])
+}
+
+model OrderInventoryReservation {
+  id            String   @id @default(cuid())
+  orderId       String
+  lineIndex     Int
+  productId     String
+  variantId     String?
+  quantity      Int
+  status        String   @default("RESERVED")
+  reservedAt    DateTime @default(now())
+  restoredAt    DateTime?
+  reviewReason  String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([orderId, lineIndex])
+  @@index([orderId, status])
+}
+
+model MetaPurchaseClaim {
+  orderId   String   @id
+  tokenHash String   @unique
+  claimedAt DateTime?
+  createdAt DateTime @default(now())
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
 }
 
 model WompiPaymentAttempt {

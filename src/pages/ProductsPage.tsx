@@ -1,20 +1,42 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Search, SlidersHorizontal, Sparkles } from "lucide-react";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
-import { ProductCard } from "@/components/shelby/Products";
+import { ProductCard, productHasCategory } from "@/components/shelby/Products";
 import { useProductsCatalog } from "@/context/ProductsContext";
+import type { CatalogCategory } from "@/data/products";
+import { fetchData } from "@/integrations/api/client";
 
-const categories = ["Todos", "Adhesivas", "Facturación", "Más vendidos", "Repuestos"] as const;
+const fallbackCategories = ["Adhesivas", "Facturación", "Más vendidos", "Repuestos"];
 
 const ProductsPage = ({ onlySupplies = false }: { onlySupplies?: boolean }) => {
   const { products, loading, error } = useProductsCatalog();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [active, setActive] = useState<(typeof categories)[number]>("Todos");
+  const [active, setActive] = useState("");
   const [query, setQuery] = useState(() => searchParams.get("q") ?? "");
+  const [categories, setCategories] = useState<CatalogCategory[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    void fetchData<CatalogCategory[]>("categories").then(({ data, error }) => {
+      if (!mounted) return;
+      if (error) console.error("Error loading catalog categories", error);
+      setCategories(Array.isArray(data) ? data : []);
+    });
+    return () => { mounted = false; };
+  }, []);
+
+  const categoryNames = categories.length ? categories.map((category) => category.name) : fallbackCategories;
+
+  useEffect(() => {
+    if (categoryNames.length && !categoryNames.includes(active)) setActive(categoryNames[0]);
+  }, [active, categories]);
+
   const list = useMemo(() => {
-    let l = onlySupplies ? products.filter((p) => p.category === "Repuestos") : active === "Todos" ? products : products.filter((p) => p.category === active);
+    let l = onlySupplies
+      ? products.filter((product) => productHasCategory(product, "Repuestos"))
+      : active ? products.filter((product) => productHasCategory(product, active)) : [];
     if (query.trim()) { const q = query.toLowerCase(); l = l.filter((p) => p.name.toLowerCase().includes(q)); }
     return l;
   }, [active, query, products, onlySupplies]);
@@ -48,7 +70,7 @@ const ProductsPage = ({ onlySupplies = false }: { onlySupplies?: boolean }) => {
             </label>
           </div>
             {!onlySupplies && <div className="mb-10 flex flex-wrap gap-2">
-            {categories.map((c) => (
+            {categoryNames.map((c) => (
               <button key={c} type="button" onClick={() => setActive(c)} className={`rounded-full px-4 py-2 text-sm font-medium transition-smooth ${active === c ? "bg-primary text-primary-foreground shadow-soft" : "border border-border bg-white text-primary hover:bg-primary hover:text-primary-foreground"}`}>{c}</button>
             ))}
           </div>}

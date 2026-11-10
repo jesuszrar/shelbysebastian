@@ -49,7 +49,12 @@ const rowToProduct = (row: ProductRow): Product => {
     activateWholesale: Boolean(row.activateWholesale),
     wholesaleMinQty: Number(row.wholesaleMinQty ?? 0),
     wholesaleDiscountPercent: Number(row.wholesaleDiscountPercent ?? 0),
-    categories: row.categories ?? [],
+    categories: Array.isArray(row.categories)
+      ? [...row.categories].sort((left, right) =>
+        Number(left.sortOrder ?? Number.MAX_SAFE_INTEGER) - Number(right.sortOrder ?? Number.MAX_SAFE_INTEGER) ||
+        left.id.localeCompare(right.id),
+      )
+      : [],
     variants: row.variants?.map((variant) => ({ id: variant.id, name: variant.name, image: resolveImageUrl(variant.image), description: variant.description ?? "", price: variant.price, stock: variant.stock, active: variant.active, sortOrder: variant.sortOrder, images: variant.images?.map((image) => resolveImageUrl(image.url)).filter(Boolean) })),
     subproducts: row.variants?.filter((variant) => variant.active !== false).sort((left, right) => Number(left.sortOrder ?? 0) - Number(right.sortOrder ?? 0)).map((variant) => ({ id: variant.id, name: variant.name, image: resolveImageUrl(variant.image), description: variant.description ?? "", price: variant.price, stock: variant.stock, active: variant.active, sortOrder: variant.sortOrder, images: variant.images?.map((image) => resolveImageUrl(image.url)).filter(Boolean) })),
     images: Array.isArray(row.images) ? row.images.map((image) => resolveImageUrl(image.url)).filter(Boolean) : undefined,

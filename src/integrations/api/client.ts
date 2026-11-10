@@ -186,6 +186,22 @@ export const uploadFile = async (path: string, file: File) => {
 
 export const getPublicFileUrl = (path: string) => ({ publicUrl: API_BASE_URL ? `${API_BASE_URL}/uploads/${path}` : `/uploads/${path}` });
 
+export type MetaPurchaseClaimResponse = {
+  claimed: boolean;
+  purchase?: {
+    orderId: string;
+    total: number;
+    currency: string;
+    items: Array<{ id: string; quantity: number; item_price: number }>;
+  };
+};
+
+export const claimMetaPurchase = (orderId: string, claimToken: string) =>
+  request<MetaPurchaseClaimResponse>(`/api/meta/purchase/${encodeURIComponent(orderId)}/claim`, {
+    method: "POST",
+    body: JSON.stringify({ claimToken }),
+  });
+
 const emitAuthChange = (event: string, session: StoredSession | null) => {
   AUTH_LISTENERS.forEach((listener) => listener(event, session));
 };

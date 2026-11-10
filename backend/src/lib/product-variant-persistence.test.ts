@@ -8,6 +8,7 @@ import {
   withProductCatalogBatchTransaction,
   readProductWithCatalogRelations,
   readProductsWithCatalogRelations,
+  productCatalogRelations,
   resolveAdminStock,
   removeExcludedProductVariants,
   replaceProductImagesIfChanged,
@@ -36,6 +37,10 @@ const makeTransaction = (seed: Partial<TestState> = {}) => {
     imageCreates: 0,
     imageDeletes: 0,
   };
+  const findUniqueCalls: Array<{
+    where: { id: string };
+    include: typeof productCatalogRelations;
+  }> = [];
 
   const getProduct = (id: string) => {
     const product = state.products.find((item) => item.id === id);
@@ -54,7 +59,13 @@ const makeTransaction = (seed: Partial<TestState> = {}) => {
 
   const transaction = {
     product: {
-      findUnique: async ({ where }: { where: { id: string } }) => getProduct(where.id),
+      findUnique: async (args: {
+        where: { id: string };
+        include: typeof productCatalogRelations;
+      }) => {
+        findUniqueCalls.push(args);
+        return getProduct(args.where.id);
+      },
       findMany: async () => state.products.map((product) => getProduct(String(product.id))).filter(Boolean),
     },
     productVariant: {
@@ -102,8 +113,35 @@ const makeTransaction = (seed: Partial<TestState> = {}) => {
     },
   };
 
-  return { transaction: transaction as unknown as Prisma.TransactionClient, state };
+  return { transaction: transaction as unknown as Prisma.TransactionClient, state, findUniqueCalls };
 };
+
+test("catalog relations load parent images and each variant gallery separately", async () => {
+  const sharedUrl = "/products/shared.jpg";
+  const { transaction, findUniqueCalls } = makeTransaction({
+    products: [{ id: "p1", name: "Product" }],
+    variants: [{ id: "v1", productId: "p1", sortOrder: 0 }],
+    images: [
+      { id: "parent-image", productId: "p1", variantId: null, url: sharedUrl, sortOrder: 0, isPrimary: true },
+      { id: "variant-image", productId: "p1", variantId: "v1", url: sharedUrl, sortOrder: 0, isPrimary: true },
+    ],
+  });
+
+  const product = await readProductWithCatalogRelations(transaction, "p1");
+  assert.deepEqual(findUniqueCalls, [{
+    where: { id: "p1" },
+    include: productCatalogRelations,
+  }]);
+  assert.deepEqual(findUniqueCalls[0].include.images, {
+    where: { variantId: null },
+    orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+  });
+  assert.deepEqual(findUniqueCalls[0].include.variants.include.images, {
+    orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+  });
+  assert.deepEqual(product?.images.map((image) => image.id), ["parent-image"]);
+  assert.deepEqual(product?.variants[0].images.map((image) => image.id), ["variant-image"]);
+});
 
 test("absent, null and empty subproducts have distinct complete-list semantics", () => {
   assert.equal(resolveProductVariants({}), null);
@@ -307,6 +345,50 @@ test("absent or null variant images preserve persisted rows while an empty list 
   assert.equal(resolveVariantImageUrls({ images: null }), null);
   assert.deepEqual(resolveVariantImageUrls({ images: [] }), []);
   assert.deepEqual(resolveVariantImageUrls({ images: [" /one.jpg ", { url: "/one.jpg" }, "/two.jpg"] }), ["/one.jpg", "/two.jpg"]);
+});
+
+test("parent image replacement deduplicates normalized URLs and preserves first appearance order", async () => {
+  const { transaction, state } = makeTransaction({
+    images: [
+      { id: "variant-image", productId: "p1", variantId: "v1", url: "/images/one.jpg", sortOrder: 0, isPrimary: true },
+      { id: "other-variant-image", productId: "p1", variantId: "v2", url: "/images/two.jpg", sortOrder: 0, isPrimary: true },
+    ],
+  });
+
+  const changed = await replaceProductImagesIfChanged(transaction, "p1", [
+    " /parent/./cover.jpg ",
+    "/parent/cover.jpg",
+    "/parent/gallery.jpg",
+    "/parent/cover.jpg",
+    "",
+    "  ",
+  ]);
+
+  assert.equal(changed, true);
+  assert.deepEqual(state.images.map(({ variantId, url, sortOrder, isPrimary }) => ({ variantId, url, sortOrder, isPrimary })), [
+    { variantId: "v1", url: "/images/one.jpg", sortOrder: 0, isPrimary: true },
+    { variantId: "v2", url: "/images/two.jpg", sortOrder: 0, isPrimary: true },
+    { variantId: null, url: "/parent/./cover.jpg", sortOrder: 0, isPrimary: true },
+    { variantId: null, url: "/parent/gallery.jpg", sortOrder: 1, isPrimary: false },
+  ]);
+});
+
+test("empty parent image list removes only parent images, preserving variant galleries", async () => {
+  const { transaction, state } = makeTransaction({
+    images: [
+      { id: "parent-image", productId: "p1", variantId: null, url: "/same.jpg", sortOrder: 0, isPrimary: true },
+      { id: "variant-image", productId: "p1", variantId: "v1", url: "/same.jpg", sortOrder: 0, isPrimary: true },
+      { id: "other-variant-image", productId: "p1", variantId: "v2", url: "/same.jpg", sortOrder: 0, isPrimary: true },
+    ],
+  });
+
+  const changed = await replaceProductImagesIfChanged(transaction, "p1", []);
+
+  assert.equal(changed, true);
+  assert.deepEqual(state.images, [
+    { id: "variant-image", productId: "p1", variantId: "v1", url: "/same.jpg", sortOrder: 0, isPrimary: true },
+    { id: "other-variant-image", productId: "p1", variantId: "v2", url: "/same.jpg", sortOrder: 0, isPrimary: true },
+  ]);
 });
 
 test("a complete multi-variant list removes omissions and stores their tombstones", async () => {

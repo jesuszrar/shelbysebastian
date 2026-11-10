@@ -6,10 +6,45 @@ import { Button } from "@/components/ui/button";
 import { formatCOP } from "@/lib/format";
 import { useCart } from "@/context/CartContext";
 import { toast } from "sonner";
-import { ShoppingCart, Check, Star, Minus, Plus, ArrowLeft, MessageCircle, ShieldCheck, Truck, Sparkles } from "lucide-react";
+import { ShoppingCart, Check, Star, Minus, Plus, ArrowLeft, ChevronLeft, ChevronRight, MessageCircle, ShieldCheck, Truck, Sparkles } from "lucide-react";
 import { useProductsCatalog } from "@/context/ProductsContext";
 import { trackAddToCart, trackViewContent } from "@/lib/metaPixel";
 import { SHELBY_WHATSAPP_URL } from "@/lib/contact";
+import { getProductImageGallery } from "@/lib/product-image-gallery";
+
+type PersistedGallerySelection = {
+  variantId: string | null;
+  image: string | null;
+};
+
+const gallerySelectionStorageKey = (productId: string) =>
+  `shelby:product-gallery:${encodeURIComponent(productId)}`;
+
+const readGallerySelection = (productId: string): PersistedGallerySelection | null => {
+  try {
+    const stored = window.sessionStorage.getItem(gallerySelectionStorageKey(productId));
+    if (!stored) return null;
+    const parsed: unknown = JSON.parse(stored);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const selection = parsed as Record<string, unknown>;
+    if (
+      (selection.variantId !== null && typeof selection.variantId !== "string") ||
+      (selection.image !== null && typeof selection.image !== "string")
+    ) return null;
+    return { variantId: selection.variantId, image: selection.image } as PersistedGallerySelection;
+  } catch (error) {
+    console.warn("No se pudo recuperar la selección de galería", error);
+    return null;
+  }
+};
+
+const writeGallerySelection = (productId: string, selection: PersistedGallerySelection) => {
+  try {
+    window.sessionStorage.setItem(gallerySelectionStorageKey(productId), JSON.stringify(selection));
+  } catch (error) {
+    console.warn("No se pudo guardar la selección de galería", error);
+  }
+};
 
 const ProductDetail = () => {
   const { productId } = useParams();
@@ -20,6 +55,7 @@ const ProductDetail = () => {
   const [adding, setAdding] = useState(false);
   const [activeImage, setActiveImage] = useState<string | null>(null);
   const [selectedVariantId, setSelectedVariantId] = useState<string | undefined>();
+  const [selectionReadyProductId, setSelectionReadyProductId] = useState<string | null>(null);
 
   const selectedVariant = product?.subproducts?.find((variant) => variant.id === selectedVariantId);
   const variantDataIncomplete = Boolean(selectedVariant && (selectedVariant.price === undefined || selectedVariant.stock === undefined));
@@ -33,8 +69,36 @@ const ProductDetail = () => {
 
   useEffect(() => {
     if (!product) return;
-    setActiveImage(product.image);
-    setSelectedVariantId(undefined);
+    if (selectionReadyProductId !== product.id) {
+      const savedSelection = readGallerySelection(product.id);
+      const savedVariantExists = Boolean(
+        savedSelection?.variantId && product.subproducts?.some((variant) => variant.id === savedSelection.variantId),
+      );
+      const restoredVariantId = savedVariantExists ? savedSelection?.variantId ?? undefined : undefined;
+      const gallery = getProductImageGallery(product, restoredVariantId);
+      const restoredImage = savedSelection?.image && gallery.includes(savedSelection.image)
+        ? savedSelection.image
+        : gallery[0] ?? null;
+      setActiveImage(restoredImage);
+      setSelectedVariantId(restoredVariantId);
+      writeGallerySelection(product.id, { variantId: restoredVariantId ?? null, image: restoredImage });
+      setSelectionReadyProductId(product.id);
+      return;
+    }
+
+    const variantStillExists = Boolean(
+      selectedVariantId && product.subproducts?.some((variant) => variant.id === selectedVariantId),
+    );
+    const validVariantId = variantStillExists ? selectedVariantId : undefined;
+    const gallery = getProductImageGallery(product, validVariantId);
+    const validImage = activeImage && gallery.includes(activeImage) ? activeImage : gallery[0] ?? null;
+    if (selectedVariantId !== validVariantId) setSelectedVariantId(validVariantId);
+    if (activeImage !== validImage) setActiveImage(validImage);
+    writeGallerySelection(product.id, { variantId: validVariantId ?? null, image: validImage });
+  }, [product, selectedVariantId, activeImage, selectionReadyProductId]);
+
+  useEffect(() => {
+    if (!product) return;
     trackViewContent({
       content_ids: [product.id],
       content_name: product.name,
@@ -66,8 +130,17 @@ const ProductDetail = () => {
   };
 
   const waMsg = encodeURIComponent(`Hola Shelby, me interesa la ${product.name} (${formatCOP(product.price)}). ¿Tienen disponible?`);
-  const galleryImages = Array.from(new Set([...(selectedVariant?.images || []), selectedVariant?.image, ...(product.images || []), product.image].filter(Boolean) as string[]));
-  const gallery = galleryImages.length > 0 ? galleryImages : ["/placeholder.svg"];
+  const gallery = getProductImageGallery(product, selectedVariantId);
+  const displayedImage = activeImage && gallery.includes(activeImage)
+    ? activeImage
+    : gallery[0] ?? "/placeholder.svg";
+  const displayedImageIndex = gallery.indexOf(displayedImage);
+  const galleryLabel = selectedVariant?.name ?? product.name;
+  const moveGallery = (direction: -1 | 1) => {
+    if (gallery.length <= 1) return;
+    const nextIndex = (displayedImageIndex + direction + gallery.length) % gallery.length;
+    setActiveImage(gallery[nextIndex]);
+  };
 
   return (
     <div className="min-h-screen bg-[#f5f8f8]">
@@ -86,23 +159,43 @@ const ProductDetail = () => {
                     {product.badge}
                   </span>
                 )}
-                <div className="aspect-[5/4] overflow-hidden rounded-[1.4rem] bg-muted">
-                  <img src={activeImage || product.image || "/placeholder.svg"} alt={product.name} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className="h-full w-full object-cover" />
+                <div className="aspect-[4/3] overflow-hidden rounded-[1.4rem] bg-muted">
+                  <img src={displayedImage} alt={product.name} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className="h-full w-full object-contain" />
                 </div>
+                <button
+                  type="button"
+                  aria-label={`Imagen anterior de ${galleryLabel}`}
+                  onClick={() => moveGallery(-1)}
+                  disabled={gallery.length <= 1}
+                  className="absolute left-5 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-white/90 text-primary shadow-soft transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Imagen siguiente de ${galleryLabel}`}
+                  onClick={() => moveGallery(1)}
+                  disabled={gallery.length <= 1}
+                  className="absolute right-5 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-white/90 text-primary shadow-soft transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronRight className="h-5 w-5" aria-hidden="true" />
+                </button>
               </div>
 
-              <div className="grid grid-cols-4 gap-3">
+              {gallery.length > 0 && <div className="grid grid-cols-4 gap-3" aria-label="Imágenes del producto">
                 {gallery.map((img, index) => (
                   <button
                     key={`${img}-${index}`}
                     type="button"
                     onClick={() => setActiveImage(img)}
+                    aria-label={`Ver imagen ${index + 1} de ${galleryLabel}`}
+                    aria-pressed={displayedImage === img}
                     className={`overflow-hidden rounded-2xl border p-1.5 transition-smooth ${activeImage === img ? "border-primary bg-primary/5 shadow-soft" : "border-border bg-white hover:border-primary/40"}`}
                   >
-                    <img src={img} alt={`${product.name} vista ${index + 1}`} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className="h-20 w-full rounded-xl object-cover" />
+                    <img src={img} alt="" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className="h-20 w-full rounded-xl object-contain" />
                   </button>
                 ))}
-              </div>
+              </div>}
             </div>
 
             <div className="flex flex-col justify-center">
@@ -141,16 +234,21 @@ const ProductDetail = () => {
                     <h2 id="subproducts-title" className="mt-2 font-display text-3xl text-primary">Subproductos</h2>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <button type="button" onClick={() => setSelectedVariantId(undefined)} className={`rounded-2xl border p-3 text-left ${!selectedVariantId ? "border-primary bg-primary/5" : "border-border bg-white"}`}>
+                    <button type="button" onClick={() => { setSelectedVariantId(undefined); setActiveImage(getProductImageGallery(product)[0] ?? null); }} className={`rounded-2xl border p-3 text-left ${!selectedVariantId ? "border-primary bg-primary/5" : "border-border bg-white"}`}>
                       <span className="font-medium text-primary">Producto principal</span>
                       <span className="mt-1 block text-xs text-muted-foreground">{formatCOP(product.price)}</span>
                     </button>
                     {product.subproducts.map((subproduct) => {
                       const incomplete = subproduct.price === undefined || subproduct.stock === undefined;
                       const unavailable = subproduct.active === false || incomplete || subproduct.stock === 0;
-                      return <button type="button" key={subproduct.id} onClick={() => { if (!unavailable) { setSelectedVariantId(subproduct.id); setActiveImage(subproduct.image || product.image); } }} className={`flex gap-3 rounded-2xl border p-3 text-left shadow-soft ${selectedVariantId === subproduct.id ? "border-primary bg-primary/5 ring-2 ring-primary/20" : "border-border bg-white hover:border-primary/50"} ${unavailable ? "cursor-not-allowed opacity-60" : ""}`} disabled={unavailable}>
+                      return <button type="button" key={subproduct.id} onClick={() => {
+                        if (!unavailable) {
+                          setSelectedVariantId(subproduct.id);
+                          setActiveImage(getProductImageGallery(product, subproduct.id)[0] ?? null);
+                        }
+                      }} className={`flex gap-3 rounded-2xl border p-3 text-left shadow-soft ${selectedVariantId === subproduct.id ? "border-primary bg-primary/5 ring-2 ring-primary/20" : "border-border bg-white hover:border-primary/50"} ${unavailable ? "cursor-not-allowed opacity-60" : ""}`} disabled={unavailable}>
                         <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-muted">
-                          <img src={subproduct.image || "/placeholder.svg"} alt={subproduct.name} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className="h-full w-full object-cover" loading="lazy" />
+                          <img src={(subproduct.image?.trim() ? subproduct.image : getProductImageGallery(product, subproduct.id)[0]) || "/placeholder.svg"} alt={subproduct.name} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className="h-full w-full object-cover" loading="lazy" />
                         </div>
                         <div className="min-w-0">
                           <h3 className="font-medium leading-tight text-primary">{subproduct.name}</h3>

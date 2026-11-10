@@ -1,6 +1,7 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Link } from "react-router-dom";
-import type { Product } from "@/data/products";
+import type { CatalogCategory, Product } from "@/data/products";
+import { fetchData } from "@/integrations/api/client";
 import { formatCOP } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { useCart } from "@/context/CartContext";
@@ -9,7 +10,17 @@ import { ShoppingCart, Star, Eye, ArrowRight } from "lucide-react";
 import { useProductsCatalog } from "@/context/ProductsContext";
 import { trackAddToCart } from "@/lib/metaPixel";
 
-const categories = ["Todos", "Adhesivas", "Facturación", "Más vendidos", "Repuestos"] as const;
+const fallbackCategories = ["Adhesivas", "Facturación", "Más vendidos", "Repuestos"];
+
+export const getProductCategories = (product: Product): string[] => {
+  const officialNames = (product.categories ?? [])
+    .map((category) => category.name.trim())
+    .filter(Boolean);
+  return [...new Set((officialNames.length ? officialNames : [product.category]).filter(Boolean))];
+};
+
+export const productHasCategory = (product: Product, category: string): boolean =>
+  getProductCategories(product).some((name) => name.toLocaleLowerCase("es") === category.toLocaleLowerCase("es"));
 
 export const ProductCard = ({ p }: { p: Product }) => {
   const { add } = useCart();
@@ -93,8 +104,29 @@ export const ProductCard = ({ p }: { p: Product }) => {
 
 export const Products = () => {
   const { products: liveProducts, loading, error } = useProductsCatalog();
-  const [active, setActive] = useState<(typeof categories)[number]>("Todos");
-  const list = useMemo(() => active === "Todos" ? liveProducts : liveProducts.filter((p) => p.category === active), [active, liveProducts]);
+  const [active, setActive] = useState("");
+  const [categories, setCategories] = useState<CatalogCategory[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    void fetchData<CatalogCategory[]>("categories").then(({ data, error: loadError }) => {
+      if (!mounted) return;
+      if (loadError) console.error("Error loading home categories", loadError);
+      setCategories(Array.isArray(data) ? data : []);
+    });
+    return () => { mounted = false; };
+  }, []);
+
+  const categoryNames = categories.length ? categories.map((category) => category.name) : fallbackCategories;
+
+  useEffect(() => {
+    if (categoryNames.length && !categoryNames.includes(active)) setActive(categoryNames[0]);
+  }, [active, categories]);
+
+  const list = useMemo(
+    () => active ? liveProducts.filter((product) => productHasCategory(product, active)) : [],
+    [active, liveProducts],
+  );
 
   return (
     <section id="productos" className="bg-white py-24">
@@ -116,7 +148,7 @@ export const Products = () => {
         </div>
 
         <div className="mb-8 flex flex-wrap gap-2">
-          {categories.map((c) => (
+          {categoryNames.map((c) => (
             <button
               key={c}
               type="button"

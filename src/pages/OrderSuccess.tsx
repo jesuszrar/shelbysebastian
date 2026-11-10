@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { CheckCircle2, MessageCircle, ShoppingBag, XCircle } from "lucide-react";
 import { Navbar } from "@/components/shelby/Navbar";
 import { Footer } from "@/components/shelby/Footer";
 import { Button } from "@/components/ui/button";
 import { formatCOP } from "@/lib/format";
-import { fetchData } from "@/integrations/api/client";
-import { trackPurchase } from "@/lib/metaPixel";
+import { claimMetaPurchase, fetchData } from "@/integrations/api/client";
+import { isMetaPixelQueueAvailable, trackPurchase } from "@/lib/metaPixel";
+import { readMetaPurchaseToken, removeMetaPurchaseToken } from "@/lib/metaPixelPurchase";
 import { SHELBY_WHATSAPP_URL } from "@/lib/contact";
 
 type PaymentStatus = "payment_pending" | "payment_approved" | "payment_failed";
@@ -34,6 +35,8 @@ const OrderSuccess = () => {
   const method = params.get("method") || undefined;
   const initialStatus = normalizeStatus(params.get("status"));
   const [status, setStatus] = useState<PaymentStatus>(initialStatus);
+  const purchaseClaimInFlight = useRef(false);
+  const purchaseClaimFinished = useRef(false);
   const isFailed = status === "payment_failed";
   const isPending = status === "payment_pending";
   const friendlyMethod = method ? PAYMENT_METHOD_LABELS[method.toLowerCase()] ?? method : undefined;
@@ -42,20 +45,47 @@ const OrderSuccess = () => {
     : "Si pagaste por transferencia o WhatsApp, tu pedido se confirmará cuando recibamos la validación.";
 
   useEffect(() => {
-    if (!isFailed && !isPending) {
-      trackPurchase({
-        content_ids: order ? [order] : undefined,
-        currency: "COP",
-        value: Number.isNaN(totalNum) ? undefined : totalNum,
-        status,
-      });
-    }
-  }, [isFailed, isPending, order, status, totalNum]);
-
-  useEffect(() => {
     if (!order) return;
 
     let cancelled = false;
+    const claimPurchase = async () => {
+      if (purchaseClaimFinished.current || purchaseClaimInFlight.current) return false;
+      if (!isMetaPixelQueueAvailable()) return false;
+      const claimToken = readMetaPurchaseToken(order);
+      if (!claimToken) {
+        purchaseClaimFinished.current = true;
+        return true;
+      }
+
+      purchaseClaimInFlight.current = true;
+      const { data: claim, error: claimError } = await claimMetaPurchase(order, claimToken);
+      purchaseClaimInFlight.current = false;
+      if (claimError) {
+        if (claimError.businessCode === "purchase_already_claimed") {
+          removeMetaPurchaseToken(order);
+          purchaseClaimFinished.current = true;
+          return true;
+        }
+        if (claimError.businessCode !== "purchase_not_approved") {
+          console.error("[meta-pixel] purchase claim request failed", { orderId: order, code: claimError.code });
+        }
+        return false;
+      }
+      if (!claim?.claimed || !claim.purchase) return false;
+
+      trackPurchase({
+        content_ids: claim.purchase.items.map((item) => item.id),
+        contents: claim.purchase.items,
+        content_type: "product",
+        currency: claim.purchase.currency,
+        num_items: claim.purchase.items.reduce((sum, item) => sum + item.quantity, 0),
+        value: claim.purchase.total,
+      }, claim.purchase.orderId);
+      removeMetaPurchaseToken(order);
+      purchaseClaimFinished.current = true;
+      return true;
+    };
+
     const refreshStatus = async () => {
       const { data, error } = await fetchData<{ status?: string | null; paymentMethod?: string | null; total?: number }>("orders", {
         filters: JSON.stringify([{ column: "id", value: order }]),
@@ -70,9 +100,13 @@ const OrderSuccess = () => {
       const nextStatus = normalizeStatus((data as { status?: string | null } | null)?.status ?? null);
       if (!cancelled) {
         setStatus(nextStatus);
+        if (nextStatus === "payment_approved") {
+          const finished = await claimPurchase();
+          if (finished) window.clearInterval(intervalId);
+        }
       }
 
-      if (nextStatus !== "payment_pending") {
+      if (nextStatus === "payment_failed") {
         window.clearInterval(intervalId);
       }
     };

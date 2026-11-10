@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { Prisma } from "@prisma/client";
-import { decrementOrderInventory } from "./order-inventory.js";
+import { decrementOrderInventory, recordOrderInventoryReservation } from "./order-inventory.js";
 
 const makeTransaction = (variantUpdateCounts: number[] = [], productUpdateCounts: number[] = []) => {
   const events: Array<{ kind: string; args?: Record<string, unknown> }> = [];
@@ -102,5 +102,27 @@ test("failed conditional product decrement aborts remaining order inventory oper
     "lock",
     "lock",
     "product-update",
+  ]);
+});
+
+test("order inventory reservations preserve each order line", async () => {
+  const created: Array<Record<string, unknown>> = [];
+  const transaction = {
+    orderInventoryReservation: {
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        created.push(data);
+        return data;
+      },
+    },
+  } as unknown as Prisma.TransactionClient;
+
+  await recordOrderInventoryReservation(transaction, "order-1", [
+    { productId: "product-1", variantId: "variant-1", quantity: 2 },
+    { productId: "product-2", variantId: null, quantity: 1 },
+  ]);
+
+  assert.deepEqual(created, [
+    { orderId: "order-1", lineIndex: 0, productId: "product-1", variantId: "variant-1", quantity: 2 },
+    { orderId: "order-1", lineIndex: 1, productId: "product-2", variantId: null, quantity: 1 },
   ]);
 });

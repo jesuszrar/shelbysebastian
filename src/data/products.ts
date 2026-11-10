@@ -21,6 +21,7 @@ export type CatalogCategory = {
   id: string;
   name: string;
   slug: string;
+  sortOrder?: number;
 };
 
 export type Subproduct = {

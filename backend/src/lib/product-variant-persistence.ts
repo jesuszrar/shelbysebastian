@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { lockProductCatalogIds } from "./productCatalogLock.js";
+import { normalizeProductImageUrls } from "./product-image-galleries.js";
 
 export type ProductVariantInput = Record<string, unknown>;
 
@@ -276,9 +277,7 @@ export const findStockSnapshotConflict = (
 
 export const resolveVariantImageUrls = (variant: Record<string, unknown>): string[] | null => {
   if (!Array.isArray(variant.images)) return null;
-  return Array.from(new Set(variant.images
-    .map((image) => (typeof image === "string" ? image : String((image as Record<string, unknown>)?.url ?? "")).trim())
-    .filter(Boolean)));
+  return normalizeProductImageUrls(variant.images);
 };
 
 export const productCatalogRelations = {
@@ -289,7 +288,7 @@ export const productCatalogRelations = {
     },
   },
   categories: { include: { category: true } },
-  images: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }] },
+  images: { where: { variantId: null }, orderBy: [{ sortOrder: "asc" }, { id: "asc" }] },
 } satisfies Prisma.ProductInclude;
 
 export const readProductWithCatalogRelations = (
@@ -335,6 +334,7 @@ export const replaceProductImagesIfChanged = async (
   productId: string,
   imageUrls: string[],
 ) => {
+  const normalizedImageUrls = normalizeProductImageUrls(imageUrls);
   const where = { productId, variantId: null };
   const currentImages = await transaction.productImage.findMany({
     where,
@@ -342,12 +342,12 @@ export const replaceProductImagesIfChanged = async (
     select: { id: true, url: true },
   });
   const currentUrls = currentImages.map((image) => image.url);
-  if (currentUrls.length === imageUrls.length && currentUrls.every((url, index) => url === imageUrls[index])) {
+  if (currentUrls.length === normalizedImageUrls.length && currentUrls.every((url, index) => url === normalizedImageUrls[index])) {
     return false;
   }
 
   await transaction.productImage.deleteMany({ where });
-  for (const [sortOrder, url] of imageUrls.entries()) {
+  for (const [sortOrder, url] of normalizedImageUrls.entries()) {
     await transaction.productImage.create({
       data: { productId, variantId: null, url, sortOrder, isPrimary: sortOrder === 0 },
     });

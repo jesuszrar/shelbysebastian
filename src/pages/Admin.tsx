@@ -18,6 +18,8 @@ import {
 } from "recharts";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   BarChart3,
   CheckCircle2,
   Clock3,
@@ -89,6 +91,7 @@ type CategoryRow = {
   id: string;
   name: string;
   slug: string;
+  sortOrder?: number;
 };
 
 type OrderRow = {
@@ -105,6 +108,7 @@ type OrderRow = {
   customerCity?: string | null;
   customerAddress?: string | null;
   paymentMethod?: string | null;
+  inventoryReviewReason?: string | null;
 };
 
 type UserRow = {
@@ -324,6 +328,21 @@ function CategoriesAdmin({
   const [slug, setSlug] = useState("");
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [movingId, setMovingId] = useState<string | null>(null);
+
+  const moveCategory = async (category: CategoryRow, direction: "up" | "down") => {
+    setMovingId(category.id);
+    const result = await patchData<{ moved: boolean; boundary?: boolean }>(
+      "categories",
+      { move: { id: category.id, direction } },
+    );
+    setMovingId(null);
+    if (result.error) {
+      toast.error(result.error.message || "No se pudo cambiar la posición.");
+      return;
+    }
+    if (result.data?.moved) await onUpdated();
+  };
 
   const resetForm = () => {
     setEditingId(null);
@@ -401,13 +420,35 @@ function CategoriesAdmin({
         </div>
       ) : loading ? <p className="text-sm text-muted-foreground">Cargando categorías...</p> : categories.length ? (
         <ul className="divide-y divide-border rounded-xl border border-border">
-          {categories.map((category) => (
+          {categories.map((category, index) => (
             <li key={category.id} className="flex flex-wrap items-center justify-between gap-3 p-3">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-secondary">{category.name}</p>
                 <p className="text-xs text-muted-foreground">{category.slug}</p>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  aria-label={`Subir ${category.name}`}
+                  title="Subir categoría"
+                  disabled={index === 0 || movingId !== null}
+                  onClick={() => void moveCategory(category, "up")}
+                >
+                  <ArrowUp className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  aria-label={`Bajar ${category.name}`}
+                  title="Bajar categoría"
+                  disabled={index === categories.length - 1 || movingId !== null}
+                  onClick={() => void moveCategory(category, "down")}
+                >
+                  <ArrowDown className="h-4 w-4" />
+                </Button>
                 <Button type="button" size="sm" variant="outline" aria-label={`Editar ${category.name}`} onClick={() => startEdit(category)}>
                   <Pencil className="mr-1 h-3.5 w-3.5" />Editar
                 </Button>
@@ -1596,6 +1637,12 @@ function OrdersAdmin() {
                   <div className="font-semibold text-secondary">Orden {order.id}</div>
                   <div className="text-xs text-muted-foreground">{new Date(order.createdAt || order.created_at || Date.now()).toLocaleString()} · Usuario: {order.userId || order.user_id || "invitado"}</div>
                   <div className="text-xs text-muted-foreground mt-1">{order.customerName || "Sin nombre"} · {order.customerEmail || "sin correo"} · {order.paymentMethod || "sin método"}</div>
+                  {order.inventoryReviewReason ? (
+                    <div className="mt-2 flex items-start gap-2 rounded-xl border border-amber-300/60 bg-amber-50 p-2 text-xs text-amber-900">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span><strong>Revisión manual de inventario:</strong> {order.inventoryReviewReason}</span>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                   <select

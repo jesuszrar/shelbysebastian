@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { CreditCard, Truck, MessageCircle, Lock, ShoppingBag, Copy, CheckCircle2, Loader2, Smartphone, Building2, Landmark } from "lucide-react";
 import { SiVisa, SiMastercard } from "react-icons/si";
 import { trackInitiateCheckout } from "@/lib/metaPixel";
+import { storeMetaPurchaseToken } from "@/lib/metaPixelPurchase";
 import AddressList from "@/components/addresses/AddressList";
 import { api, getUserAddresses, createUserAddress, invokeFunction, postData } from "@/integrations/api/client";
 import { getWompiErrorMessage } from "@/lib/payment";
@@ -256,7 +257,7 @@ const Checkout = () => {
       shipping_reference: data.notes || null,
     };
 
-    const { error } = await postData("orders", payload);
+    const { data: savedOrders, error } = await postData<Array<{ id?: string; purchaseClaimToken?: string }>>("orders", payload);
 
     if (error) {
       const status = Number(error.code);
@@ -267,6 +268,10 @@ const Checkout = () => {
       });
       throw orderError;
     }
+    const purchaseClaimToken = Array.isArray(savedOrders)
+      ? savedOrders.find((savedOrder) => savedOrder.id === orderId)?.purchaseClaimToken
+      : undefined;
+    if (purchaseClaimToken) storeMetaPurchaseToken(orderId, purchaseClaimToken);
     // If user wanted to save the address (and is authenticated) create it
     try {
       if (saveAddressOnCheckout && user?.id) {

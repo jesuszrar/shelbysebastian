@@ -1,4 +1,5 @@
 import express from "express";
+import { createMetaPurchaseCredential, isMetaPurchaseApproved, matchesMetaPurchaseCredential, normalizeMetaPurchaseItems } from "./lib/meta-purchase.js";
 import cors from "cors";
 import { Prisma, type PrismaClient, type Product, type Order, type User, type Coupon, type CedulaEmail, type UserAddress } from "@prisma/client";
 import bcrypt from "bcryptjs";
@@ -10,7 +11,7 @@ import { fileURLToPath } from "url";
 import { resolvePreferredPaymentMethod } from "./lib/mercadopago.js";
 import { isAllowedCorsOrigin } from "./lib/cors.js";
 import { calculateOrderPricing, hasSameOrderLines, type OrderPricingRepository } from "./lib/order-pricing.js";
-import { decrementOrderInventory } from "./lib/order-inventory.js";
+import { cancelOrderAndRestoreInventory, decrementOrderInventory, recordOrderInventoryReservation } from "./lib/order-inventory.js";
 import { buildMercadoPagoPreferencePayload } from "./lib/mercadopagoPreference.js";
 import { isAdminUserRecord } from "./lib/auth.js";
 import { canLookupCedulaEmail, canManagePrivateData, canSyncProfile, hasAdminRoleMutation, resolveDataReadAccess } from "./lib/access-control.js";
@@ -26,6 +27,7 @@ import { products as staticProducts } from "./scripts/product-catalog-data.js";
 import { buildCatalogSyncPlan } from "./scripts/catalog-sync-plan.js";
 import { syncProductCatalog } from "./scripts/sync-product-catalog.js";
 import { resolveUploadsDirectory } from "./lib/uploads-directory.js";
+import { serializeProduct as serializeProductWithGalleries } from "./lib/serialize-product.js";
 import {
   createProfileAvatarObjectPath,
   createSupabaseProfileAvatarStorage,
@@ -86,6 +88,11 @@ type StoredSession = { user: { id: string; email: string; user_metadata: Record<
 type WompiPaymentError = Error & { status?: number; missingFields?: string[]; payload?: Record<string, unknown> };
 type CookieSameSite = "lax" | "strict" | "none";
 type NiimbotPageImageRecord = { id: string; key: string; path: string; alt: string | null; createdAt: Date; updatedAt: Date };
+class MetaPurchaseClaimError extends Error {
+  constructor(readonly statusCode: number, readonly code: string) {
+    super(code);
+  }
+}
 class ProductBatchAbort extends Error {
   constructor(readonly statusCode: number, readonly responseBody: Record<string, unknown>) {
     super(String(responseBody.error ?? "No se pudo guardar el lote de productos"));
@@ -239,14 +246,8 @@ const serializeUser = (user: User | null) =>
       }
     : null;
 
-const serializeProduct = (product: Product & { variants?: unknown[]; categories?: unknown[]; images?: unknown[] }) => {
-  const categories = (product.categories ?? []).map((item) =>
-    item && typeof item === "object" && "category" in item
-      ? (item as { category: unknown }).category
-      : item,
-  );
-  return wrap({ ...product, price: product.price, categories, variants: product.variants ?? [], images: product.images ?? [] });
-};
+const serializeProduct = (product: Product & { variants?: unknown[]; categories?: unknown[]; images?: unknown[] }) =>
+  serializeProductWithGalleries(product);
 const serializeOrder = (order: Order) => wrap({
   ...order,
   total: order.total,
@@ -1631,7 +1632,7 @@ app.get("/api/data/:table", async (req, res) => {
 
   let rows: Array<Record<string, unknown>> = [];
   if (table === "products") rows = (await readProductsWithCatalogRelations(prisma)).map((row) => serializeProduct(row) as Record<string, unknown>);
-  else if (table === "categories") rows = (await prisma.category.findMany({ orderBy: [{ name: "asc" }, { id: "asc" }] })).map((row) => wrap(row) as Record<string, unknown>);
+  else if (table === "categories") rows = (await prisma.category.findMany({ orderBy: [{ sortOrder: "asc" }, { id: "asc" }] })).map((row) => wrap(row) as Record<string, unknown>);
   else if (table === "profiles") rows = (await prisma.user.findMany()).map((row) => serializeUser(row) as Record<string, unknown>);
   else if (table === "coupons") rows = (await prisma.coupon.findMany()).map((row) => serializeCoupon(row) as Record<string, unknown>);
   else if (table === "coupon_audit") rows = [];
@@ -1657,12 +1658,25 @@ app.post("/api/data/:table", async (req, res) => {
     const authUser = await requireAdmin(req, res);
     if (!authUser) return;
     const rows = Array.isArray(body) ? body as Array<Record<string, unknown>> : [body as Record<string, unknown>];
-    const categoryInputs = rows.map((row) => ({ name: String(row.name ?? "").trim(), slug: String(row.slug ?? "").trim().toLowerCase() }));
+    const categoryInputs = rows.map((row) => ({
+      name: String(row.name ?? "").trim(),
+      slug: String(row.slug ?? "").trim().toLowerCase(),
+    }));
     if (categoryInputs.some((category) => !category.name || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(category.slug))) {
       return res.status(422).json({ error: "Cada categoría necesita nombre y slug válido" });
     }
     try {
-      const saved = await prisma.$transaction(categoryInputs.map((category) => prisma.category.create({ data: category })));
+      const saved = await prisma.$transaction(async (transaction) => {
+        const lastPosition = await transaction.category.aggregate({ _max: { sortOrder: true } });
+        let nextPosition = (lastPosition._max.sortOrder ?? -1) + 1;
+        const created = [];
+        for (const category of categoryInputs) {
+          created.push(await transaction.category.create({
+            data: { ...category, sortOrder: nextPosition++ },
+          }));
+        }
+        return created;
+      });
       return res.json(saved.map((category) => wrap(category)));
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
@@ -1912,7 +1926,7 @@ app.post("/api/data/:table", async (req, res) => {
 
   if (table === "orders") {
     const rows = Array.isArray(body) ? body : [body];
-    const saved = [] as Order[];
+    const saved: Array<{ order: Order; purchaseClaimToken?: string }> = [];
     for (const row of rows as Array<Record<string, unknown>>) {
       const orderId = String(row.id || crypto.randomUUID());
       const rawUserId = row.userId !== undefined ? String(row.userId) : row.user_id !== undefined ? String(row.user_id) : undefined;
@@ -1929,6 +1943,8 @@ app.post("/api/data/:table", async (req, res) => {
       });
 
       let order: Order;
+      let purchaseClaimToken: string | undefined;
+      let isNewOrder = false;
       try {
         const requestedStatus = String(row.status ?? "pending");
         if (requestedStatus !== "pending" && requestedStatus !== "payment_pending") {
@@ -1976,7 +1992,17 @@ app.post("/api/data/:table", async (req, res) => {
             variantId: item.variantId ? String(item.variantId) : null,
             quantity: Number(item.quantity),
           })));
-          return transaction.order.create({ data: { id: orderId, ...normalizedOrderData, status: requestedStatus, ...pricingData } });
+          const inventoryItems = pricing.items.map((item) => ({
+            productId: String(item.productId),
+            variantId: item.variantId ? String(item.variantId) : null,
+            quantity: Number(item.quantity),
+          }));
+          const createdOrder = await transaction.order.create({
+            data: { id: orderId, ...normalizedOrderData, status: requestedStatus, ...pricingData },
+          });
+          await recordOrderInventoryReservation(transaction, orderId, inventoryItems);
+          isNewOrder = true;
+          return createdOrder;
         });
       } catch (error) {
         const errorDetails = error && typeof error === "object"
@@ -1997,10 +2023,27 @@ app.post("/api/data/:table", async (req, res) => {
         await sendInvoiceEmail(order);
         await prisma.order.update({ where: { id: order.id }, data: { invoiceSentAt: new Date() } });
       }
-      saved.push(order);
+      if (isNewOrder) {
+        const credential = createMetaPurchaseCredential();
+        try {
+          await prisma.metaPurchaseClaim.create({
+            data: { orderId, tokenHash: credential.tokenHash },
+          });
+          purchaseClaimToken = credential.token;
+        } catch (error) {
+          console.error("[meta-pixel] purchase claim credential could not be persisted", {
+            orderId,
+            error: error instanceof Error ? error.name : "unknown",
+          });
+        }
+      }
+      saved.push({ order, purchaseClaimToken });
     }
     console.log("[orders] responding", { count: saved.length });
-    return res.json(saved.map(serializeOrder));
+    return res.json(saved.map(({ order, purchaseClaimToken }) => ({
+      ...asRecord(serializeOrder(order)),
+      ...(purchaseClaimToken ? { purchaseClaimToken } : {}),
+    })));
   }
 
   if (table === "profiles") {
@@ -2091,6 +2134,38 @@ app.patch("/api/data/:table", async (req, res) => {
   if (table === "categories") {
     const authUser = await requireAdmin(req, res);
     if (!authUser) return;
+
+    const move = payload.move as { id?: unknown; direction?: unknown } | undefined;
+    if (move !== undefined) {
+      const categoryId = String(move.id ?? "");
+      const direction = move.direction;
+      if (!categoryId || (direction !== "up" && direction !== "down")) {
+        return res.status(422).json({ error: "Movimiento de categoria no valido" });
+      }
+
+      const result = await prisma.$transaction(async (transaction) => {
+        const locked = await transaction.$queryRaw<Array<{ id: string; sortOrder: number }>>(Prisma.sql`
+          SELECT "id", "sortOrder"
+          FROM "public"."Category"
+          ORDER BY "sortOrder" ASC, "id" ASC
+          FOR UPDATE
+        `);
+        const currentIndex = locked.findIndex((row) => row.id === categoryId);
+        if (currentIndex < 0) return { error: "Categoria no encontrada" };
+        const targetIndex = currentIndex + (direction === "up" ? -1 : 1);
+        if (targetIndex < 0 || targetIndex >= locked.length) return { boundary: true };
+
+        const current = locked[currentIndex];
+        const target = locked[targetIndex];
+        await transaction.category.update({ where: { id: current.id }, data: { sortOrder: target.sortOrder } });
+        await transaction.category.update({ where: { id: target.id }, data: { sortOrder: current.sortOrder } });
+        return { moved: true };
+      });
+
+      if ("error" in result) return res.status(404).json({ error: result.error });
+      return res.json({ moved: "moved" in result && result.moved === true, boundary: "boundary" in result });
+    }
+
     if (filters.length === 0) return res.status(400).json({ error: "Se requiere un filtro para actualizar categorías" });
     const name = payload.name !== undefined ? String(payload.name).trim() : undefined;
     const slug = payload.slug !== undefined ? String(payload.slug).trim().toLowerCase() : undefined;
@@ -2186,10 +2261,14 @@ app.patch("/api/data/:table", async (req, res) => {
     const updated = [] as Order[];
     for (const row of matched) {
       const existing = await prisma.order.findUnique({ where: { id: String(row.id) } });
-      const next = await prisma.order.update({
-        where: { id: String(row.id) },
-        data: normalizeOrderUpdateData(payload),
-      });
+      if (!existing) continue;
+      const next = payload.status === "cancelled"
+        ? (await prisma.$transaction((transaction) => cancelOrderAndRestoreInventory(transaction, existing.id)))?.next
+        : await prisma.order.update({
+          where: { id: String(row.id) },
+          data: normalizeOrderUpdateData(payload),
+        });
+      if (!next) continue;
       if (existing && !revenueStatuses.has(existing.status.toLowerCase()) && revenueStatuses.has(next.status.toLowerCase()) && next.customerEmail) {
         try {
           await sendInvoiceEmail(next);
@@ -2836,6 +2915,60 @@ app.post("/api/payments/wompi/webhook", async (req, res) => {
       error: error instanceof Error ? error.name : "unknown",
     });
     return res.status(500).json({ error: "wompi_error" });
+  }
+});
+
+app.post("/api/meta/purchase/:orderId/claim", async (req, res) => {
+  const orderId = String(req.params.orderId ?? "").trim();
+  const token = typeof req.body?.claimToken === "string" ? req.body.claimToken : "";
+  if (!orderId || !token || token.length > 128) {
+    return res.status(400).json({ error: "invalid_purchase_claim" });
+  }
+
+  try {
+    const purchase = await prisma.$transaction(async (transaction) => {
+      const claim = await transaction.metaPurchaseClaim.findUnique({ where: { orderId } });
+      if (!claim || !matchesMetaPurchaseCredential(token, claim.tokenHash)) {
+        throw new MetaPurchaseClaimError(404, "purchase_claim_not_found");
+      }
+
+      const order = await transaction.order.findUnique({
+        where: { id: orderId },
+        select: { id: true, status: true, paymentStatus: true, total: true, currency: true, items: true },
+      });
+      if (!order) throw new MetaPurchaseClaimError(404, "purchase_claim_not_found");
+      if (!isMetaPurchaseApproved(order.status, order.paymentStatus)) {
+        throw new MetaPurchaseClaimError(409, "purchase_not_approved");
+      }
+
+      const total = Number(order.total);
+      const currency = String(order.currency ?? "").trim().toUpperCase();
+      const items = normalizeMetaPurchaseItems(order.items);
+      if (!Number.isFinite(total) || total <= 0 || !/^[A-Z]{3}$/.test(currency) || !items) {
+        throw new Error("Persisted order does not contain a valid Meta Purchase summary");
+      }
+
+      const claimResult = await transaction.metaPurchaseClaim.updateMany({
+        where: { orderId, claimedAt: null },
+        data: { claimedAt: new Date() },
+      });
+      if (claimResult.count !== 1) {
+        throw new MetaPurchaseClaimError(409, "purchase_already_claimed");
+      }
+
+      return { orderId: order.id, total, currency, items };
+    });
+
+    return res.json({ claimed: true, purchase });
+  } catch (error) {
+    if (error instanceof MetaPurchaseClaimError) {
+      return res.status(error.statusCode).json({ error: error.code, code: error.code });
+    }
+    console.error("[meta-pixel] purchase claim failed", {
+      orderId,
+      error: error instanceof Error ? error.name : "unknown",
+    });
+    return res.status(500).json({ error: "purchase_claim_failed" });
   }
 });
 
