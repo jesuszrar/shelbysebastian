@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { formatCOP } from "@/lib/format";
 import { useCart } from "@/context/CartContext";
 import { toast } from "sonner";
-import { ShoppingCart, Check, Star, Minus, Plus, ArrowLeft, ChevronLeft, ChevronRight, MessageCircle, ShieldCheck, Truck, Sparkles } from "lucide-react";
+import { ShoppingCart, Check, Star, Minus, Plus, ArrowLeft, ChevronLeft, ChevronRight, MessageCircle, ShieldCheck, Truck, Sparkles, X } from "lucide-react";
 import { useProductsCatalog } from "@/context/ProductsContext";
 import { trackAddToCart, trackViewContent } from "@/lib/metaPixel";
 import { SHELBY_WHATSAPP_URL } from "@/lib/contact";
@@ -56,6 +56,7 @@ const ProductDetail = () => {
   const [activeImage, setActiveImage] = useState<string | null>(null);
   const [selectedVariantId, setSelectedVariantId] = useState<string | undefined>();
   const [selectionReadyProductId, setSelectionReadyProductId] = useState<string | null>(null);
+  const [variantPreview, setVariantPreview] = useState<{ name: string; image: string } | null>(null);
 
   const selectedVariant = product?.subproducts?.find((variant) => variant.id === selectedVariantId);
   const variantDataIncomplete = Boolean(selectedVariant && (selectedVariant.price === undefined || selectedVariant.stock === undefined));
@@ -75,12 +76,13 @@ const ProductDetail = () => {
         savedSelection?.variantId && product.subproducts?.some((variant) => variant.id === savedSelection.variantId),
       );
       const restoredVariantId = savedVariantExists ? savedSelection?.variantId ?? undefined : undefined;
-      const gallery = getProductImageGallery(product, restoredVariantId);
+      const gallery = getProductImageGallery(product);
       const restoredImage = savedSelection?.image && gallery.includes(savedSelection.image)
         ? savedSelection.image
         : gallery[0] ?? null;
       setActiveImage(restoredImage);
       setSelectedVariantId(restoredVariantId);
+      setVariantPreview(null);
       writeGallerySelection(product.id, { variantId: restoredVariantId ?? null, image: restoredImage });
       setSelectionReadyProductId(product.id);
       return;
@@ -90,7 +92,7 @@ const ProductDetail = () => {
       selectedVariantId && product.subproducts?.some((variant) => variant.id === selectedVariantId),
     );
     const validVariantId = variantStillExists ? selectedVariantId : undefined;
-    const gallery = getProductImageGallery(product, validVariantId);
+    const gallery = getProductImageGallery(product);
     const validImage = activeImage && gallery.includes(activeImage) ? activeImage : gallery[0] ?? null;
     if (selectedVariantId !== validVariantId) setSelectedVariantId(validVariantId);
     if (activeImage !== validImage) setActiveImage(validImage);
@@ -130,12 +132,12 @@ const ProductDetail = () => {
   };
 
   const waMsg = encodeURIComponent(`Hola Shelby, me interesa la ${product.name} (${formatCOP(product.price)}). ¿Tienen disponible?`);
-  const gallery = getProductImageGallery(product, selectedVariantId);
+  const gallery = getProductImageGallery(product);
   const displayedImage = activeImage && gallery.includes(activeImage)
     ? activeImage
     : gallery[0] ?? "/placeholder.svg";
   const displayedImageIndex = gallery.indexOf(displayedImage);
-  const galleryLabel = selectedVariant?.name ?? product.name;
+  const galleryLabel = product.name;
   const moveGallery = (direction: -1 | 1) => {
     if (gallery.length <= 1) return;
     const nextIndex = (displayedImageIndex + direction + gallery.length) % gallery.length;
@@ -182,7 +184,7 @@ const ProductDetail = () => {
                 </button>
               </div>
 
-              {gallery.length > 0 && <div className="grid grid-cols-4 gap-3" aria-label="Imágenes del producto">
+              {gallery.length > 0 && <div className={product.subproducts?.length ? "grid grid-cols-3 gap-3" : "grid grid-cols-4 gap-3"} aria-label="Imágenes del producto">
                 {gallery.map((img, index) => (
                   <button
                     key={`${img}-${index}`}
@@ -190,9 +192,9 @@ const ProductDetail = () => {
                     onClick={() => setActiveImage(img)}
                     aria-label={`Ver imagen ${index + 1} de ${galleryLabel}`}
                     aria-pressed={displayedImage === img}
-                    className={`overflow-hidden rounded-2xl border p-1.5 transition-smooth ${activeImage === img ? "border-primary bg-primary/5 shadow-soft" : "border-border bg-white hover:border-primary/40"}`}
+                    className={`overflow-hidden rounded-2xl border p-1.5 transition-smooth ${product.subproducts?.length ? "aspect-[4/3]" : ""} ${activeImage === img ? "border-primary bg-primary/5 shadow-soft" : "border-border bg-white hover:border-primary/40"}`}
                   >
-                    <img src={img} alt="" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className="h-20 w-full rounded-xl object-contain" />
+                    <img src={img} alt="" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} className={product.subproducts?.length ? "h-full w-full rounded-xl object-contain" : "h-20 w-full rounded-xl object-contain"} />
                   </button>
                 ))}
               </div>}
@@ -244,7 +246,7 @@ const ProductDetail = () => {
                       return <button type="button" key={subproduct.id} onClick={() => {
                         if (!unavailable) {
                           setSelectedVariantId(subproduct.id);
-                          setActiveImage(getProductImageGallery(product, subproduct.id)[0] ?? null);
+                          setVariantPreview({ name: subproduct.name, image: subproduct.image?.trim() || getProductImageGallery(product, subproduct.id)[0] || "/placeholder.svg" });
                         }
                       }} className={`flex gap-3 rounded-2xl border p-3 text-left shadow-soft ${selectedVariantId === subproduct.id ? "border-primary bg-primary/5 ring-2 ring-primary/20" : "border-border bg-white hover:border-primary/50"} ${unavailable ? "cursor-not-allowed opacity-60" : ""}`} disabled={unavailable}>
                         <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-muted">
@@ -361,6 +363,17 @@ const ProductDetail = () => {
             </section>
           )}
         </div>
+      {variantPreview && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-label={variantPreview.name} onClick={() => setVariantPreview(null)}>
+          <div className="relative max-h-[90vh] w-full max-w-4xl rounded-3xl bg-white p-3 shadow-2xl sm:p-5" onClick={(event) => event.stopPropagation()}>
+            <button type="button" aria-label="Cerrar imagen" onClick={() => setVariantPreview(null)} className="absolute right-4 top-4 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-white text-primary shadow-lg"><X className="h-5 w-5" /></button>
+            <div className="flex max-h-[82vh] items-center justify-center overflow-hidden rounded-2xl bg-[#f5f8f8]">
+              <img src={variantPreview.image} alt={variantPreview.name} className="max-h-[78vh] w-full object-contain" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = "/placeholder.svg"; }} />
+            </div>
+            <p className="px-2 pt-3 text-center font-medium text-primary">{variantPreview.name}</p>
+          </div>
+        </div>
+      )}
       </main>
       <Footer />\n    </div>
   );

@@ -106,25 +106,26 @@ describe("ProductDetail image galleries", () => {
     expect(mainImage).toHaveAttribute("src", "/parent-gallery.jpg");
 
     fireEvent.click(screen.getByRole("button", { name: /Variante A/ }));
-    expect(mainImage).toHaveAttribute("src", "/variant-a-cover.jpg");
-    expect(screen.getByRole("button", { name: "Ver imagen 2 de Variante A" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Ver imagen 2 de Variante A" }));
-    expect(mainImage).toHaveAttribute("src", "/variant-a-gallery.jpg");
+    expect(mainImage).toHaveAttribute("src", "/parent-gallery.jpg");
+    expect(screen.getByRole("dialog", { name: "Variante A" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Variante A" }).querySelector("img")).toHaveAttribute("src", "/variant-a-cover.jpg");
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar imagen" }));
 
     fireEvent.click(screen.getByRole("button", { name: /Variante B/ }));
-    expect(mainImage).toHaveAttribute("src", "/variant-b-cover.jpg");
-    expect(screen.queryByRole("button", { name: "Ver imagen 2 de Variante A" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Ver imagen 2 de Variante B" }));
-    expect(mainImage).toHaveAttribute("src", "/variant-b-gallery.jpg");
+    expect(mainImage).toHaveAttribute("src", "/parent-gallery.jpg");
+    expect(screen.getByRole("dialog", { name: "Variante B" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Variante B" }).querySelector("img")).toHaveAttribute("src", "/variant-b-cover.jpg");
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar imagen" }));
 
-    fireEvent.click(screen.getByRole("button", { name: /Variante vacía/ }));
-    expect(mainImage).toHaveAttribute("src", "/placeholder.svg");
-    expect(screen.queryByRole("button", { name: /Ver imagen .*Variante vacía/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "Variante vacía" })).toHaveAttribute("src", "/placeholder.svg");
+    fireEvent.click(screen.getByRole("button", { name: /Variante vac/ }));
+    expect(mainImage).toHaveAttribute("src", "/parent-gallery.jpg");
+    expect(screen.getByRole("dialog", { name: /Variante vac/ }).querySelector("img")).toHaveAttribute("src", "/placeholder.svg");
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar imagen" }));
 
     fireEvent.click(screen.getByRole("button", { name: /Variante sin imagen principal/ }));
-    expect(mainImage).toHaveAttribute("src", "/variant-only-gallery.jpg");
-    expect(screen.getByRole("img", { name: "Variante sin imagen principal" })).toHaveAttribute("src", "/variant-only-gallery.jpg");
+    expect(mainImage).toHaveAttribute("src", "/parent-gallery.jpg");
+    expect(screen.getByRole("dialog", { name: "Variante sin imagen principal" }).querySelector("img")).toHaveAttribute("src", "/variant-only-gallery.jpg");
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar imagen" }));
 
     fireEvent.click(screen.getByRole("button", { name: /Producto principal/ }));
     expect(mainImage).toHaveAttribute("src", "/parent-cover.jpg");
@@ -156,21 +157,19 @@ describe("ProductDetail image galleries", () => {
     expect(screen.getByRole("button", { name: "Ver imagen 1 de Producto de prueba" })).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.click(screen.getByRole("button", { name: /Variante A/ }));
-    const variantNext = screen.getByRole("button", { name: "Imagen siguiente de Variante A" });
-    fireEvent.click(variantNext);
-    expect(mainImage).toHaveAttribute("src", "/variant-a-gallery.jpg");
-    expect(screen.getByRole("button", { name: "Ver imagen 2 de Variante A" })).toHaveAttribute("aria-pressed", "true");
+    expect(mainImage).toHaveAttribute("src", "/parent-cover.jpg");
+    expect(screen.getByRole("dialog", { name: "Variante A" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar imagen" }));
 
     fireEvent.click(screen.getByRole("button", { name: /Variante B/ }));
-    expect(screen.getByRole("button", { name: "Imagen anterior de Variante B" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Imagen siguiente de Variante B" })).toBeEnabled();
-    expect(mainImage).toHaveAttribute("src", "/variant-b-cover.jpg");
-    fireEvent.click(screen.getByRole("button", { name: "Imagen siguiente de Variante B" }));
-    expect(mainImage).toHaveAttribute("src", "/variant-b-gallery.jpg");
+    expect(mainImage).toHaveAttribute("src", "/parent-cover.jpg");
+    expect(screen.getByRole("dialog", { name: "Variante B" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar imagen" }));
 
     fireEvent.click(screen.getByRole("button", { name: /Variante sin imagen principal/ }));
-    expect(screen.getByRole("button", { name: "Imagen anterior de Variante sin imagen principal" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Imagen siguiente de Variante sin imagen principal" })).toBeDisabled();
+    expect(mainImage).toHaveAttribute("src", "/parent-cover.jpg");
+    expect(screen.getByRole("dialog", { name: "Variante sin imagen principal" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar imagen" }));
   });
 
   it("preserves the selected variant and image on catalog refresh, then resets if the variant disappears", () => {
@@ -184,8 +183,9 @@ describe("ProductDetail image galleries", () => {
 
     const mainImage = screen.getByRole("img", { name: "Producto de prueba" });
     fireEvent.click(screen.getByRole("button", { name: /Variante A/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Ver imagen 2 de Variante A" }));
-    expect(mainImage).toHaveAttribute("src", "/variant-a-gallery.jpg");
+    expect(mainImage).toHaveAttribute("src", "/parent-cover.jpg");
+    expect(screen.getByRole("dialog", { name: "Variante A" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar imagen" }));
 
     vi.mocked(useProductsCatalog).mockReturnValue({
       products: [{ ...product, subproducts: product.subproducts?.map((variant) => ({ ...variant })) }],
@@ -202,8 +202,9 @@ describe("ProductDetail image galleries", () => {
       </MemoryRouter>,
     );
 
-    expect(mainImage).toHaveAttribute("src", "/variant-a-gallery.jpg");
-    expect(screen.getByRole("button", { name: "Ver imagen 2 de Variante A" })).toBeInTheDocument();
+    expect(mainImage).toHaveAttribute("src", "/parent-cover.jpg");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(window.sessionStorage.getItem("shelby:product-gallery:product-1")).toContain("variant-a");
 
     vi.mocked(useProductsCatalog).mockReturnValue({
       products: [{
@@ -254,9 +255,11 @@ describe("ProductDetail image galleries", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /Variante A/ }));
+    expect(screen.getByRole("dialog", { name: "Variante A" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Cambiar producto" }));
 
     expect(screen.getByRole("img", { name: "Otro producto" })).toHaveAttribute("src", "/second-product.jpg");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Variante A/ })).not.toBeInTheDocument();
   });
 
@@ -271,7 +274,7 @@ describe("ProductDetail image galleries", () => {
       </StrictMode>,
     );
     fireEvent.click(screen.getByRole("button", { name: /Variante A/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Ver imagen 2 de Variante A" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar imagen" }));
     firstRender.unmount();
 
     render(
@@ -284,8 +287,8 @@ describe("ProductDetail image galleries", () => {
       </StrictMode>,
     );
 
-    expect(screen.getByRole("img", { name: "Producto de prueba" })).toHaveAttribute("src", "/variant-a-gallery.jpg");
-    expect(screen.getByRole("button", { name: "Ver imagen 2 de Variante A" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("img", { name: "Producto de prueba" })).toHaveAttribute("src", "/parent-cover.jpg");
+    expect(window.sessionStorage.getItem("shelby:product-gallery:product-1")).toContain("variant-a");
   });
 
   it("uses separate session selections for different products", () => {
@@ -314,7 +317,7 @@ describe("ProductDetail image galleries", () => {
       </MemoryRouter>,
     );
     fireEvent.click(screen.getByRole("button", { name: /Variante A/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Ver imagen 2 de Variante A" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar imagen" }));
     fireEvent.click(screen.getByRole("button", { name: "Cambiar producto" }));
 
     expect(screen.getByRole("img", { name: "Otro producto" })).toHaveAttribute("src", "/second-product.jpg");
@@ -356,13 +359,13 @@ describe("ProductDetail image galleries", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("img", { name: "Producto de prueba" })).toHaveAttribute("src", "/variant-a-cover.jpg");
+    expect(screen.getByRole("img", { name: "Producto de prueba" })).toHaveAttribute("src", "/parent-cover.jpg");
     expect(window.sessionStorage.getItem("shelby:product-gallery:product-1")).toBe(
-      JSON.stringify({ variantId: "variant-a", image: "/variant-a-cover.jpg" }),
+      JSON.stringify({ variantId: "variant-a", image: "/parent-cover.jpg" }),
     );
   });
 
-  it("restores an image-less variant and keeps the placeholder fallback", () => {
+  it("restores an image-less variant while keeping the parent gallery", () => {
     window.sessionStorage.setItem("shelby:product-gallery:product-1", JSON.stringify({
       variantId: "variant-empty",
       image: "/stale.jpg",
@@ -376,9 +379,9 @@ describe("ProductDetail image galleries", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("img", { name: "Producto de prueba" })).toHaveAttribute("src", "/placeholder.svg");
+    expect(screen.getByRole("img", { name: "Producto de prueba" })).toHaveAttribute("src", "/parent-cover.jpg");
     expect(window.sessionStorage.getItem("shelby:product-gallery:product-1")).toBe(
-      JSON.stringify({ variantId: "variant-empty", image: null }),
+      JSON.stringify({ variantId: "variant-empty", image: "/parent-cover.jpg" }),
     );
   });
 });
